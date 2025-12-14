@@ -16,7 +16,7 @@ const messageSchema = Joi.object({
 router.get('/task/:taskId', verifyJWT, async (req, res) => {
   try {
     const task = await Task.findById(req.params.taskId).select(
-      'client student' // uses client + student
+      'client student'
     );
     if (!task) {
       return res.status(404).json({ message: 'Task not found' });
@@ -50,12 +50,19 @@ router.get('/task/:taskId', verifyJWT, async (req, res) => {
 // POST /api/messages/task/:taskId
 // Send a message between client & student on this task
 router.post('/task/:taskId', verifyJWT, async (req, res) => {
+  console.log('POST /api/messages/task/:taskId called', {
+    taskId: req.params.taskId,
+    userId: req.user && req.user.id,
+    body: req.body,
+  });
+
   try {
     const { error, value } = messageSchema.validate(req.body, {
       abortEarly: false,
       stripUnknown: true,
     });
     if (error) {
+      console.log('Validation error:', error.details);
       return res.status(400).json({
         message: 'Validation error',
         details: error.details.map((d) => d.message),
@@ -66,6 +73,7 @@ router.post('/task/:taskId', verifyJWT, async (req, res) => {
       'client student title'
     );
     if (!task) {
+      console.log('Task not found for id', req.params.taskId);
       return res.status(404).json({ message: 'Task not found' });
     }
 
@@ -75,6 +83,7 @@ router.post('/task/:taskId', verifyJWT, async (req, res) => {
       task.student && task.student.toString() === userId;
 
     if (!isClient && !isStudent) {
+      console.log('User not part of task', { userId, taskId: task._id });
       return res
         .status(403)
         .json({ message: 'You are not part of this task' });
@@ -93,10 +102,12 @@ router.post('/task/:taskId', verifyJWT, async (req, res) => {
       .populate('sender', 'name role')
       .populate('receiver', 'name role');
 
-    // 1) Respond immediately so the client gets a fast success and no 500 from FCM
+    console.log('Message created and populated, id:', populated._id.toString());
+
+    // Fast success response
     res.status(201).json(populated);
 
-    // 2) Fire-and-forget push notification; does not affect API response
+    // Fire-and-forget push notification (cannot break the API)
     (async () => {
       try {
         await sendNotification(receiver, {
@@ -111,11 +122,11 @@ router.post('/task/:taskId', verifyJWT, async (req, res) => {
           },
         });
       } catch (notifyErr) {
-        console.error('FCM sendNotification error:', notifyErr.message);
+        console.error('FCM sendNotification error:', notifyErr);
       }
     })();
   } catch (err) {
-    console.error('Error sending message:', err);
+    console.error('Error sending message (outer catch):', err);
     res
       .status(500)
       .json({ message: 'Error sending message', error: err.message });
