@@ -98,14 +98,16 @@ router.post('/task/:taskId', verifyJWT, async (req, res) => {
       text: value.text.trim(),
     });
 
-    const populated = await message
-      .populate('sender', 'name role')
-      .populate('receiver', 'name role');
+    // FIX: use a single populate call on the document
+    await message.populate([
+      { path: 'sender', select: 'name role' },
+      { path: 'receiver', select: 'name role' },
+    ]);
 
-    console.log('Message created and populated, id:', populated._id.toString());
+    console.log('Message created and populated, id:', message._id.toString());
 
     // Fast success response
-    res.status(201).json(populated);
+    res.status(201).json(message);
 
     // Fire-and-forget push notification (cannot break the API)
     (async () => {
