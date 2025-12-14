@@ -5,6 +5,7 @@ const taskSchema = new mongoose.Schema(
   {
     title: String,
     description: String,
+
     client: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
 
     // skills required for this task (used to match with student.skills)
@@ -14,13 +15,10 @@ const taskSchema = new mongoose.Schema(
     },
 
     budget: Number,
-    // store deadline as string or Date; if you use Date, keep consistent with client
     deadline: Date,
 
     // filters
-    // city / place where task is based; used in student feed location filter
     location: String,
-    // domain/category of the task (e.g. "Web Development", "Machine Learning")
     domain: String,
     company: String,
 
@@ -30,9 +28,14 @@ const taskSchema = new mongoose.Schema(
       default: 'open',
     },
 
+    // assigned student for this task (used by chat and payments)
+    student: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+    },
+
     submission: {
       fileUrl: String,
-      student: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
       approved: { type: Boolean, default: false },
     },
 

@@ -27,4 +27,7 @@ const messageSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+// Auto-delete messages 24 hours after creation
+messageSchema.index({ createdAt: 1 }, { expireAfterSeconds: 24 * 60 * 60 });
+
 module.exports = mongoose.model('Message', messageSchema);

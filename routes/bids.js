@@ -86,7 +86,7 @@ router.post('/accept/:bidId', verifyJWT, async (req, res) => {
     await bid.save();
 
     task.status = 'assigned';
-    task.assignedTo = bid.student;
+    task.student = bid.student;   // CHANGED: link accepted student here
     await task.save();
 
     const amount = task.budget || bid.quote || 0;

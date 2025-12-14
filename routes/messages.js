@@ -16,7 +16,7 @@ const messageSchema = Joi.object({
 router.get('/task/:taskId', verifyJWT, async (req, res) => {
   try {
     const task = await Task.findById(req.params.taskId).select(
-      'client assignedTo'
+      'client student' // CHANGED from 'client assignedTo'
     );
     if (!task) {
       return res.status(404).json({ message: 'Task not found' });
@@ -25,7 +25,7 @@ router.get('/task/:taskId', verifyJWT, async (req, res) => {
     const userId = req.user.id;
     const isClient = task.client.toString() === userId;
     const isStudent =
-      task.assignedTo && task.assignedTo.toString() === userId;
+      task.student && task.student.toString() === userId; // CHANGED
 
     if (!isClient && !isStudent) {
       return res
@@ -62,7 +62,7 @@ router.post('/task/:taskId', verifyJWT, async (req, res) => {
     }
 
     const task = await Task.findById(req.params.taskId).select(
-      'client assignedTo title'
+      'client student title' // CHANGED from 'client assignedTo title'
     );
     if (!task) {
       return res.status(404).json({ message: 'Task not found' });
@@ -71,7 +71,7 @@ router.post('/task/:taskId', verifyJWT, async (req, res) => {
     const userId = req.user.id;
     const isClient = task.client.toString() === userId;
     const isStudent =
-      task.assignedTo && task.assignedTo.toString() === userId;
+      task.student && task.student.toString() === userId; // CHANGED
 
     if (!isClient && !isStudent) {
       return res
@@ -79,7 +79,7 @@ router.post('/task/:taskId', verifyJWT, async (req, res) => {
         .json({ message: 'You are not part of this task' });
     }
 
-    const receiver = isClient ? task.assignedTo : task.client;
+    const receiver = isClient ? task.student : task.client; // CHANGED
 
     const message = await Message.create({
       task: task._id,
