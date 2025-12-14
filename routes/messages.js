@@ -16,7 +16,7 @@ const messageSchema = Joi.object({
 router.get('/task/:taskId', verifyJWT, async (req, res) => {
   try {
     const task = await Task.findById(req.params.taskId).select(
-      'client student' // CHANGED from 'client assignedTo'
+      'client student' // uses client + student
     );
     if (!task) {
       return res.status(404).json({ message: 'Task not found' });
@@ -25,7 +25,7 @@ router.get('/task/:taskId', verifyJWT, async (req, res) => {
     const userId = req.user.id;
     const isClient = task.client.toString() === userId;
     const isStudent =
-      task.student && task.student.toString() === userId; // CHANGED
+      task.student && task.student.toString() === userId;
 
     if (!isClient && !isStudent) {
       return res
@@ -40,6 +40,7 @@ router.get('/task/:taskId', verifyJWT, async (req, res) => {
 
     res.json(messages);
   } catch (err) {
+    console.error('Error fetching messages:', err);
     res
       .status(500)
       .json({ message: 'Error fetching messages', error: err.message });
@@ -62,7 +63,7 @@ router.post('/task/:taskId', verifyJWT, async (req, res) => {
     }
 
     const task = await Task.findById(req.params.taskId).select(
-      'client student title' // CHANGED from 'client assignedTo title'
+      'client student title'
     );
     if (!task) {
       return res.status(404).json({ message: 'Task not found' });
@@ -71,7 +72,7 @@ router.post('/task/:taskId', verifyJWT, async (req, res) => {
     const userId = req.user.id;
     const isClient = task.client.toString() === userId;
     const isStudent =
-      task.student && task.student.toString() === userId; // CHANGED
+      task.student && task.student.toString() === userId;
 
     if (!isClient && !isStudent) {
       return res
@@ -79,7 +80,7 @@ router.post('/task/:taskId', verifyJWT, async (req, res) => {
         .json({ message: 'You are not part of this task' });
     }
 
-    const receiver = isClient ? task.student : task.client; // CHANGED
+    const receiver = isClient ? task.student : task.client;
 
     const message = await Message.create({
       task: task._id,
@@ -92,21 +93,29 @@ router.post('/task/:taskId', verifyJWT, async (req, res) => {
       .populate('sender', 'name role')
       .populate('receiver', 'name role');
 
-    // Send push notification to receiver
-    await sendNotification(receiver, {
-      title: 'New message',
-      body:
-        value.text.length > 50
-          ? value.text.substring(0, 47) + '...'
-          : value.text,
-      data: {
-        type: 'chat_message',
-        taskId: task._id.toString(),
-      },
-    });
-
+    // 1) Respond immediately so the client gets a fast success and no 500 from FCM
     res.status(201).json(populated);
+
+    // 2) Fire-and-forget push notification; does not affect API response
+    (async () => {
+      try {
+        await sendNotification(receiver, {
+          title: 'New message',
+          body:
+            value.text.length > 50
+              ? value.text.substring(0, 47) + '...'
+              : value.text,
+          data: {
+            type: 'chat_message',
+            taskId: task._id.toString(),
+          },
+        });
+      } catch (notifyErr) {
+        console.error('FCM sendNotification error:', notifyErr.message);
+      }
+    })();
   } catch (err) {
+    console.error('Error sending message:', err);
     res
       .status(500)
       .json({ message: 'Error sending message', error: err.message });
