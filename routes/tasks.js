@@ -483,4 +483,33 @@ router.post('/:id/feedback', verifyJWT, async (req, res) => {
   }
 });
 
+// DELETE /api/tasks/:id -> delete task (client only)
+router.delete('/:id', verifyJWT, async (req, res) => {
+  try {
+    if (req.user.role !== 'client') {
+      return res.status(403).json({ message: 'Only clients can delete tasks' });
+    }
+
+    const task = await Task.findById(req.params.id);
+    if (!task) {
+      return res.status(404).json({ message: 'Task not found' });
+    }
+
+    if (task.client.toString() !== req.user.id) {
+      return res.status(403).json({ message: 'Not your task' });
+    }
+
+    await Bid.deleteMany({ task: task._id });
+    await Payment.deleteMany({ task: task._id });
+    await task.deleteOne();
+
+    res.json({ message: 'Task deleted' });
+  } catch (err) {
+    console.error('Error deleting task:', err);
+    res
+      .status(500)
+      .json({ message: 'Error deleting task', error: err.message });
+  }
+});
+
 module.exports = router;
