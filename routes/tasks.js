@@ -16,7 +16,7 @@ const createTaskSchema = Joi.object({
   deadline: Joi.string().max(50).required(),
   location: Joi.string().max(200).allow('', null),
   domain: Joi.string().max(200).allow('', null),
-  // new: required skills for this task
+  // required skills for this task (multi-select from client UI)
   requiredSkills: Joi.array().items(Joi.string().max(100)).default([]),
 });
 
@@ -72,6 +72,7 @@ router.post('/create', verifyJWT, async (req, res) => {
       budget,
       deadline,
       client: req.user.id,
+      // if client leaves location/domain empty, fallback to their profile defaults
       location: location || client.location,
       domain: domain || client.domain,
       company: client.company,
@@ -129,7 +130,39 @@ router.get('/', verifyJWT, async (req, res) => {
   }
 });
 
-// NEW: GET /api/tasks/assigned (student workspace)
+// GET /api/tasks/recommended (latest 5 based on student skills)
+router.get('/recommended', verifyJWT, async (req, res) => {
+  try {
+    if (req.user.role !== 'student') {
+      // only meaningful for students; others get empty list
+      return res.json([]);
+    }
+
+    const student = await User.findById(req.user.id).select('skills');
+    if (!student || !Array.isArray(student.skills) || student.skills.length === 0) {
+      return res.json([]);
+    }
+
+    const query = {
+      status: 'open',
+      requiredSkills: { $in: student.skills },
+    };
+
+    const tasks = await Task.find(query)
+      .sort({ createdAt: -1 })
+      .limit(5)
+      .populate('client', 'name company');
+
+    res.json(tasks);
+  } catch (err) {
+    console.error('Error in GET /api/tasks/recommended:', err);
+    res
+      .status(500)
+      .json({ message: 'Error fetching recommended tasks', error: err.message });
+  }
+});
+
+// GET /api/tasks/assigned (student workspace)
 router.get('/assigned', verifyJWT, async (req, res) => {
   try {
     if (req.user.role !== 'student') {
@@ -138,15 +171,6 @@ router.get('/assigned', verifyJWT, async (req, res) => {
         .json({ message: 'Only students can view assigned tasks' });
     }
 
-    // OPTION 1: if you have Task.assignedStudent
-    // const tasks = await Task.find({
-    //   status: { $in: ['assigned', 'in_progress'] },
-    //   assignedStudent: req.user.id,
-    // })
-    //   .populate('client', 'name company location')
-    //   .lean();
-
-    // OPTION 2: derive from accepted bids (used here)
     const acceptedBids = await Bid.find({
       student: req.user.id,
       status: 'accepted',
@@ -179,7 +203,6 @@ router.get('/mine', verifyJWT, async (req, res) => {
         .json({ message: 'Only clients can view their tasks' });
     }
 
-    // get tasks owned by this client
     const tasks = await Task.find({ client: req.user.id })
       .populate('client', 'name company')
       .lean();
@@ -190,7 +213,6 @@ router.get('/mine', verifyJWT, async (req, res) => {
 
     const taskIds = tasks.map((t) => t._id);
 
-    // count bids per task
     const counts = await Bid.aggregate([
       { $match: { task: { $in: taskIds } } },
       {
