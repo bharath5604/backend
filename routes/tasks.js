@@ -16,8 +16,8 @@ const createTaskSchema = Joi.object({
   deadline: Joi.string().max(50).required(),
   location: Joi.string().max(200).allow('', null),
   domain: Joi.string().max(200).allow('', null),
-  // required skills for this task (multi-select from client UI)
   requiredSkills: Joi.array().items(Joi.string().max(100)).default([]),
+  company: Joi.string().max(200).allow('', null),
 });
 
 const rateSchema = Joi.object({
@@ -57,6 +57,7 @@ router.post('/create', verifyJWT, async (req, res) => {
       location,
       domain,
       requiredSkills,
+      company,
     } = value;
 
     const client = await User.findById(req.user.id).select(
@@ -72,10 +73,9 @@ router.post('/create', verifyJWT, async (req, res) => {
       budget,
       deadline,
       client: req.user.id,
-      // if client leaves location/domain empty, fallback to their profile defaults
       location: location || client.location,
       domain: domain || client.domain,
-      company: client.company,
+      company: company || client.company,
       requiredSkills: requiredSkills || [],
       status: 'open',
     });
@@ -94,10 +94,8 @@ router.get('/', verifyJWT, async (req, res) => {
   try {
     const { location, domain, company } = req.query;
 
-    // Base query: only open tasks
     const query = { status: 'open' };
 
-    // Optional filters from UI
     if (location) {
       query.location = location;
     }
@@ -108,13 +106,11 @@ router.get('/', verifyJWT, async (req, res) => {
       query.company = company;
     }
 
-    // If logged-in user is a student, filter by their skills vs task.requiredSkills
     if (req.user.role === 'student') {
       const student = await User.findById(req.user.id).select('skills');
       console.log('Student skills:', student?.skills);
 
       if (student && Array.isArray(student.skills) && student.skills.length > 0) {
-        // only tasks whose requiredSkills intersect with student's skills
         query.requiredSkills = { $in: student.skills };
       }
     }
@@ -130,11 +126,32 @@ router.get('/', verifyJWT, async (req, res) => {
   }
 });
 
+// GET /api/tasks/search?location=&domain=&company=
+router.get('/search', verifyJWT, async (req, res) => {
+  try {
+    const { location, domain, company } = req.query;
+
+    const filter = { status: 'open' };
+    if (location) filter.location = location;
+    if (domain) filter.domain = domain;
+    if (company) filter.company = company;
+
+    const tasks = await Task.find(filter).populate('client', 'name company');
+
+    res.json(tasks);
+  } catch (err) {
+    console.error('Error in GET /api/tasks/search:', err);
+    res.status(500).json({
+      message: 'Error searching tasks',
+      error: err.message,
+    });
+  }
+});
+
 // GET /api/tasks/recommended (latest 5 based on student skills)
 router.get('/recommended', verifyJWT, async (req, res) => {
   try {
     if (req.user.role !== 'student') {
-      // only meaningful for students; others get empty list
       return res.json([]);
     }
 
@@ -240,7 +257,7 @@ router.get('/mine', verifyJWT, async (req, res) => {
   }
 });
 
-// POST /api/tasks/:id/approve -> mark task completed + release payment
+// POST /api/tasks/:id/approve
 router.post('/:id/approve', verifyJWT, async (req, res) => {
   try {
     const task = await Task.findById(req.params.id).populate(
@@ -296,7 +313,7 @@ router.post('/:id/approve', verifyJWT, async (req, res) => {
   }
 });
 
-// POST /api/tasks/:id/decline -> mark payment declined with reason
+// POST /api/tasks/:id/decline
 router.post('/:id/decline', verifyJWT, async (req, res) => {
   try {
     const { reason } = req.body;
@@ -327,7 +344,7 @@ router.post('/:id/decline', verifyJWT, async (req, res) => {
     payment.declineReason = reason || 'Not satisfactory';
     await payment.save();
 
-    task.status = 'open'; // or 'rejected'
+    task.status = 'open';
     await task.save();
 
     await sendNotification(payment.student, {
