@@ -126,15 +126,28 @@ router.get('/', verifyJWT, async (req, res) => {
   }
 });
 
-// GET /api/tasks/search?location=&domain=&company=
+// GET /api/tasks/search?location=&domain=&company=&title=
 router.get('/search', verifyJWT, async (req, res) => {
   try {
-    const { location, domain, company } = req.query;
+    const { location, domain, company, title } = req.query;
 
     const filter = { status: 'open' };
+
+    // optional exact filters (can keep case-sensitive here; or use regex if you prefer)
     if (location) filter.location = location;
     if (domain) filter.domain = domain;
-    if (company) filter.company = company;
+
+    // company/title OR logic, case-insensitive partial match
+    const or = [];
+    if (company) {
+      or.push({ company: new RegExp(company, 'i') });
+    }
+    if (title) {
+      or.push({ title: new RegExp(title, 'i') });
+    }
+    if (or.length > 0) {
+      filter.$or = or;
+    }
 
     const tasks = await Task.find(filter).populate('client', 'name company');
 
