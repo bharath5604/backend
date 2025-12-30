@@ -15,6 +15,7 @@ const ensureAdmin = (req, res, next) => {
 };
 
 // GET /api/admin/users?role&company&location&domain
+// Admin can list all users with filters to monitor clients and students.
 router.get('/users', verifyJWT, ensureAdmin, async (req, res) => {
   try {
     const { role, company, location, domain } = req.query;
@@ -34,6 +35,9 @@ router.get('/users', verifyJWT, ensureAdmin, async (req, res) => {
 });
 
 // PATCH /api/admin/users/:id/approve
+// This is used both to approve new clients and to ban/unban any user.
+// isApproved = true  -> active
+// isApproved = false -> banned / not allowed to log in
 router.patch('/users/:id/approve', verifyJWT, ensureAdmin, async (req, res) => {
   try {
     const { isApproved } = req.body;
@@ -56,6 +60,7 @@ router.patch('/users/:id/approve', verifyJWT, ensureAdmin, async (req, res) => {
 });
 
 // GET /api/admin/tasks?location&domain&company
+// Admin can monitor all tasks created by clients.
 router.get('/tasks', verifyJWT, ensureAdmin, async (req, res) => {
   try {
     const { location, domain, company } = req.query;
@@ -274,7 +279,7 @@ router.get(
   }
 );
 
-// Optional: overall overview stats (for cards on dashboard)
+// Overall overview stats (for cards on dashboard)
 // GET /api/admin/stats/overview
 router.get('/stats/overview', verifyJWT, ensureAdmin, async (req, res) => {
   try {

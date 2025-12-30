@@ -82,12 +82,20 @@ router.post('/accept/:bidId', verifyJWT, async (req, res) => {
       return res.status(403).json({ message: 'Not your task' });
     }
 
+    // Mark this bid as accepted
     bid.status = 'accepted';
     await bid.save();
 
+    // Mark task as assigned to this student
     task.status = 'assigned';
-    task.student = bid.student;   // CHANGED: link accepted student here
+    task.student = bid.student; // link accepted student here
     await task.save();
+
+    // NEW: auto-reject all other bids for this task
+    await Bid.updateMany(
+      { task: bid.task, _id: { $ne: bid._id } },
+      { $set: { status: 'rejected' } }
+    );
 
     const amount = task.budget || bid.quote || 0;
     const platformFeeClient = +(amount * 0.005).toFixed(2); // 0.5%

@@ -16,7 +16,11 @@ const userSchema = new mongoose.Schema(
     email: { type: String, unique: true, required: true },
     password: { type: String, required: true },
 
-    role: { type: String, enum: ['student', 'client', 'admin'], required: true },
+    role: {
+      type: String,
+      enum: ['student', 'client', 'admin'],
+      required: true,
+    },
 
     wallet: { type: Number, default: 0 },
 
@@ -55,7 +59,19 @@ const userSchema = new mongoose.Schema(
     // FCM token for push notifications
     fcmToken: String,
 
-    isApproved: { type: Boolean, default: true },
+    // Approval / ban flag:
+    // - student: auto true (can use app immediately)
+    // - client: requires admin approval (starts false)
+    // - admin: true (managed manually)
+    isApproved: {
+      type: Boolean,
+      default: function () {
+        if (this.role === 'student') return true;
+        if (this.role === 'client') return false;
+        if (this.role === 'admin') return true;
+        return false;
+      },
+    },
   },
   { timestamps: true }
 );
