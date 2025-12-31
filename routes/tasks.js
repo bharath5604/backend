@@ -90,12 +90,15 @@ router.post('/create', verifyJWT, async (req, res) => {
 });
 
 // GET /api/tasks (student feed + filters)
+// NEW: supports domain + minBudget + maxBudget; location/company dropped for student browse
 router.get('/', verifyJWT, async (req, res) => {
   try {
-    const { location, domain, company } = req.query;
+    const { location, domain, company, minBudget, maxBudget } = req.query;
 
     const query = { status: 'open' };
 
+    // Keep location/company for compatibility if other parts of app use them,
+    // but student browse will mainly use domain + budget range.
     if (location) {
       query.location = location;
     }
@@ -104,6 +107,13 @@ router.get('/', verifyJWT, async (req, res) => {
     }
     if (company) {
       query.company = company;
+    }
+
+    // NEW: budget range filter
+    if (minBudget || maxBudget) {
+      query.budget = {};
+      if (minBudget) query.budget.$gte = Number(minBudget);
+      if (maxBudget) query.budget.$lte = Number(maxBudget);
     }
 
     if (req.user.role === 'student') {
@@ -126,27 +136,20 @@ router.get('/', verifyJWT, async (req, res) => {
   }
 });
 
-// GET /api/tasks/search?location=&domain=&company=&title=
+// GET /api/tasks/search
+// NEW: simplified to domain + budget range filters (no location/company/title search)
 router.get('/search', verifyJWT, async (req, res) => {
   try {
-    const { location, domain, company, title } = req.query;
+    const { domain, minBudget, maxBudget } = req.query;
 
     const filter = { status: 'open' };
 
-    // optional exact filters (can keep case-sensitive here; or use regex if you prefer)
-    if (location) filter.location = location;
     if (domain) filter.domain = domain;
 
-    // company/title OR logic, case-insensitive partial match
-    const or = [];
-    if (company) {
-      or.push({ company: new RegExp(company, 'i') });
-    }
-    if (title) {
-      or.push({ title: new RegExp(title, 'i') });
-    }
-    if (or.length > 0) {
-      filter.$or = or;
+    if (minBudget || maxBudget) {
+      filter.budget = {};
+      if (minBudget) filter.budget.$gte = Number(minBudget);
+      if (maxBudget) filter.budget.$lte = Number(maxBudget);
     }
 
     const tasks = await Task.find(filter).populate('client', 'name company');
