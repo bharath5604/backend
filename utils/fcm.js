@@ -11,18 +11,28 @@ try {
       credential: admin.credential.cert(serviceAccount),
     });
     fcmReady = true;
+    console.log('FCM initialized');
+  } else if (!process.env.FCM_SERVICE_ACCOUNT_JSON) {
+    console.warn('FCM_SERVICE_ACCOUNT_JSON not set; push notifications disabled');
   }
 } catch (err) {
   console.error('Failed to init Firebase Admin for FCM:', err.message);
   fcmReady = false;
 }
 
+/**
+ * Send notification to a user:
+ * - Always creates a Notification document.
+ * - Tries FCM push only if Firebase Admin is configured and user has fcmToken.
+ */
 async function sendNotification(userId, { title, body, data = {} }) {
   // Always create DB notification
   const notif = await Notification.create({ user: userId, title, body, data });
 
   // Try to send push only if FCM is configured
-  if (!fcmReady) return notif;
+  if (!fcmReady) {
+    return notif;
+  }
 
   const user = await User.findById(userId).select('fcmToken');
   if (!user || !user.fcmToken) {
