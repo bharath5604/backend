@@ -73,7 +73,10 @@ router.get('/tasks', verifyJWT, ensureAdmin, async (req, res) => {
     if (domain) filter.domain = domain;
     if (company) filter.company = company;
 
-    const tasks = await Task.find(filter).populate('client', 'name email company');
+    const tasks = await Task.find(filter).populate(
+      'client',
+      'name email company'
+    );
     res.json(tasks);
   } catch (err) {
     res
@@ -84,51 +87,58 @@ router.get('/tasks', verifyJWT, ensureAdmin, async (req, res) => {
 
 // Student dashboard / profile for admin charts
 // GET /api/admin/students/:id/dashboard
-router.get('/students/:id/dashboard', verifyJWT, ensureAdmin, async (req, res) => {
-  try {
-    const student = await User.findById(req.params.id).select('-password');
-    if (!student || student.role !== 'student') {
-      return res.status(404).json({ message: 'Student not found' });
+router.get(
+  '/students/:id/dashboard',
+  verifyJWT,
+  ensureAdmin,
+  async (req, res) => {
+    try {
+      const student = await User.findById(req.params.id).select('-password');
+      if (!student || student.role !== 'student') {
+        return res.status(404).json({ message: 'Student not found' });
+      }
+
+      const domains = (student.feedbackScores || []).map((d) => ({
+        domain: d.domain,
+        averageScore: d.count > 0 ? d.totalScore / d.count : 0,
+        count: d.count,
+      }));
+
+      const totalAverage =
+        student.totalScoreCount > 0
+          ? student.totalScore / student.totalScoreCount
+          : 0;
+
+      const recentTasks = await Task.find({
+        'submission.student': student._id,
+      })
+        .sort({ updatedAt: -1 })
+        .limit(10)
+        .select(
+          'title domain company rating score feedback status updatedAt'
+        );
+
+      res.json({
+        student: {
+          id: student._id,
+          name: student.name,
+          email: student.email,
+          totalScore: student.totalScore,
+          totalScoreCount: student.totalScoreCount,
+          totalAverageScore: totalAverage,
+          domains,
+          wallet: student.wallet || 0,
+        },
+        recentTasks,
+      });
+    } catch (err) {
+      res.status(500).json({
+        message: 'Error fetching student dashboard',
+        error: err.message,
+      });
     }
-
-    const domains = (student.feedbackScores || []).map((d) => ({
-      domain: d.domain,
-      averageScore: d.count > 0 ? d.totalScore / d.count : 0,
-      count: d.count,
-    }));
-
-    const totalAverage =
-      student.totalScoreCount > 0
-        ? student.totalScore / student.totalScoreCount
-        : 0;
-
-    const recentTasks = await Task.find({
-      'submission.student': student._id,
-    })
-      .sort({ updatedAt: -1 })
-      .limit(10)
-      .select('title domain company rating score feedback status updatedAt');
-
-    res.json({
-      student: {
-        id: student._id,
-        name: student.name,
-        email: student.email,
-        totalScore: student.totalScore,
-        totalScoreCount: student.totalScoreCount,
-        totalAverageScore: totalAverage,
-        domains,
-        wallet: student.wallet || 0,
-      },
-      recentTasks,
-    });
-  } catch (err) {
-    res.status(500).json({
-      message: 'Error fetching student dashboard',
-      error: err.message,
-    });
   }
-});
+);
 
 // Admin payments list
 // GET /api/admin/payments?status=held|released|declined|contested
@@ -311,9 +321,59 @@ router.get('/stats/overview', verifyJWT, ensureAdmin, async (req, res) => {
 
     res.json(result);
   } catch (err) {
-    res
-      .status(500)
-      .json({ message: 'Error fetching overview stats', error: err.message });
+    res.status(500).json({
+      message: 'Error fetching overview stats',
+      error: err.message,
+    });
+  }
+});
+
+// NEW: Domain-level users/projects/bids
+// GET /api/admin/stats/by-domain
+router.get('/stats/by-domain', verifyJWT, ensureAdmin, async (req, res) => {
+  try {
+    const [usersByDomain, tasksByDomain, bidsByDomain] = await Promise.all([
+      User.aggregate([
+        { $match: { domain: { $exists: true, $ne: '' } } },
+        { $group: { _id: '$domain', count: { $sum: 1 } } },
+      ]),
+      Task.aggregate([
+        { $match: { domain: { $exists: true, $ne: '' } } },
+        { $group: { _id: '$domain', count: { $sum: 1 } } },
+      ]),
+      Bid.aggregate([
+        { $match: { domain: { $exists: true, $ne: '' } } },
+        { $group: { _id: '$domain', count: { $sum: 1 } } },
+      ]),
+    ]);
+
+    const domainsMap = {};
+
+    usersByDomain.forEach((u) => {
+      domainsMap[u._id] =
+        domainsMap[u._id] || { domain: u._id, users: 0, projects: 0, bids: 0 };
+      domainsMap[u._id].users = u.count;
+    });
+
+    tasksByDomain.forEach((t) => {
+      domainsMap[t._id] =
+        domainsMap[t._id] || { domain: t._id, users: 0, projects: 0, bids: 0 };
+      domainsMap[t._id].projects = t.count;
+    });
+
+    bidsByDomain.forEach((b) => {
+      domainsMap[b._id] =
+        domainsMap[b._id] || { domain: b._id, users: 0, projects: 0, bids: 0 };
+      domainsMap[b._id].bids = b.count;
+    });
+
+    const result = Object.values(domainsMap);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({
+      message: 'Error computing domain stats',
+      error: err.message,
+    });
   }
 });
 
