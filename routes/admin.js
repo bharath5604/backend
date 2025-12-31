@@ -4,7 +4,7 @@ const router = express.Router();
 const User = require('../models/User');
 const Task = require('../models/Task');
 const Payment = require('../models/Payment');
-const Bid = require('../models/Bid'); // ensure this model exists
+const Bid = require('../models/Bid');
 const verifyJWT = require('../middleware/authMiddleware');
 
 const ensureAdmin = (req, res, next) => {
@@ -15,12 +15,20 @@ const ensureAdmin = (req, res, next) => {
 };
 
 // GET /api/admin/users?role&company&location&domain
-// Admin can list all users with filters to monitor clients and students.
+// Default: show only non-admins; admins only if role=admin is passed.
 router.get('/users', verifyJWT, ensureAdmin, async (req, res) => {
   try {
     const { role, company, location, domain } = req.query;
     const filter = {};
-    if (role) filter.role = role;
+
+    if (role) {
+      // If role explicitly provided, use it (can be 'admin' if needed)
+      filter.role = role;
+    } else {
+      // By default, hide admin accounts from Manage Users list
+      filter.role = { $ne: 'admin' };
+    }
+
     if (company) filter.company = company;
     if (location) filter.location = location;
     if (domain) filter.domain = domain;
@@ -35,9 +43,6 @@ router.get('/users', verifyJWT, ensureAdmin, async (req, res) => {
 });
 
 // PATCH /api/admin/users/:id/approve
-// This is used both to approve new clients and to ban/unban any user.
-// isApproved = true  -> active
-// isApproved = false -> banned / not allowed to log in
 router.patch('/users/:id/approve', verifyJWT, ensureAdmin, async (req, res) => {
   try {
     const { isApproved } = req.body;
@@ -60,7 +65,6 @@ router.patch('/users/:id/approve', verifyJWT, ensureAdmin, async (req, res) => {
 });
 
 // GET /api/admin/tasks?location&domain&company
-// Admin can monitor all tasks created by clients.
 router.get('/tasks', verifyJWT, ensureAdmin, async (req, res) => {
   try {
     const { location, domain, company } = req.query;
@@ -69,10 +73,7 @@ router.get('/tasks', verifyJWT, ensureAdmin, async (req, res) => {
     if (domain) filter.domain = domain;
     if (company) filter.company = company;
 
-    const tasks = await Task.find(filter).populate(
-      'client',
-      'name email company'
-    );
+    const tasks = await Task.find(filter).populate('client', 'name email company');
     res.json(tasks);
   } catch (err) {
     res
@@ -83,58 +84,51 @@ router.get('/tasks', verifyJWT, ensureAdmin, async (req, res) => {
 
 // Student dashboard / profile for admin charts
 // GET /api/admin/students/:id/dashboard
-router.get(
-  '/students/:id/dashboard',
-  verifyJWT,
-  ensureAdmin,
-  async (req, res) => {
-    try {
-      const student = await User.findById(req.params.id).select('-password');
-      if (!student || student.role !== 'student') {
-        return res.status(404).json({ message: 'Student not found' });
-      }
-
-      const domains = (student.feedbackScores || []).map((d) => ({
-        domain: d.domain,
-        averageScore: d.count > 0 ? d.totalScore / d.count : 0,
-        count: d.count,
-      }));
-
-      const totalAverage =
-        student.totalScoreCount > 0
-          ? student.totalScore / student.totalScoreCount
-          : 0;
-
-      const recentTasks = await Task.find({
-        'submission.student': student._id,
-      })
-        .sort({ updatedAt: -1 })
-        .limit(10)
-        .select(
-          'title domain company rating score feedback status updatedAt'
-        );
-
-      res.json({
-        student: {
-          id: student._id,
-          name: student.name,
-          email: student.email,
-          totalScore: student.totalScore,
-          totalScoreCount: student.totalScoreCount,
-          totalAverageScore: totalAverage,
-          domains,
-          wallet: student.wallet || 0,
-        },
-        recentTasks,
-      });
-    } catch (err) {
-      res.status(500).json({
-        message: 'Error fetching student dashboard',
-        error: err.message,
-      });
+router.get('/students/:id/dashboard', verifyJWT, ensureAdmin, async (req, res) => {
+  try {
+    const student = await User.findById(req.params.id).select('-password');
+    if (!student || student.role !== 'student') {
+      return res.status(404).json({ message: 'Student not found' });
     }
+
+    const domains = (student.feedbackScores || []).map((d) => ({
+      domain: d.domain,
+      averageScore: d.count > 0 ? d.totalScore / d.count : 0,
+      count: d.count,
+    }));
+
+    const totalAverage =
+      student.totalScoreCount > 0
+        ? student.totalScore / student.totalScoreCount
+        : 0;
+
+    const recentTasks = await Task.find({
+      'submission.student': student._id,
+    })
+      .sort({ updatedAt: -1 })
+      .limit(10)
+      .select('title domain company rating score feedback status updatedAt');
+
+    res.json({
+      student: {
+        id: student._id,
+        name: student.name,
+        email: student.email,
+        totalScore: student.totalScore,
+        totalScoreCount: student.totalScoreCount,
+        totalAverageScore: totalAverage,
+        domains,
+        wallet: student.wallet || 0,
+      },
+      recentTasks,
+    });
+  } catch (err) {
+    res.status(500).json({
+      message: 'Error fetching student dashboard',
+      error: err.message,
+    });
   }
-);
+});
 
 // Admin payments list
 // GET /api/admin/payments?status=held|released|declined|contested
@@ -254,30 +248,23 @@ router.get('/stats/tasks', verifyJWT, ensureAdmin, async (req, res) => {
 
 // Top students for leaderboard chart
 // GET /api/admin/stats/top-students?limit=10
-router.get(
-  '/stats/top-students',
-  verifyJWT,
-  ensureAdmin,
-  async (req, res) => {
-    try {
-      const limit = parseInt(req.query.limit, 10) || 10;
+router.get('/stats/top-students', verifyJWT, ensureAdmin, async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit, 10) || 10;
 
-      const students = await User.find({ role: 'student' })
-        .select(
-          'name email totalScore totalScoreCount feedbackScores wallet'
-        )
-        .sort({ totalScore: -1 })
-        .limit(limit);
+    const students = await User.find({ role: 'student' })
+      .select('name email totalScore totalScoreCount feedbackScores wallet')
+      .sort({ totalScore: -1 })
+      .limit(limit);
 
-      res.json(students);
-    } catch (err) {
-      res.status(500).json({
-        message: 'Error fetching top students',
-        error: err.message,
-      });
-    }
+    res.json(students);
+  } catch (err) {
+    res.status(500).json({
+      message: 'Error fetching top students',
+      error: err.message,
+    });
   }
-);
+});
 
 // Overall overview stats (for cards on dashboard)
 // GET /api/admin/stats/overview
@@ -303,16 +290,21 @@ router.get('/stats/overview', verifyJWT, ensureAdmin, async (req, res) => {
       Bid.countDocuments({}),
     ]);
 
+    const totalStudents =
+      userCounts.find((u) => u._id === 'student')?.count || 0;
+    const totalClients =
+      userCounts.find((u) => u._id === 'client')?.count || 0;
+    const totalAdmins =
+      userCounts.find((u) => u._id === 'admin')?.count || 0;
+
     const result = {
       usersByRole: userCounts,
       tasksByStatus: taskCounts,
       totalUsers: userCounts.reduce((s, u) => s + u.count, 0),
-      totalStudents:
-        userCounts.find((u) => u._id === 'student')?.count || 0,
-      totalClients:
-        userCounts.find((u) => u._id === 'client')?.count || 0,
-      totalAdmins:
-        userCounts.find((u) => u._id === 'admin')?.count || 0,
+      totalStudents,
+      totalClients,
+      totalAdmins,
+      totalNonAdminUsers: totalStudents + totalClients,
       totalTasks: taskCounts.reduce((s, t) => s + t.count, 0),
       totalBids: bidCount,
     };
