@@ -34,6 +34,16 @@ const taskSchema = new mongoose.Schema(
       ref: 'User',
     },
 
+    // attachments uploaded by client for this task
+    attachments: {
+      type: [String], // e.g. Firebase Storage download URLs
+      default: [],
+    },
+    attachmentNames: {
+      type: [String], // original filenames for display
+      default: [],
+    },
+
     submission: {
       fileUrl: String,
       approved: { type: Boolean, default: false },
