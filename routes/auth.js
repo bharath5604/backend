@@ -4,6 +4,7 @@ const User = require('../models/User');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const Joi = require('joi');
+const verifyJWT = require('../middleware/authMiddleware');
 
 // Joi schemas
 const signupSchema = Joi.object({
@@ -124,6 +125,30 @@ router.post('/login', async (req, res) => {
     res
       .status(500)
       .json({ message: 'Login error', error: err.message });
+  }
+});
+
+// REGISTER / UPDATE FCM TOKEN (idempotent)
+// POST /api/auth/register-fcm   { fcmToken }
+router.post('/register-fcm', verifyJWT, async (req, res) => {
+  try {
+    const { fcmToken } = req.body;
+    if (!fcmToken) {
+      return res.status(400).json({ message: 'FCM token required' });
+    }
+
+    await User.findByIdAndUpdate(
+      req.user.id,
+      { fcmToken },
+      { new: true }
+    );
+
+    return res.json({ message: 'FCM token registered' });
+  } catch (err) {
+    console.error('register-fcm error:', err.message);
+    return res
+      .status(500)
+      .json({ message: 'Failed to register FCM token' });
   }
 });
 
