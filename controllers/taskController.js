@@ -10,6 +10,9 @@ exports.createTask = async (req, res) => {
   }
 
   try {
+    console.log('createTask body.attachments:', req.body.attachments);
+    console.log('createTask body.attachmentNames:', req.body.attachmentNames);
+
     const task = await Task.create({
       ...req.body,
       client: req.user.id, // ensure owner is set from auth
@@ -41,6 +44,25 @@ exports.getAllTasks = async (req, res) => {
     res
       .status(500)
       .json({ message: 'Error fetching tasks', error: err.message });
+  }
+};
+
+// OPTIONAL: use this to debug a single task from Postman
+exports.getTaskById = async (req, res) => {
+  try {
+    const task = await Task.findById(req.params.taskId).populate(
+      'client',
+      'name email'
+    );
+    if (!task) {
+      return res.status(404).json({ message: 'Task not found' });
+    }
+    res.json(task);
+  } catch (err) {
+    console.error('Error fetching task by id:', err);
+    res
+      .status(500)
+      .json({ message: 'Error fetching task by id', error: err.message });
   }
 };
 
