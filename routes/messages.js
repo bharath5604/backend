@@ -22,13 +22,11 @@ router.get('/task/:taskId', verifyJWT, async (req, res) => {
       return res.status(404).json({ message: 'Task not found' });
     }
 
-    // Enforce: chat only after acceptance (student assigned)
-    if (!task.student) {
-      return res
-        .status(403)
-        .json({ message: 'Chat is available only after a bid is accepted' });
-      // or also check status:
-      // if (task.status !== 'assigned') { ... }
+    // Enforce: chat only after acceptance (student assigned & task assigned)
+    if (!task.student || task.status !== 'assigned') {
+      return res.status(403).json({
+        message: 'Chat is available only after a bid is accepted for this task',
+      });
     }
 
     const userId = req.user.id;
@@ -86,13 +84,11 @@ router.post('/task/:taskId', verifyJWT, async (req, res) => {
       return res.status(404).json({ message: 'Task not found' });
     }
 
-    // Enforce: chat only after acceptance (student assigned)
-    if (!task.student) {
-      return res
-        .status(403)
-        .json({ message: 'Chat is available only after a bid is accepted' });
-      // or:
-      // if (task.status !== 'assigned') { ... }
+    // Enforce: chat only after acceptance (student assigned & task assigned)
+    if (!task.student || task.status !== 'assigned') {
+      return res.status(403).json({
+        message: 'Chat is available only after a bid is accepted for this task',
+      });
     }
 
     const userId = req.user.id;
