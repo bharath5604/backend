@@ -16,10 +16,19 @@ const messageSchema = Joi.object({
 router.get('/task/:taskId', verifyJWT, async (req, res) => {
   try {
     const task = await Task.findById(req.params.taskId).select(
-      'client student'
+      'client student status'
     );
     if (!task) {
       return res.status(404).json({ message: 'Task not found' });
+    }
+
+    // Enforce: chat only after acceptance (student assigned)
+    if (!task.student) {
+      return res
+        .status(403)
+        .json({ message: 'Chat is available only after a bid is accepted' });
+      // or also check status:
+      // if (task.status !== 'assigned') { ... }
     }
 
     const userId = req.user.id;
@@ -70,11 +79,20 @@ router.post('/task/:taskId', verifyJWT, async (req, res) => {
     }
 
     const task = await Task.findById(req.params.taskId).select(
-      'client student title'
+      'client student title status'
     );
     if (!task) {
       console.log('Task not found for id', req.params.taskId);
       return res.status(404).json({ message: 'Task not found' });
+    }
+
+    // Enforce: chat only after acceptance (student assigned)
+    if (!task.student) {
+      return res
+        .status(403)
+        .json({ message: 'Chat is available only after a bid is accepted' });
+      // or:
+      // if (task.status !== 'assigned') { ... }
     }
 
     const userId = req.user.id;
@@ -98,7 +116,7 @@ router.post('/task/:taskId', verifyJWT, async (req, res) => {
       text: value.text.trim(),
     });
 
-    // FIX: use a single populate call on the document
+    // Single populate call
     await message.populate([
       { path: 'sender', select: 'name role' },
       { path: 'receiver', select: 'name role' },
@@ -109,7 +127,7 @@ router.post('/task/:taskId', verifyJWT, async (req, res) => {
     // Fast success response
     res.status(201).json(message);
 
-    // Fire-and-forget push notification (cannot break the API)
+    // Fire-and-forget push notification
     (async () => {
       try {
         await sendNotification(receiver, {
