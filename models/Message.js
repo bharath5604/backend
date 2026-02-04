@@ -18,9 +18,19 @@ const messageSchema = new mongoose.Schema(
       ref: 'User',
       required: true,
     },
+    // Text is now optional because a message can be "file only"
     text: {
       type: String,
-      required: true,
+      trim: true,
+    },
+    // Optional Firebase Storage download URL for an attachment
+    fileUrl: {
+      type: String,
+      trim: true,
+    },
+    // Optional display name for the attachment
+    fileName: {
+      type: String,
       trim: true,
     },
   },
