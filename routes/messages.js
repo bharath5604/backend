@@ -8,7 +8,21 @@ const Joi = require('joi');
 const { sendNotification } = require('../utils/fcm');
 
 const messageSchema = Joi.object({
-  text: Joi.string().min(1).max(2000).required(),
+  text: Joi.string().min(1).max(2000).allow('', null),
+  fileUrl: Joi.string().uri().max(2000).allow('', null),
+  fileName: Joi.string().max(255).allow('', null),
+}).custom((value, helpers) => {
+  const hasText =
+    typeof value.text === 'string' && value.text.trim().length > 0;
+  const hasFileUrl =
+    typeof value.fileUrl === 'string' && value.fileUrl.trim().length > 0;
+
+  if (!hasText && !hasFileUrl) {
+    return helpers.error('any.custom');
+  }
+  return value;
+}, 'text or file validation').messages({
+  'any.custom': 'Message must have either text or a file attachment',
 });
 
 // GET /api/messages/task/:taskId
@@ -25,7 +39,8 @@ router.get('/task/:taskId', verifyJWT, async (req, res) => {
     // Enforce: chat only after acceptance (student assigned & task assigned)
     if (!task.student || task.status !== 'assigned') {
       return res.status(403).json({
-        message: 'Chat is available only after a bid is accepted for this task',
+        message:
+          'Chat is available only after a bid is accepted for this task',
       });
     }
 
@@ -87,7 +102,8 @@ router.post('/task/:taskId', verifyJWT, async (req, res) => {
     // Enforce: chat only after acceptance (student assigned & task assigned)
     if (!task.student || task.status !== 'assigned') {
       return res.status(403).json({
-        message: 'Chat is available only after a bid is accepted for this task',
+        message:
+          'Chat is available only after a bid is accepted for this task',
       });
     }
 
@@ -105,14 +121,22 @@ router.post('/task/:taskId', verifyJWT, async (req, res) => {
 
     const receiver = isClient ? task.student : task.client;
 
+    const trimmedText =
+      typeof value.text === 'string' ? value.text.trim() : '';
+    const trimmedFileUrl =
+      typeof value.fileUrl === 'string' ? value.fileUrl.trim() : '';
+    const trimmedFileName =
+      typeof value.fileName === 'string' ? value.fileName.trim() : '';
+
     const message = await Message.create({
       task: task._id,
       sender: userId,
       receiver,
-      text: value.text.trim(),
+      text: trimmedText || undefined,
+      fileUrl: trimmedFileUrl || undefined,
+      fileName: trimmedFileName || undefined,
     });
 
-    // Single populate call
     await message.populate([
       { path: 'sender', select: 'name role' },
       { path: 'receiver', select: 'name role' },
@@ -120,18 +144,22 @@ router.post('/task/:taskId', verifyJWT, async (req, res) => {
 
     console.log('Message created and populated, id:', message._id.toString());
 
-    // Fast success response
     res.status(201).json(message);
 
-    // Fire-and-forget push notification
     (async () => {
       try {
+        const notificationBody =
+          trimmedText && trimmedText.length > 0
+            ? trimmedText.length > 50
+              ? trimmedText.substring(0, 47) + '...'
+              : trimmedText
+            : trimmedFileName
+            ? `Attachment: ${trimmedFileName}`
+            : 'New message';
+
         await sendNotification(receiver, {
           title: 'New message',
-          body:
-            value.text.length > 50
-              ? value.text.substring(0, 47) + '...'
-              : value.text,
+          body: notificationBody,
           data: {
             type: 'chat_message',
             taskId: task._id.toString(),
