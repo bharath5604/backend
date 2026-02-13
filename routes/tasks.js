@@ -308,7 +308,7 @@ router.post('/:id/submit', verifyJWT, async (req, res) => {
       return res.status(404).json({ message: 'Task not found' });
     }
 
-    // Only assigned student should submit (you can tighten this later if needed)
+    // Only assigned student should submit
     const acceptedBid = await Bid.findOne({
       task: task._id,
       student: req.user.id,
@@ -387,7 +387,11 @@ router.post('/:id/approve', verifyJWT, async (req, res) => {
       const student = await User.findById(payment.student);
       if (student) {
         const credit = payment.netToStudent || payment.amount || 0;
+        // earnings
         student.wallet = (student.wallet || 0) + credit;
+        // NEW: tasks completed for student profile
+        student.tasksCompleted = (student.tasksCompleted || 0) + 1;
+
         await student.save();
 
         await sendNotification(student._id, {

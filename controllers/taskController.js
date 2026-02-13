@@ -116,7 +116,11 @@ exports.approveWork = async (req, res) => {
 
     const student = await User.findById(task.submission.student);
     if (student) {
-      student.wallet += task.budget;
+      // earnings
+      student.wallet = (student.wallet || 0) + task.budget;
+      // NEW: tasks completed (for StudentProfileScreen overview)
+      student.tasksCompleted = (student.tasksCompleted || 0) + 1;
+
       await student.save();
     }
 
@@ -140,6 +144,12 @@ exports.rateStudent = async (req, res) => {
 
     task.rating = rating;
     await task.save();
+
+    // OPTIONAL: if you want overall rating to also depend on this rating
+    // you can update student.totalScore / totalScoreCount here,
+    // but in your current setup this is done in the feedback route
+    // in routes/tasks.js which uses a 0–10 score.[file:295]
+
     res.json(task);
   } catch (err) {
     console.error('Error rating student:', err);
