@@ -18,6 +18,10 @@ const createTaskSchema = Joi.object({
   domain: Joi.string().max(200).allow('', null),
   requiredSkills: Joi.array().items(Joi.string().max(100)).default([]),
   company: Joi.string().max(200).allow('', null),
+
+  // NEW: attachments uploaded by client (Firebase Storage URLs + names)
+  attachments: Joi.array().items(Joi.string().uri().max(2000)).default([]),
+  attachmentNames: Joi.array().items(Joi.string().max(255)).default([]),
 });
 
 const rateSchema = Joi.object({
@@ -58,6 +62,8 @@ router.post('/create', verifyJWT, async (req, res) => {
       domain,
       requiredSkills,
       company,
+      attachments,
+      attachmentNames,
     } = value;
 
     const client = await User.findById(req.user.id).select(
@@ -78,6 +84,9 @@ router.post('/create', verifyJWT, async (req, res) => {
       company: company || client.company,
       requiredSkills: requiredSkills || [],
       status: 'open',
+      // persist attachments
+      attachments: attachments || [],
+      attachmentNames: attachmentNames || [],
     });
 
     res.json(task);
