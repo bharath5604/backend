@@ -24,7 +24,7 @@ const taskSchema = new mongoose.Schema(
 
     status: {
       type: String,
-      enum: ['open', 'assigned', 'completed'],
+      enum: ['open', 'assigned', 'under_review', 'completed'],
       default: 'open',
     },
 
@@ -44,9 +44,21 @@ const taskSchema = new mongoose.Schema(
       default: [],
     },
 
+    // submission from student
     submission: {
+      student: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User',
+      },
       fileUrl: String,
+      notes: {
+        type: String,
+        default: '',
+      },
       approved: { type: Boolean, default: false },
+      submittedAt: {
+        type: Date,
+      },
     },
 
     rating: { type: Number, default: 0 },
