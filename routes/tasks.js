@@ -33,6 +33,12 @@ const feedbackSchema = Joi.object({
   score: Joi.number().integer().min(0).max(10).required(),
 });
 
+// NEW: submission schema (student submit work)
+const submissionSchema = Joi.object({
+  fileUrl: Joi.string().uri().max(2000).required(),
+  notes: Joi.string().max(2000).allow('', null),
+});
+
 // POST /api/tasks/create -> create new task (client)
 router.post('/create', verifyJWT, async (req, res) => {
   try {
@@ -99,15 +105,12 @@ router.post('/create', verifyJWT, async (req, res) => {
 });
 
 // GET /api/tasks (student feed + filters)
-// NEW: supports domain + minBudget + maxBudget; location/company dropped for student browse
 router.get('/', verifyJWT, async (req, res) => {
   try {
     const { location, domain, company, minBudget, maxBudget } = req.query;
 
     const query = { status: 'open' };
 
-    // Keep location/company for compatibility if other parts of app use them,
-    // but student browse will mainly use domain + budget range.
     if (location) {
       query.location = location;
     }
@@ -118,7 +121,6 @@ router.get('/', verifyJWT, async (req, res) => {
       query.company = company;
     }
 
-    // NEW: budget range filter
     if (minBudget || maxBudget) {
       query.budget = {};
       if (minBudget) query.budget.$gte = Number(minBudget);
@@ -146,7 +148,6 @@ router.get('/', verifyJWT, async (req, res) => {
 });
 
 // GET /api/tasks/search
-// NEW: simplified to domain + budget range filters (no location/company/title search)
 router.get('/search', verifyJWT, async (req, res) => {
   try {
     const { domain, minBudget, maxBudget } = req.query;
@@ -279,6 +280,74 @@ router.get('/mine', verifyJWT, async (req, res) => {
   } catch (err) {
     console.error('Error in GET /api/tasks/mine:', err);
     res.status(500).json({ message: 'Server error', error: err.message });
+  }
+});
+
+// NEW: POST /api/tasks/:id/submit (student submits work)
+router.post('/:id/submit', verifyJWT, async (req, res) => {
+  try {
+    if (req.user.role !== 'student') {
+      return res
+        .status(403)
+        .json({ message: 'Only students can submit work' });
+    }
+
+    const { error, value } = submissionSchema.validate(req.body, {
+      abortEarly: false,
+      stripUnknown: true,
+    });
+    if (error) {
+      return res.status(400).json({
+        message: 'Validation error',
+        details: error.details.map((d) => d.message),
+      });
+    }
+
+    const task = await Task.findById(req.params.id).populate('client', 'name');
+    if (!task) {
+      return res.status(404).json({ message: 'Task not found' });
+    }
+
+    // Only assigned student should submit (you can tighten this later if needed)
+    const acceptedBid = await Bid.findOne({
+      task: task._id,
+      student: req.user.id,
+      status: 'accepted',
+    });
+
+    if (!acceptedBid) {
+      return res
+        .status(403)
+        .json({ message: 'You are not the accepted student for this task' });
+    }
+
+    task.submission = {
+      student: req.user.id,
+      fileUrl: value.fileUrl,
+      notes: value.notes || '',
+      approved: false,
+      submittedAt: new Date(),
+    };
+    task.status = 'under_review';
+    await task.save();
+
+    // optional: notify client
+    await sendNotification(task.client, {
+      title: 'New submission received',
+      body: `A submission was made for "${task.title}".`,
+      data: {
+        type: 'task_submitted',
+        taskId: task._id.toString(),
+      },
+    });
+
+    res.json({ message: 'Submission saved', task });
+  } catch (err) {
+    console.error('Error in POST /api/tasks/:id/submit:', err);
+    res.status(500).json({
+      message: 'Error submitting work',
+      error: err.message,
+    });
   }
 });
 
