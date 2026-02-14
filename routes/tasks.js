@@ -322,6 +322,13 @@ router.post('/:id/submit', verifyJWT, async (req, res) => {
         .json({ message: 'You are not the accepted student for this task' });
     }
 
+    // prevent multiple submissions
+    if (task.submission && task.submission.student) {
+      return res
+        .status(400)
+        .json({ message: 'Already submitted for this task' });
+    }
+
     task.submission = {
       student: req.user.id,
       fileUrl: value.fileUrl,
@@ -381,8 +388,18 @@ router.post('/:id/approve', verifyJWT, async (req, res) => {
     if (task.submission.student) {
       const student = await User.findById(task.submission.student);
       if (student) {
+        // find accepted bid to get student's proposed amount
+        const acceptedBid = await Bid.findOne({
+          task: task._id,
+          student: student._id,
+          status: 'accepted',
+        });
+
+        // NOTE: replace 'amount' with your actual bid amount field in Bid model
+        const payout = acceptedBid ? acceptedBid.amount : (task.budget || 0);
+
         student.tasksCompleted = (student.tasksCompleted || 0) + 1;
-        student.wallet = (student.wallet || 0) + (task.budget || 0);
+        student.wallet = (student.wallet || 0) + payout;
         await student.save();
 
         await sendNotification(student._id, {
