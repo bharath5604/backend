@@ -540,19 +540,7 @@ router.post('/:id/feedback', verifyJWT, async (req, res) => {
         .json({ message: 'No submitted student to rate' });
     }
 
-    // prevent multiple feedbacks for same task
-    if (task.score != null) {
-      return res
-        .status(400)
-        .json({ message: 'Feedback already given for this task' });
-    }
-
     const cleanScore = value.score; // 1–5
-
-    // store feedback on task
-    task.feedback = value.text || '';
-    task.score = cleanScore;
-    await task.save();
 
     const student = await User.findById(task.submission.student);
     if (!student) {
@@ -560,6 +548,26 @@ router.post('/:id/feedback', verifyJWT, async (req, res) => {
         .status(404)
         .json({ message: 'Student not found for this task' });
     }
+
+    // Check if this client has already given feedback for this task
+    if (Array.isArray(student.feedbackEntries)) {
+      const already = student.feedbackEntries.some(
+        (entry) =>
+          entry.taskId.toString() === task._id.toString() &&
+          entry.clientId.toString() === req.user.id.toString()
+      );
+      if (already) {
+        return res
+          .status(400)
+          .json({ message: 'Feedback already given for this task' });
+      }
+    }
+
+    // store feedback on task
+    task.feedback = value.text || '';
+    task.score = cleanScore;
+    task.rating = cleanScore;
+    await task.save();
 
     // overall totals (score is 1–5)
     student.totalScore = (student.totalScore || 0) + cleanScore;
