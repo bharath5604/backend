@@ -371,15 +371,17 @@ router.post('/:id/approve', verifyJWT, async (req, res) => {
       return res.status(400).json({ message: 'No submission to approve' });
     }
 
-    // Just mark as approved/completed; no auto payment
+    // Mark as approved/completed
     task.submission.approved = true;
     task.status = 'completed';
     await task.save();
 
-    // Optional: increment tasksCompleted without using Payment
+    // Manual earnings: credit full budget to student.wallet (no gateway, no 1%)
     if (task.submission.student) {
       const student = await User.findById(task.submission.student);
       if (student) {
+        const credit = task.budget || 0;
+        student.wallet = (student.wallet || 0) + credit;
         student.tasksCompleted = (student.tasksCompleted || 0) + 1;
         await student.save();
 
@@ -416,7 +418,7 @@ router.post('/:id/decline', verifyJWT, async (req, res) => {
         .json({ message: 'Not allowed to decline this task' });
     }
 
-    // No held payment logic now; just reopen the task and optionally notify student
+    // Reopen the task and notify student (no payment logic)
     task.status = 'open';
     await task.save();
 
