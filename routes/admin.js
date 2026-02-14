@@ -1,4 +1,3 @@
-// routes/admin.js
 const express = require('express');
 const router = express.Router();
 const User = require('../models/User');
@@ -269,6 +268,65 @@ router.get('/stats/overview', verifyJWT, ensureAdmin, async (req, res) => {
   } catch (err) {
     res.status(500).json({
       message: 'Error fetching overview stats',
+      error: err.message,
+    });
+  }
+});
+
+// Task analytics stats
+// GET /api/admin/stats/tasks
+router.get('/stats/tasks', verifyJWT, ensureAdmin, async (req, res) => {
+  try {
+    // Per-domain counts and completed counts
+    const perDomain = await Task.aggregate([
+      {
+        $group: {
+          _id: '$domain',
+          count: { $sum: 1 },
+          completed: {
+            $sum: {
+              $cond: [{ $eq: ['$status', 'completed'] }, 1, 0],
+            },
+          },
+        },
+      },
+      { $sort: { count: -1 } },
+    ]);
+
+    // Average approval time (createdAt -> updatedAt) for in_progress/completed
+    const approvalAgg = await Task.aggregate([
+      {
+        $match: {
+          createdAt: { $exists: true },
+          updatedAt: { $exists: true },
+          status: { $in: ['in_progress', 'completed'] },
+        },
+      },
+      {
+        $project: {
+          createdAt: 1,
+          updatedAt: 1,
+          approvalTimeMs: { $subtract: ['$updatedAt', '$createdAt'] },
+        },
+      },
+      {
+        $group: {
+          _id: null,
+          averageApprovalTimeMs: { $avg: '$approvalTimeMs' },
+        },
+      },
+    ]);
+
+    const averageApprovalTimeMs =
+      (approvalAgg[0] && approvalAgg[0].averageApprovalTimeMs) || 0;
+
+    res.json({
+      averageApprovalTimeMs,
+      perDomain,
+    });
+  } catch (err) {
+    res.status(500).json({
+      message: 'Error computing task stats',
       error: err.message,
     });
   }
@@ -577,22 +635,24 @@ router.get('/stats/top-students', verifyJWT, ensureAdmin, async (req, res) => {
       students.map((s) => [s._id.toString(), s])
     );
 
-    const result = topByEarnings.map((e) => {
-      const s = studentMap.get(e._id.toString());
-      if (!s) return null;
-      const avgScore =
-        s.totalScoreCount > 0
-          ? s.totalScore / s.totalScoreCount
-          : 0;
-      return {
-        id: s._id,
-        name: s.name,
-        email: s.email,
-        totalEarnings: e.totalEarnings,
-        averageScore: avgScore,
-        wallet: s.wallet || 0,
-      };
-    }).filter(Boolean);
+    const result = topByEarnings
+      .map((e) => {
+        const s = studentMap.get(e._id.toString());
+        if (!s) return null;
+        const avgScore =
+          s.totalScoreCount > 0
+            ? s.totalScore / s.totalScoreCount
+            : 0;
+        return {
+          id: s._id,
+          name: s.name,
+          email: s.email,
+          totalEarnings: e.totalEarnings,
+          averageScore: avgScore,
+          wallet: s.wallet || 0,
+        };
+      })
+      .filter(Boolean);
 
     res.json(result);
   } catch (err) {
