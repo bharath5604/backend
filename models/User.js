@@ -1,11 +1,48 @@
 // models/User.js
 const mongoose = require('mongoose');
 
+// Per-domain aggregate scores (for domain-wise averages)
 const feedbackScoreSchema = new mongoose.Schema(
   {
     domain: { type: String, required: true },
-    totalScore: { type: Number, default: 0 },
-    count: { type: Number, default: 0 },
+    totalScore: { type: Number, default: 0 }, // sum of all 1–5 ratings
+    count: { type: Number, default: 0 },      // number of ratings
+  },
+  { _id: false }
+);
+
+// Individual feedback entries per project/task
+const feedbackEntrySchema = new mongoose.Schema(
+  {
+    taskId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Task',
+      required: true,
+    },
+    taskTitle: { type: String, required: true },
+    clientId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      required: true,
+    },
+    clientName: { type: String, required: true },
+
+    // 1–5 rating given by client
+    rating: {
+      type: Number,
+      min: 1,
+      max: 5,
+      required: true,
+    },
+
+    // Optional free‑text feedback
+    comment: { type: String },
+
+    domain: { type: String }, // domain of the task, useful for filtering
+    createdAt: {
+      type: Date,
+      default: Date.now,
+    },
   },
   { _id: false }
 );
@@ -40,12 +77,25 @@ const userSchema = new mongoose.Schema(
     },
     portfolioUrl: String,
 
-    // student stats for ratings/feedback
+    // student stats for ratings/feedback (averages out of 5)
     tasksCompleted: { type: Number, default: 0 },
+
+    // Sum of all 1–5 ratings received from clients
     totalScore: { type: Number, default: 0 },
+
+    // Number of ratings received
     totalScoreCount: { type: Number, default: 0 },
+
+    // Domain-wise aggregated scores: each entry stores sum and count,
+    // and frontend computes average = totalScore / count (still out of 5).
     feedbackScores: {
       type: [feedbackScoreSchema],
+      default: [],
+    },
+
+    // Detailed feedback entries per project/task
+    feedbackEntries: {
+      type: [feedbackEntrySchema],
       default: [],
     },
 
