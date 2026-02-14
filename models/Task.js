@@ -1,4 +1,3 @@
-// Task.js
 const mongoose = require('mongoose');
 
 const taskSchema = new mongoose.Schema(
@@ -6,9 +5,10 @@ const taskSchema = new mongoose.Schema(
     title: String,
     description: String,
 
+    // Client who created the task
     client: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
 
-    // skills required for this task (used to match with student.skills)
+    // Skills required for this task (used to match with student.skills)
     requiredSkills: {
       type: [String],
       default: [],
@@ -17,7 +17,7 @@ const taskSchema = new mongoose.Schema(
     budget: Number,
     deadline: Date,
 
-    // filters
+    // Filters
     location: String,
     domain: String,
     company: String,
@@ -28,13 +28,13 @@ const taskSchema = new mongoose.Schema(
       default: 'open',
     },
 
-    // assigned student for this task (used by chat and payments)
+    // Assigned student for this task (used by chat and manual payments)
     student: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
     },
 
-    // attachments uploaded by client for this task
+    // Attachments uploaded by client for this task
     attachments: {
       type: [String], // e.g. Firebase Storage download URLs
       default: [],
@@ -44,7 +44,7 @@ const taskSchema = new mongoose.Schema(
       default: [],
     },
 
-    // submission from student
+    // Submission from student
     submission: {
       student: {
         type: mongoose.Schema.Types.ObjectId,
@@ -63,7 +63,7 @@ const taskSchema = new mongoose.Schema(
 
     rating: { type: Number, default: 0 },
 
-    // client feedback and score
+    // Client feedback and score
     feedback: {
       type: String,
       default: '',

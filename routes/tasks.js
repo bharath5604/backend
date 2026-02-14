@@ -19,7 +19,7 @@ const createTaskSchema = Joi.object({
   requiredSkills: Joi.array().items(Joi.string().max(100)).default([]),
   company: Joi.string().max(200).allow('', null),
 
-  // NEW: attachments uploaded by client (Firebase Storage URLs + names)
+  // attachments uploaded by client (Firebase Storage URLs + names)
   attachments: Joi.array().items(Joi.string().uri().max(2000)).default([]),
   attachmentNames: Joi.array().items(Joi.string().max(255)).default([]),
 });
@@ -33,7 +33,7 @@ const feedbackSchema = Joi.object({
   score: Joi.number().integer().min(0).max(10).required(),
 });
 
-// NEW: submission schema (student submit work)
+// submission schema (student submit work)
 const submissionSchema = Joi.object({
   fileUrl: Joi.string().uri().max(2000).required(),
   notes: Joi.string().max(2000).allow('', null),
@@ -283,7 +283,7 @@ router.get('/mine', verifyJWT, async (req, res) => {
   }
 });
 
-// NEW: POST /api/tasks/:id/submit (student submits work)
+// POST /api/tasks/:id/submit (student submits work)
 router.post('/:id/submit', verifyJWT, async (req, res) => {
   try {
     if (req.user.role !== 'student') {
@@ -331,7 +331,7 @@ router.post('/:id/submit', verifyJWT, async (req, res) => {
     task.status = 'under_review';
     await task.save();
 
-    // optional: notify client
+    // notify client
     await sendNotification(task.client, {
       title: 'New submission received',
       body: `A submission was made for "${task.title}".`,
@@ -371,27 +371,16 @@ router.post('/:id/approve', verifyJWT, async (req, res) => {
       return res.status(400).json({ message: 'No submission to approve' });
     }
 
+    // Just mark as approved/completed; no auto payment
     task.submission.approved = true;
     task.status = 'completed';
     await task.save();
 
-    const payment = await Payment.findOne({
-      task: task._id,
-      status: 'held',
-    });
-
-    if (payment) {
-      payment.status = 'released';
-      await payment.save();
-
-      const student = await User.findById(payment.student);
+    // Optional: increment tasksCompleted without using Payment
+    if (task.submission.student) {
+      const student = await User.findById(task.submission.student);
       if (student) {
-        const credit = payment.netToStudent || payment.amount || 0;
-        // earnings
-        student.wallet = (student.wallet || 0) + credit;
-        // NEW: tasks completed for student profile
         student.tasksCompleted = (student.tasksCompleted || 0) + 1;
-
         await student.save();
 
         await sendNotification(student._id, {
@@ -427,34 +416,24 @@ router.post('/:id/decline', verifyJWT, async (req, res) => {
         .json({ message: 'Not allowed to decline this task' });
     }
 
-    const payment = await Payment.findOne({
-      task: task._id,
-      status: 'held',
-    });
-
-    if (!payment) {
-      return res
-        .status(404)
-        .json({ message: 'No held payment found for this task' });
-    }
-
-    payment.status = 'declined';
-    payment.declineReason = reason || 'Not satisfactory';
-    await payment.save();
-
+    // No held payment logic now; just reopen the task and optionally notify student
     task.status = 'open';
     await task.save();
 
-    await sendNotification(payment.student, {
-      title: 'Task declined',
-      body: `Your submission for "${task.title}" was declined.`,
-      data: {
-        type: 'task_declined',
-        taskId: task._id.toString(),
-      },
-    });
+    if (task.submission && task.submission.student) {
+      await sendNotification(task.submission.student, {
+        title: 'Task declined',
+        body: `Your submission for "${task.title}" was declined.${
+          reason ? ' Reason: ' + reason : ''
+        }`,
+        data: {
+          type: 'task_declined',
+          taskId: task._id.toString(),
+        },
+      });
+    }
 
-    res.json({ message: 'Payment declined', payment });
+    res.json({ message: 'Task declined and reopened', task });
   } catch (err) {
     res.status(500).json({ message: 'Server error', error: err.message });
   }
