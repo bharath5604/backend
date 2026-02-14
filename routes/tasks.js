@@ -388,15 +388,31 @@ router.post('/:id/approve', verifyJWT, async (req, res) => {
     if (task.submission.student) {
       const student = await User.findById(task.submission.student);
       if (student) {
-        // find accepted bid to get student's proposed amount
+        // find accepted bid to get student's proposed quote
         const acceptedBid = await Bid.findOne({
           task: task._id,
           student: student._id,
           status: 'accepted',
         });
 
-        // NOTE: replace 'amount' with your actual bid amount field in Bid model
-        const payout = acceptedBid ? acceptedBid.amount : (task.budget || 0);
+        // safe payout calculation using quote when valid, else budget
+        let payout = task.budget || 0;
+        if (acceptedBid && acceptedBid.quote != null) {
+          const q = Number(acceptedBid.quote);
+          if (!Number.isNaN(q)) {
+            payout = q;
+          } else {
+            console.warn(
+              'approve: acceptedBid.quote is NaN for bid',
+              acceptedBid._id.toString()
+            );
+          }
+        } else {
+          console.warn(
+            'approve: no acceptedBid with valid quote found, using task.budget',
+            { taskId: task._id.toString(), studentId: student._id.toString() }
+          );
+        }
 
         student.tasksCompleted = (student.tasksCompleted || 0) + 1;
         student.wallet = (student.wallet || 0) + payout;
@@ -415,6 +431,7 @@ router.post('/:id/approve', verifyJWT, async (req, res) => {
 
     res.json({ message: 'Task approved', task });
   } catch (err) {
+    console.error('Error in POST /api/tasks/:id/approve:', err);
     res.status(500).json({ message: 'Server error', error: err.message });
   }
 });
