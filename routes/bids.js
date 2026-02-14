@@ -64,7 +64,7 @@ router.post('/submit', verifyJWT, async (req, res) => {
   }
 });
 
-// Accept bid (client) -> create Payment with fees
+// Accept bid (client) -> create Payment with NO fees (full amount to student)
 router.post('/accept/:bidId', verifyJWT, async (req, res) => {
   try {
     if (req.user.role !== 'client') {
@@ -98,13 +98,11 @@ router.post('/accept/:bidId', verifyJWT, async (req, res) => {
     );
 
     const amount = task.budget || bid.quote || 0;
-    const platformFeeClient = +(amount * 0.005).toFixed(2); // 0.5%
-    const platformFeeStudent = +(amount * 0.005).toFixed(2); // 0.5%
-    const netToStudent = +(
-      amount -
-      platformFeeClient -
-      platformFeeStudent
-    ).toFixed(2);
+
+    // No platform fees: full amount goes to student
+    const platformFeeClient = 0;
+    const platformFeeStudent = 0;
+    const netToStudent = amount;
 
     const payment = await Payment.create({
       task: task._id,
