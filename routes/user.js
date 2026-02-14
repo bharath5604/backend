@@ -12,10 +12,6 @@ const updateMeSchema = Joi.object({
   skills: Joi.array().items(Joi.string().max(100)).optional(),
   portfolioUrl: Joi.string().uri().max(500).allow('', null),
 
-  // shared profile images
-  avatarUrl: Joi.string().uri().max(500).allow('', null),
-  bannerUrl: Joi.string().uri().max(500).allow('', null),
-
   // client-only fields
   company: Joi.string().max(200).allow('', null),
   location: Joi.string().max(200).allow('', null),
@@ -57,7 +53,6 @@ async function applyProfileUpdate(req, res) {
     delete updates.location;
     delete updates.domain;
     delete updates.description;
-    delete updates.bannerUrl;
   }
 
   try {
@@ -90,7 +85,7 @@ router.patch('/me', verifyJWT, async (req, res) => {
 router.get('/students/:id/public-profile', async (req, res) => {
   try {
     const student = await User.findById(req.params.id).select(
-      'name role bio skills portfolioUrl totalScore totalScoreCount feedbackScores avatarUrl'
+      'name role bio skills portfolioUrl totalScore totalScoreCount feedbackScores'
     );
     if (!student || student.role !== 'student') {
       return res.status(404).json({ message: 'Student not found' });
@@ -114,7 +109,6 @@ router.get('/students/:id/public-profile', async (req, res) => {
       bio: student.bio,
       skills: student.skills,
       portfolioUrl: student.portfolioUrl,
-      avatarUrl: student.avatarUrl,
       totalScore: student.totalScore,
       totalScoreCount: student.totalScoreCount,
       totalAverageScore,
@@ -132,7 +126,7 @@ router.get('/students/:id/public-profile', async (req, res) => {
 router.get('/clients/:id/public-profile', async (req, res) => {
   try {
     const client = await User.findById(req.params.id).select(
-      'name role company location domain description avatarUrl bannerUrl'
+      'name role company location domain description'
     );
     if (!client || client.role !== 'client') {
       return res.status(404).json({ message: 'Client not found' });
@@ -146,8 +140,6 @@ router.get('/clients/:id/public-profile', async (req, res) => {
       location: client.location,
       domain: client.domain,
       description: client.description,
-      avatarUrl: client.avatarUrl,
-      bannerUrl: client.bannerUrl,
     });
   } catch (err) {
     res.status(500).json({

@@ -31,10 +31,6 @@ const userSchema = new mongoose.Schema(
     // For clients: main domain/category of tasks they usually post
     domain: String,
 
-    // shared profile images
-    avatarUrl: String,  // profile photo (student & client)
-    bannerUrl: String,  // banner image (mainly for clients)
-
     // student profile fields
     bio: String,
     // For students: list of skill/domain tags used to filter tasks in feed

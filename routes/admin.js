@@ -328,7 +328,7 @@ router.get('/stats/overview', verifyJWT, ensureAdmin, async (req, res) => {
   }
 });
 
-// NEW: Domain-level users/projects/bids
+// Domain-level users/projects/bids
 // GET /api/admin/stats/by-domain
 router.get('/stats/by-domain', verifyJWT, ensureAdmin, async (req, res) => {
   try {
