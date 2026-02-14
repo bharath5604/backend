@@ -527,6 +527,7 @@ router.post('/:id/feedback', verifyJWT, async (req, res) => {
 
     const cleanScore = value.score;
 
+    // store feedback on task
     task.feedback = value.text || '';
     task.score = cleanScore;
     await task.save();
@@ -538,9 +539,15 @@ router.post('/:id/feedback', verifyJWT, async (req, res) => {
         .json({ message: 'Student not found for this task' });
     }
 
+    // overall totals
     student.totalScore = (student.totalScore || 0) + cleanScore;
     student.totalScoreCount = (student.totalScoreCount || 0) + 1;
+    student.totalAverageScore =
+      student.totalScoreCount > 0
+        ? student.totalScore / student.totalScoreCount
+        : 0;
 
+    // per-domain feedback
     const domain = task.domain || 'general';
     if (!Array.isArray(student.feedbackScores)) {
       student.feedbackScores = [];
@@ -551,16 +558,30 @@ router.post('/:id/feedback', verifyJWT, async (req, res) => {
         domain,
         totalScore: cleanScore,
         count: 1,
+        averageScore: cleanScore,
       });
     } else {
       entry.totalScore += cleanScore;
       entry.count += 1;
+      entry.averageScore = entry.totalScore / entry.count;
     }
 
     await student.save();
 
-    res.json({ message: 'Feedback saved', task });
+    return res.status(201).json({
+      message: 'Feedback saved',
+      taskId: task._id,
+      studentId: student._id,
+      totalScore: student.totalScore,
+      totalScoreCount: student.totalScoreCount,
+      totalAverageScore: student.totalAverageScore,
+      domain: domain,
+      domainAverageScore: student.feedbackScores.find(
+        (e) => e.domain === domain
+      )?.averageScore,
+    });
   } catch (err) {
+    console.error('Error in POST /api/tasks/:id/feedback:', err);
     res.status(500).json({
       message: 'Error saving feedback',
       error: err.message,
