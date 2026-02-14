@@ -1,3 +1,4 @@
+// models/Task.js
 const mongoose = require('mongoose');
 
 const taskSchema = new mongoose.Schema(
@@ -6,7 +7,7 @@ const taskSchema = new mongoose.Schema(
     description: String,
 
     // Client who created the task
-    client: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    client: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
 
     // Skills required for this task (used to match with student.skills)
     requiredSkills: {
@@ -59,15 +60,36 @@ const taskSchema = new mongoose.Schema(
       submittedAt: {
         type: Date,
       },
+      declined: {
+        type: Boolean,
+        default: false,
+      },
+      declineReason: {
+        type: String,
+        default: '',
+      },
+      // Optional: when client reviewed (approved/declined)
+      reviewedAt: {
+        type: Date,
+      },
     },
 
-    rating: { type: Number, default: 0 },
+    // Single rating given by client to this task (1–5)
+    rating: {
+      type: Number,
+      min: 1,
+      max: 5,
+      default: 0,
+    },
 
-    // Client feedback and score
+    // Client feedback text for this task
     feedback: {
       type: String,
       default: '',
     },
+
+    // Optional numeric score if you want to keep a different weighting
+    // (e.g. rating * 2), but student averages should use 1–5 rating.
     score: {
       type: Number,
       default: 0,
