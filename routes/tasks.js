@@ -525,6 +525,11 @@ router.post('/:id/feedback', verifyJWT, async (req, res) => {
         .json({ message: 'No submitted student to rate' });
     }
 
+    // prevent multiple feedbacks for same task
+    if (task.score != null) {
+      return res.status(400).json({ message: 'Feedback already given for this task' });
+    }
+
     const cleanScore = value.score;
 
     // store feedback on task
@@ -539,13 +544,17 @@ router.post('/:id/feedback', verifyJWT, async (req, res) => {
         .json({ message: 'Student not found for this task' });
     }
 
-    // overall totals
+    // overall totals (score is 0–10, but average exposed as 0–5)
     student.totalScore = (student.totalScore || 0) + cleanScore;
     student.totalScoreCount = (student.totalScoreCount || 0) + 1;
-    student.totalAverageScore =
+
+    const rawAvg10 =
       student.totalScoreCount > 0
         ? student.totalScore / student.totalScoreCount
         : 0;
+
+    // convert to 0–5 and round to 2 decimals
+    student.totalAverageScore = Math.round((rawAvg10 / 2) * 100) / 100;
 
     // per-domain feedback
     const domain = task.domain || 'general';
@@ -554,16 +563,19 @@ router.post('/:id/feedback', verifyJWT, async (req, res) => {
     }
     const entry = student.feedbackScores.find((e) => e.domain === domain);
     if (!entry) {
+      const domainRawAvg10 = cleanScore;
+      const domainAvg5 = Math.round((domainRawAvg10 / 2) * 100) / 100;
       student.feedbackScores.push({
         domain,
         totalScore: cleanScore,
         count: 1,
-        averageScore: cleanScore,
+        averageScore: domainAvg5,
       });
     } else {
       entry.totalScore += cleanScore;
       entry.count += 1;
-      entry.averageScore = entry.totalScore / entry.count;
+      const domainRawAvg10 = entry.totalScore / entry.count;
+      entry.averageScore = Math.round((domainRawAvg10 / 2) * 100) / 100;
     }
 
     await student.save();
