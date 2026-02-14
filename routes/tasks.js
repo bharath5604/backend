@@ -509,7 +509,7 @@ router.post('/:id/rate', verifyJWT, async (req, res) => {
   }
 });
 
-// POST /api/tasks/:id/feedback
+
 // POST /api/tasks/:id/feedback
 router.post('/:id/feedback', verifyJWT, async (req, res) => {
   try {
@@ -550,7 +550,7 @@ router.post('/:id/feedback', verifyJWT, async (req, res) => {
         .json({ message: 'Student not found for this task' });
     }
 
-    // DEBUG: see what entries exist
+    // DEBUG: see what entries exist (optional)
     console.log('feedbackEntries before check:', student.feedbackEntries);
 
     // Check if this client has already given feedback for this task
@@ -587,27 +587,31 @@ router.post('/:id/feedback', verifyJWT, async (req, res) => {
     if (!Array.isArray(student.feedbackScores)) {
       student.feedbackScores = [];
     }
-    const entry = student.feedbackScores.find((e) => e.domain === domain);
-    if (!entry) {
+    const aggEntry = student.feedbackScores.find((e) => e.domain === domain);
+    if (!aggEntry) {
       student.feedbackScores.push({
         domain,
         totalScore: cleanScore,
         count: 1,
       });
     } else {
-      entry.totalScore += cleanScore;
-      entry.count += 1;
+      aggEntry.totalScore += cleanScore;
+      aggEntry.count += 1;
     }
 
     // detailed feedback entry for student's own profile
     if (!Array.isArray(student.feedbackEntries)) {
       student.feedbackEntries = [];
     }
+
+    // load client to get latest name
+    const client = await User.findById(task.client).select('name');
+
     student.feedbackEntries.push({
       taskId: task._id,
       taskTitle: task.title,
       clientId: task.client,
-      clientName: req.user.name, // from JWT
+      clientName: client ? client.name : 'Client',
       rating: cleanScore,
       comment: value.text || '',
       domain,
@@ -647,6 +651,7 @@ router.post('/:id/feedback', verifyJWT, async (req, res) => {
     });
   }
 });
+
 
 
 // DELETE /api/tasks/:id -> delete task (client only)
