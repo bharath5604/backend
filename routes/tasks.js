@@ -548,6 +548,21 @@ router.post('/:id/feedback', verifyJWT, async (req, res) => {
       entry.count += 1;
     }
 
+    // detailed feedback entry for student's own profile
+    if (!Array.isArray(student.feedbackEntries)) {
+      student.feedbackEntries = [];
+    }
+    student.feedbackEntries.push({
+      taskId: task._id,
+      taskTitle: task.title,
+      clientId: task.client,
+      clientName: req.user.name, // from JWT-attached user
+      rating: cleanScore,
+      comment: value.text || '',
+      domain,
+      createdAt: new Date(),
+    });
+
     await student.save();
 
     const avgScore =
