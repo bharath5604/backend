@@ -28,9 +28,10 @@ const rateSchema = Joi.object({
   rating: Joi.number().integer().min(1).max(5).required(),
 });
 
+// score now 1–5, same as rating
 const feedbackSchema = Joi.object({
   text: Joi.string().max(2000).allow('', null),
-  score: Joi.number().integer().min(0).max(10).required(),
+  score: Joi.number().integer().min(1).max(5).required(),
 });
 
 // submission schema (student submit work)
@@ -371,16 +372,17 @@ router.post('/:id/approve', verifyJWT, async (req, res) => {
       return res.status(400).json({ message: 'No submission to approve' });
     }
 
-    // Just mark as approved/completed; no auto payment
+    // mark as approved/completed
     task.submission.approved = true;
     task.status = 'completed';
     await task.save();
 
-    // Optional: increment tasksCompleted without using Payment
+    // increment tasksCompleted and wallet (earnings)
     if (task.submission.student) {
       const student = await User.findById(task.submission.student);
       if (student) {
         student.tasksCompleted = (student.tasksCompleted || 0) + 1;
+        student.wallet = (student.wallet || 0) + (task.budget || 0);
         await student.save();
 
         await sendNotification(student._id, {
@@ -416,7 +418,7 @@ router.post('/:id/decline', verifyJWT, async (req, res) => {
         .json({ message: 'Not allowed to decline this task' });
     }
 
-    // No held payment logic now; just reopen the task and optionally notify student
+    // reopen the task
     task.status = 'open';
     await task.save();
 
@@ -506,10 +508,12 @@ router.post('/:id/feedback', verifyJWT, async (req, res) => {
 
     // prevent multiple feedbacks for same task
     if (task.score != null) {
-      return res.status(400).json({ message: 'Feedback already given for this task' });
+      return res
+        .status(400)
+        .json({ message: 'Feedback already given for this task' });
     }
 
-    const cleanScore = value.score;
+    const cleanScore = value.score; // 1–5
 
     // store feedback on task
     task.feedback = value.text || '';
@@ -523,17 +527,9 @@ router.post('/:id/feedback', verifyJWT, async (req, res) => {
         .json({ message: 'Student not found for this task' });
     }
 
-    // overall totals (score is 0–10, but average exposed as 0–5)
+    // overall totals (score is 1–5)
     student.totalScore = (student.totalScore || 0) + cleanScore;
     student.totalScoreCount = (student.totalScoreCount || 0) + 1;
-
-    const rawAvg10 =
-      student.totalScoreCount > 0
-        ? student.totalScore / student.totalScoreCount
-        : 0;
-
-    // convert to 0–5 and round to 2 decimals
-    student.totalAverageScore = Math.round((rawAvg10 / 2) * 100) / 100;
 
     // per-domain feedback
     const domain = task.domain || 'general';
@@ -542,22 +538,30 @@ router.post('/:id/feedback', verifyJWT, async (req, res) => {
     }
     const entry = student.feedbackScores.find((e) => e.domain === domain);
     if (!entry) {
-      const domainRawAvg10 = cleanScore;
-      const domainAvg5 = Math.round((domainRawAvg10 / 2) * 100) / 100;
       student.feedbackScores.push({
         domain,
         totalScore: cleanScore,
         count: 1,
-        averageScore: domainAvg5,
       });
     } else {
       entry.totalScore += cleanScore;
       entry.count += 1;
-      const domainRawAvg10 = entry.totalScore / entry.count;
-      entry.averageScore = Math.round((domainRawAvg10 / 2) * 100) / 100;
     }
 
     await student.save();
+
+    const avgScore =
+      student.totalScoreCount > 0
+        ? student.totalScore / student.totalScoreCount
+        : 0;
+
+    const domainEntry = student.feedbackScores.find(
+      (e) => e.domain === domain
+    );
+    const domainAvg =
+      domainEntry && domainEntry.count > 0
+        ? domainEntry.totalScore / domainEntry.count
+        : 0;
 
     return res.status(201).json({
       message: 'Feedback saved',
@@ -565,11 +569,9 @@ router.post('/:id/feedback', verifyJWT, async (req, res) => {
       studentId: student._id,
       totalScore: student.totalScore,
       totalScoreCount: student.totalScoreCount,
-      totalAverageScore: student.totalAverageScore,
-      domain: domain,
-      domainAverageScore: student.feedbackScores.find(
-        (e) => e.domain === domain
-      )?.averageScore,
+      averageScore: avgScore, // 0–5
+      domain,
+      domainAverageScore: domainAvg, // 0–5
     });
   } catch (err) {
     console.error('Error in POST /api/tasks/:id/feedback:', err);
