@@ -7,22 +7,30 @@ const paymentSchema = new mongoose.Schema(
     client: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     student: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
 
-    // Full task amount (no platform fee cuts)
+    // Full task amount (before platform fees)
     amount: { type: Number, required: true },
     currency: { type: String, default: 'INR' },
 
-    // Direct net to student (same as amount when you credit it)
+    // Platform fees (split between client and student)
+    platformFeeClient: { type: Number, default: 0 },
+    platformFeeStudent: { type: Number, default: 0 },
+
+    // Net amount that should go to the student
     netToStudent: { type: Number, default: 0 },
 
-    // Simple status just for bookkeeping (no escrow / hold logic)
+    // Status with simple held/flow lifecycle
     status: {
       type: String,
-      enum: ['created', 'completed', 'cancelled'],
+      enum: ['created', 'held', 'completed', 'cancelled'],
       default: 'created',
     },
 
     // Optional manual notes, e.g., “paid offline on UPI” etc.
     declineReason: { type: String },
+
+    // Optional gateway info
+    gateway: { type: String, default: 'razorpay' },
+    gatewayOrderId: { type: String },
   },
   { timestamps: true }
 );

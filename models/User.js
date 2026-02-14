@@ -77,7 +77,7 @@ const userSchema = new mongoose.Schema(
     },
     portfolioUrl: String,
 
-    // student stats for ratings/feedback (averages out of 5)
+    // student stats for ratings/feedback
     tasksCompleted: { type: Number, default: 0 },
 
     // Sum of all 1–5 ratings received from clients
@@ -87,7 +87,7 @@ const userSchema = new mongoose.Schema(
     totalScoreCount: { type: Number, default: 0 },
 
     // Domain-wise aggregated scores: each entry stores sum and count,
-    // and frontend computes average = totalScore / count (still out of 5).
+    // frontend computes average = totalScore / count (out of 5).
     feedbackScores: {
       type: [feedbackScoreSchema],
       default: [],
@@ -124,5 +124,11 @@ const userSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+// Optional virtual for average rating (0–5), handy in some APIs
+userSchema.virtual('averageScore').get(function () {
+  if (!this.totalScoreCount || this.totalScoreCount === 0) return 0;
+  return this.totalScore / this.totalScoreCount;
+});
 
 module.exports = mongoose.model('User', userSchema);

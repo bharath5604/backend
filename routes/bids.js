@@ -91,7 +91,7 @@ router.post('/accept/:bidId', verifyJWT, async (req, res) => {
     task.student = bid.student; // link accepted student here
     await task.save();
 
-    // NEW: auto-reject all other bids for this task
+    // Auto-reject all other bids for this task
     await Bid.updateMany(
       { task: bid.task, _id: { $ne: bid._id } },
       { $set: { status: 'rejected' } }
@@ -116,7 +116,7 @@ router.post('/accept/:bidId', verifyJWT, async (req, res) => {
       platformFeeClient,
       platformFeeStudent,
       netToStudent,
-      status: 'held', // held until approval
+      status: 'held', // make sure 'held' is in Payment status enum
       gateway: 'razorpay',
     });
 
@@ -200,7 +200,7 @@ router.get('/my', verifyJWT, async (req, res) => {
     const taskIds = tasks.map((t) => t._id);
 
     const bids = await Bid.find({ task: { $in: taskIds } })
-      .populate('student', 'name email')
+      .populate('student', 'name email totalScore totalScoreCount')
       .populate('task', 'title');
 
     res.json(bids);
@@ -227,7 +227,7 @@ router.get('/task/:taskId', verifyJWT, async (req, res) => {
     }
 
     const bids = await Bid.find({ task: task._id })
-      .populate('student', 'name email')
+      .populate('student', 'name email totalScore totalScoreCount')
       .sort({ createdAt: -1 });
 
     res.json({ task, bids });
