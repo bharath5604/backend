@@ -204,83 +204,13 @@ router.patch(
   }
 );
 
-// Task analytics for charts
-// GET /api/admin/stats/tasks
-router.get('/stats/tasks', verifyJWT, ensureAdmin, async (req, res) => {
-  try {
-    const perDomain = await Task.aggregate([
-      {
-        $group: {
-          _id: '$domain',
-          count: { $sum: 1 },
-          completed: {
-            $sum: {
-              $cond: [{ $eq: ['$status', 'completed'] }, 1, 0],
-            },
-          },
-        },
-      },
-    ]);
+// ======== HIGH-LEVEL ANALYTICS STATS ========
 
-    const approvalTimes = await Task.aggregate([
-      {
-        $match: {
-          'submission.approved': true,
-          createdAt: { $exists: true },
-          updatedAt: { $exists: true },
-        },
-      },
-      {
-        $project: {
-          diffMs: { $subtract: ['$updatedAt', '$createdAt'] },
-        },
-      },
-      {
-        $group: {
-          _id: null,
-          avgMs: { $avg: '$diffMs' },
-        },
-      },
-    ]);
-
-    const avgMs = approvalTimes.length ? approvalTimes[0].avgMs : 0;
-
-    res.json({
-      perDomain,
-      averageApprovalTimeMs: avgMs,
-    });
-  } catch (err) {
-    res
-      .status(500)
-      .json({ message: 'Error computing task stats', error: err.message });
-  }
-});
-
-// Top students for leaderboard chart
-// GET /api/admin/stats/top-students?limit=10
-router.get('/stats/top-students', verifyJWT, ensureAdmin, async (req, res) => {
-  try {
-    const limit = parseInt(req.query.limit, 10) || 10;
-
-    const students = await User.find({ role: 'student' })
-      .select('name email totalScore totalScoreCount feedbackScores wallet')
-      .sort({ totalScore: -1 })
-      .limit(limit);
-
-    res.json(students);
-  } catch (err) {
-    res.status(500).json({
-      message: 'Error fetching top students',
-      error: err.message,
-    });
-  }
-});
-
-// Overall overview stats (for cards on dashboard)
+// Overall overview stats (for KPI cards on dashboard)
 // GET /api/admin/stats/overview
 router.get('/stats/overview', verifyJWT, ensureAdmin, async (req, res) => {
   try {
-    const [userCounts, taskCounts, bidCount] = await Promise.all([
+    const [userCounts, taskCounts, bidCount, paymentAgg] = await Promise.all([
       User.aggregate([
         {
           $group: {
@@ -298,6 +228,15 @@ router.get('/stats/overview', verifyJWT, ensureAdmin, async (req, res) => {
         },
       ]),
       Bid.countDocuments({}),
+      Payment.aggregate([
+        {
+          $group: {
+            _id: null,
+            totalAmount: { $sum: '$amount' },
+            totalNetToStudent: { $sum: '$netToStudent' },
+          },
+        },
+      ]),
     ]);
 
     const totalStudents =
@@ -306,6 +245,11 @@ router.get('/stats/overview', verifyJWT, ensureAdmin, async (req, res) => {
       userCounts.find((u) => u._id === 'client')?.count || 0;
     const totalAdmins =
       userCounts.find((u) => u._id === 'admin')?.count || 0;
+
+    const paymentsSummary = paymentAgg[0] || {
+      totalAmount: 0,
+      totalNetToStudent: 0,
+    };
 
     const result = {
       usersByRole: userCounts,
@@ -317,6 +261,8 @@ router.get('/stats/overview', verifyJWT, ensureAdmin, async (req, res) => {
       totalNonAdminUsers: totalStudents + totalClients,
       totalTasks: taskCounts.reduce((s, t) => s + t.count, 0),
       totalBids: bidCount,
+      totalPaymentsAmount: paymentsSummary.totalAmount || 0,
+      totalPaymentsNetToStudent: paymentsSummary.totalNetToStudent || 0,
     };
 
     res.json(result);
@@ -328,43 +274,263 @@ router.get('/stats/overview', verifyJWT, ensureAdmin, async (req, res) => {
   }
 });
 
-// Domain-level users/projects/bids
+// Time-series stats for users, tasks, payments
+// GET /api/admin/stats/timeseries?range=30d|90d&bucket=day|week
+router.get('/stats/timeseries', verifyJWT, ensureAdmin, async (req, res) => {
+  try {
+    const range = req.query.range === '90d' ? 90 : 30;
+    const bucket = req.query.bucket === 'week' ? 'week' : 'day';
+
+    const now = new Date();
+    const from = new Date(now);
+    from.setDate(from.getDate() - range);
+
+    const dateExpr =
+      bucket === 'week'
+        ? {
+            $dateTrunc: {
+              date: '$createdAt',
+              unit: 'week',
+            },
+          }
+        : {
+            $dateTrunc: {
+              date: '$createdAt',
+              unit: 'day',
+            },
+          };
+
+    const [users, tasks, payments] = await Promise.all([
+      User.aggregate([
+        { $match: { createdAt: { $gte: from } } },
+        {
+          $group: {
+            _id: dateExpr,
+            total: { $sum: 1 },
+            students: {
+              $sum: {
+                $cond: [{ $eq: ['$role', 'student'] }, 1, 0],
+              },
+            },
+            clients: {
+              $sum: {
+                $cond: [{ $eq: ['$role', 'client'] }, 1, 0],
+              },
+            },
+          },
+        },
+        { $sort: { _id: 1 } },
+      ]),
+      Task.aggregate([
+        { $match: { createdAt: { $gte: from } } },
+        {
+          $group: {
+            _id: dateExpr,
+            created: { $sum: 1 },
+            completed: {
+              $sum: {
+                $cond: [{ $eq: ['$status', 'completed'] }, 1, 0],
+              },
+            },
+          },
+        },
+        { $sort: { _id: 1 } },
+      ]),
+      Payment.aggregate([
+        { $match: { createdAt: { $gte: from } } },
+        {
+          $group: {
+            _id: dateExpr,
+            count: { $sum: 1 },
+            totalAmount: { $sum: '$amount' },
+            totalNetToStudent: { $sum: '$netToStudent' },
+          },
+        },
+        { $sort: { _id: 1 } },
+      ]),
+    ]);
+
+    res.json({
+      rangeDays: range,
+      bucket,
+      users,
+      tasks,
+      payments,
+    });
+  } catch (err) {
+    res.status(500).json({
+      message: 'Error computing time-series stats',
+      error: err.message,
+    });
+  }
+});
+
+// Task funnel & timing metrics
+// GET /api/admin/stats/task-funnel
+router.get('/stats/task-funnel', verifyJWT, ensureAdmin, async (req, res) => {
+  try {
+    const [funnelCounts, timingAgg] = await Promise.all([
+      Task.aggregate([
+        {
+          $group: {
+            _id: '$status',
+            count: { $sum: 1 },
+          },
+        },
+      ]),
+      Task.aggregate([
+        {
+          $match: {
+            createdAt: { $exists: true },
+            updatedAt: { $exists: true },
+            status: 'completed',
+          },
+        },
+        {
+          $project: {
+            createdAt: 1,
+            firstBidAt: '$firstBidAt',
+            completedAt: '$updatedAt',
+          },
+        },
+        {
+          $group: {
+            _id: null,
+            avgToFirstBidMs: {
+              $avg: {
+                $cond: [
+                  { $and: ['$firstBidAt', '$createdAt'] },
+                  { $subtract: ['$firstBidAt', '$createdAt'] },
+                  null,
+                ],
+              },
+            },
+            avgToCompletionMs: {
+              $avg: {
+                $subtract: ['$completedAt', '$createdAt'],
+              },
+            },
+          },
+        },
+      ]),
+    ]);
+
+    const timing = timingAgg[0] || {
+      avgToFirstBidMs: 0,
+      avgToCompletionMs: 0,
+    };
+
+    res.json({
+      funnelCounts,
+      avgToFirstBidMs: timing.avgToFirstBidMs || 0,
+      avgToCompletionMs: timing.avgToCompletionMs || 0,
+    });
+  } catch (err) {
+    res.status(500).json({
+      message: 'Error computing task funnel stats',
+      error: err.message,
+    });
+  }
+});
+
+// Domain-level users/projects/bids/payments
 // GET /api/admin/stats/by-domain
 router.get('/stats/by-domain', verifyJWT, ensureAdmin, async (req, res) => {
   try {
-    const [usersByDomain, tasksByDomain, bidsByDomain] = await Promise.all([
-      User.aggregate([
-        { $match: { domain: { $exists: true, $ne: '' } } },
-        { $group: { _id: '$domain', count: { $sum: 1 } } },
-      ]),
-      Task.aggregate([
-        { $match: { domain: { $exists: true, $ne: '' } } },
-        { $group: { _id: '$domain', count: { $sum: 1 } } },
-      ]),
-      Bid.aggregate([
-        { $match: { domain: { $exists: true, $ne: '' } } },
-        { $group: { _id: '$domain', count: { $sum: 1 } } },
-      ]),
-    ]);
+    const [usersByDomain, tasksByDomain, bidsByDomain, paymentsByDomain] =
+      await Promise.all([
+        User.aggregate([
+          { $match: { domain: { $exists: true, $ne: '' } } },
+          { $group: { _id: '$domain', count: { $sum: 1 } } },
+        ]),
+        Task.aggregate([
+          { $match: { domain: { $exists: true, $ne: '' } } },
+          {
+            $group: {
+              _id: '$domain',
+              count: { $sum: 1 },
+              completed: {
+                $sum: {
+                  $cond: [{ $eq: ['$status', 'completed'] }, 1, 0],
+                },
+              },
+            },
+          },
+        ]),
+        Bid.aggregate([
+          { $match: { domain: { $exists: true, $ne: '' } } },
+          { $group: { _id: '$domain', count: { $sum: 1 } } },
+        ]),
+        Payment.aggregate([
+          { $match: { domain: { $exists: true, $ne: '' } } },
+          {
+            $group: {
+              _id: '$domain',
+              totalAmount: { $sum: '$amount' },
+              totalNetToStudent: { $sum: '$netToStudent' },
+            },
+          },
+        ]),
+      ]);
 
     const domainsMap = {};
 
     usersByDomain.forEach((u) => {
       domainsMap[u._id] =
-        domainsMap[u._id] || { domain: u._id, users: 0, projects: 0, bids: 0 };
+        domainsMap[u._id] || {
+          domain: u._id,
+          users: 0,
+          projects: 0,
+          completedProjects: 0,
+          bids: 0,
+          totalAmount: 0,
+          totalNetToStudent: 0,
+        };
       domainsMap[u._id].users = u.count;
     });
 
     tasksByDomain.forEach((t) => {
       domainsMap[t._id] =
-        domainsMap[t._id] || { domain: t._id, users: 0, projects: 0, bids: 0 };
+        domainsMap[t._id] || {
+          domain: t._id,
+          users: 0,
+          projects: 0,
+          completedProjects: 0,
+          bids: 0,
+          totalAmount: 0,
+          totalNetToStudent: 0,
+        };
       domainsMap[t._id].projects = t.count;
+      domainsMap[t._id].completedProjects = t.completed;
     });
 
     bidsByDomain.forEach((b) => {
       domainsMap[b._id] =
-        domainsMap[b._id] || { domain: b._id, users: 0, projects: 0, bids: 0 };
+        domainsMap[b._id] || {
+          domain: b._id,
+          users: 0,
+          projects: 0,
+          completedProjects: 0,
+          bids: 0,
+          totalAmount: 0,
+          totalNetToStudent: 0,
+        };
       domainsMap[b._id].bids = b.count;
+    });
+
+    paymentsByDomain.forEach((p) => {
+      domainsMap[p._id] =
+        domainsMap[p._id] || {
+          domain: p._id,
+          users: 0,
+          projects: 0,
+          completedProjects: 0,
+          bids: 0,
+          totalAmount: 0,
+          totalNetToStudent: 0,
+        };
+      domainsMap[p._id].totalAmount = p.totalAmount || 0;
+      domainsMap[p._id].totalNetToStudent = p.totalNetToStudent || 0;
     });
 
     const result = Object.values(domainsMap);
@@ -372,6 +538,66 @@ router.get('/stats/by-domain', verifyJWT, ensureAdmin, async (req, res) => {
   } catch (err) {
     res.status(500).json({
       message: 'Error computing domain stats',
+      error: err.message,
+    });
+  }
+});
+
+// Top students for leaderboard chart (by earnings + score)
+// GET /api/admin/stats/top-students?limit=10
+router.get('/stats/top-students', verifyJWT, ensureAdmin, async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit, 10) || 10;
+
+    // Join payments to compute total earnings per student
+    const topByEarnings = await Payment.aggregate([
+      {
+        $match: {
+          status: 'released',
+          student: { $exists: true, $ne: null },
+        },
+      },
+      {
+        $group: {
+          _id: '$student',
+          totalEarnings: { $sum: '$netToStudent' },
+        },
+      },
+      { $sort: { totalEarnings: -1 } },
+      { $limit: limit },
+    ]);
+
+    const studentIds = topByEarnings.map((p) => p._id);
+    const students = await User.find({
+      _id: { $in: studentIds },
+      role: 'student',
+    }).select('name email totalScore totalScoreCount wallet');
+
+    const studentMap = new Map(
+      students.map((s) => [s._id.toString(), s])
+    );
+
+    const result = topByEarnings.map((e) => {
+      const s = studentMap.get(e._id.toString());
+      if (!s) return null;
+      const avgScore =
+        s.totalScoreCount > 0
+          ? s.totalScore / s.totalScoreCount
+          : 0;
+      return {
+        id: s._id,
+        name: s.name,
+        email: s.email,
+        totalEarnings: e.totalEarnings,
+        averageScore: avgScore,
+        wallet: s.wallet || 0,
+      };
+    }).filter(Boolean);
+
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({
+      message: 'Error fetching top students',
       error: err.message,
     });
   }

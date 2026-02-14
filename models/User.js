@@ -55,6 +55,9 @@ const userSchema = new mongoose.Schema(
     // FCM token for push notifications
     fcmToken: String,
 
+    // Last login timestamp (for analytics: active users, retention)
+    lastLoginAt: { type: Date },
+
     // Approval / ban flag:
     // - student: auto true (can use app immediately)
     // - client: requires admin approval (starts false)
