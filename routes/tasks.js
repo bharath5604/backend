@@ -510,6 +510,7 @@ router.post('/:id/rate', verifyJWT, async (req, res) => {
 });
 
 // POST /api/tasks/:id/feedback
+// POST /api/tasks/:id/feedback
 router.post('/:id/feedback', verifyJWT, async (req, res) => {
   try {
     const { error, value } = feedbackSchema.validate(req.body, {
@@ -549,6 +550,9 @@ router.post('/:id/feedback', verifyJWT, async (req, res) => {
         .json({ message: 'Student not found for this task' });
     }
 
+    // DEBUG: see what entries exist
+    console.log('feedbackEntries before check:', student.feedbackEntries);
+
     // Check if this client has already given feedback for this task
     if (Array.isArray(student.feedbackEntries)) {
       const already = student.feedbackEntries.some(
@@ -556,6 +560,11 @@ router.post('/:id/feedback', verifyJWT, async (req, res) => {
           entry.taskId.toString() === task._id.toString() &&
           entry.clientId.toString() === req.user.id.toString()
       );
+      console.log('duplicate check ->', {
+        taskId: task._id.toString(),
+        clientId: req.user.id.toString(),
+        already,
+      });
       if (already) {
         return res
           .status(400)
@@ -598,7 +607,7 @@ router.post('/:id/feedback', verifyJWT, async (req, res) => {
       taskId: task._id,
       taskTitle: task.title,
       clientId: task.client,
-      clientName: req.user.name, // from JWT-attached user
+      clientName: req.user.name, // from JWT
       rating: cleanScore,
       comment: value.text || '',
       domain,
@@ -638,6 +647,7 @@ router.post('/:id/feedback', verifyJWT, async (req, res) => {
     });
   }
 });
+
 
 // DELETE /api/tasks/:id -> delete task (client only)
 router.delete('/:id', verifyJWT, async (req, res) => {
