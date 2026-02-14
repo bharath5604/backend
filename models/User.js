@@ -38,7 +38,9 @@ const feedbackEntrySchema = new mongoose.Schema(
     // Optional free‑text feedback
     comment: { type: String },
 
-    domain: { type: String }, // domain of the task, useful for filtering
+    // Domain of the task, useful for domain-wise stats
+    domain: { type: String },
+
     createdAt: {
       type: Date,
       default: Date.now,
