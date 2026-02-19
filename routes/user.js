@@ -2,6 +2,7 @@
 const express = require('express');
 const router = express.Router();
 const User = require('../models/User');
+const Payment = require('../models/Payment');
 const verifyJWT = require('../middleware/authMiddleware');
 const Joi = require('joi');
 
@@ -24,6 +25,54 @@ router.get('/me', verifyJWT, async (req, res) => {
   try {
     const user = await User.findById(req.user.id).select('-password');
     if (!user) return res.status(404).json({ message: 'User not found' });
+
+    // If student, also compute pending/earned payments
+    if (user.role === 'student') {
+      const [pendingAgg, earnedAgg] = await Promise.all([
+        Payment.aggregate([
+          {
+            $match: {
+              student: user._id,
+              status: 'held', // waiting for admin release
+            },
+          },
+          {
+            $group: {
+              _id: null,
+              total: { $sum: '$netToStudent' },
+            },
+          },
+        ]),
+        Payment.aggregate([
+          {
+            $match: {
+              student: user._id,
+              status: 'released', // already released by admin
+            },
+          },
+          {
+            $group: {
+              _id: null,
+              total: { $sum: '$netToStudent' },
+            },
+          },
+        ]),
+      ]);
+
+      const pendingPayments =
+        pendingAgg.length > 0 ? pendingAgg[0].total : 0;
+      const earnedPayments =
+        earnedAgg.length > 0 ? earnedAgg[0].total : 0;
+
+      // attach as plain fields (front-end can read user.pendingPayments etc.)
+      const userObj = user.toObject();
+      userObj.pendingPayments = pendingPayments;
+      userObj.earnedPayments = earnedPayments;
+
+      return res.json(userObj);
+    }
+
+    // Non-students: return as before
     res.json(user);
   } catch (err) {
     res

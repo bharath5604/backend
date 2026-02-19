@@ -2,8 +2,16 @@ const mongoose = require('mongoose');
 
 const paymentSchema = new mongoose.Schema(
   {
-    task: { type: mongoose.Schema.Types.ObjectId, ref: 'Task', required: true },
-    bid: { type: mongoose.Schema.Types.ObjectId, ref: 'Bid', required: true },
+    task: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Task',
+      required: true,
+    },
+    bid: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Bid',
+      required: true,
+    },
     client: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
@@ -26,10 +34,14 @@ const paymentSchema = new mongoose.Schema(
     // Net amount that should go to the student (based on student's bid)
     netToStudent: { type: Number, required: true },
 
-    // Status with simple lifecycle
+    // Status lifecycle
+    // created   -> payment object created
+    // held      -> client approved, waiting for admin release
+    // released  -> admin released funds to student
+    // cancelled -> payment voided
     status: {
       type: String,
-      enum: ['created', 'held', 'completed', 'cancelled', 'released'],
+      enum: ['created', 'held', 'released', 'cancelled'],
       default: 'created',
     },
 

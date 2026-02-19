@@ -63,7 +63,7 @@ Used by AdminTasksScreen via AdminService.getTasks
 
 router.get('/tasks', verifyJWT, ensureAdmin, async (req, res) => {
   try {
-    const { company, location, domain } = req.query;
+    const { company, location, domain } = req.query();
 
     const filter = {};
     if (company) filter.company = company;
@@ -135,7 +135,7 @@ router.get(
 =====================================
 OVERVIEW STATS
 /api/admin/stats/overview
-Uses netToStudent for totals
+Uses netToStudent for totals and adds client proposal sum
 =====================================
 */
 
@@ -154,6 +154,7 @@ router.get(
         totalBids,
         paymentsAgg,
         releasedAgg,
+        clientProposedAgg,
       ] = await Promise.all([
         User.countDocuments(),
         User.countDocuments({ role: 'student' }),
@@ -182,12 +183,23 @@ router.get(
             },
           },
         ]),
+        // Total sum of client proposed budgets (all tasks)
+        Task.aggregate([
+          {
+            $group: {
+              _id: null,
+              totalAmount: { $sum: '$budget' }, // or '$amount' if your Task uses that field
+            },
+          },
+        ]),
       ]);
 
       const totalPayments =
         paymentsAgg.length > 0 ? paymentsAgg[0].totalAmount : 0;
       const completedPayments =
         releasedAgg.length > 0 ? releasedAgg[0].totalAmount : 0;
+      const totalClientProposed =
+        clientProposedAgg.length > 0 ? clientProposedAgg[0].totalAmount : 0;
 
       res.json({
         totalUsers,
@@ -198,6 +210,7 @@ router.get(
         totalBids,
         totalPayments,       // sum of student bid/net amounts
         completedPayments,   // sum actually paid to students (released)
+        totalClientProposed, // sum of client proposed budgets
       });
     } catch (err) {
       console.error('Error in /api/admin/stats/overview', err);
@@ -381,6 +394,7 @@ router.get(
 /*
 =====================================
 PENDING PAYMENTS
+Show only held payments; UI should display netToStudent
 =====================================
 */
 
@@ -394,7 +408,8 @@ router.get(
         status: 'held',
       })
         .populate('student', 'name email')
-        .populate('task', 'title budget');
+        .populate('task', 'title budget')
+        .populate('bid', 'amount');
 
       res.json(payments);
     } catch (err) {
