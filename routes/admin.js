@@ -63,7 +63,7 @@ Used by AdminTasksScreen via AdminService.getTasks
 
 router.get('/tasks', verifyJWT, ensureAdmin, async (req, res) => {
   try {
-    const { company, location, domain } = req.query();
+    const { company, location, domain } = req.query;
 
     const filter = {};
     if (company) filter.company = company;
@@ -461,6 +461,104 @@ router.post(
       console.error('Error in /api/admin/releasePayment/:id', err);
       res.status(500).json({
         message: err.message,
+      });
+    }
+  }
+);
+
+/*
+=====================================
+GROWTH STATS (TIME-SERIES)
+GET /api/admin/stats/growth
+Query:
+  metric: users | students | clients | tasks | bids | successfulBids | completedPayments
+  granularity: day | month
+  from: ISO date string
+  to: ISO date string
+Returns: [{ bucket: '2026-02-01', count: 10 }, ...]
+=====================================
+*/
+
+router.get(
+  '/stats/growth',
+  verifyJWT,
+  ensureAdmin,
+  async (req, res) => {
+    try {
+      const {
+        metric = 'tasks',
+        granularity = 'month',
+        from,
+        to,
+      } = req.query;
+
+      const startDate = from ? new Date(from) : new Date('2024-01-01');
+      const endDate = to ? new Date(to) : new Date();
+
+      let model;
+      let match = {
+        createdAt: { $gte: startDate, $lte: endDate },
+      };
+
+      switch (metric) {
+        case 'users':
+          model = User;
+          break;
+        case 'students':
+          model = User;
+          match.role = 'student';
+          break;
+        case 'clients':
+          model = User;
+          match.role = 'client';
+          break;
+        case 'tasks':
+          model = Task;
+          break;
+        case 'bids':
+          model = Bid;
+          break;
+        case 'successfulBids':
+          model = Bid;
+          match.status = 'accepted'; // adjust if you use a different field
+          break;
+        case 'completedPayments':
+          model = Payment;
+          match.status = 'released';
+          break;
+        default:
+          return res.status(400).json({ message: 'Invalid metric' });
+      }
+
+      const dateTrunc =
+        granularity === 'day'
+          ? { $dateTrunc: { date: '$createdAt', unit: 'day' } }
+          : { $dateTrunc: { date: '$createdAt', unit: 'month' } };
+
+      const pipeline = [
+        { $match: match },
+        {
+          $group: {
+            _id: dateTrunc,
+            count: { $sum: 1 },
+          },
+        },
+        { $sort: { _id: 1 } },
+      ];
+
+      const stats = await model.aggregate(pipeline);
+
+      const mapped = stats.map((s) => ({
+        bucket: s._id,
+        count: s.count,
+      }));
+
+      res.json(mapped);
+    } catch (err) {
+      console.error('Error in /api/admin/stats/growth', err);
+      res.status(500).json({
+        message: 'Error loading growth stats',
+        error: err.message,
       });
     }
   }

@@ -45,6 +45,11 @@ const paymentSchema = new mongoose.Schema(
       default: 'created',
     },
 
+    // When funds were actually released to student (for growth charts)
+    releasedAt: {
+      type: Date,
+    },
+
     // Optional manual notes, e.g., “paid offline on UPI” etc.
     declineReason: { type: String },
 
@@ -54,5 +59,17 @@ const paymentSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+// Keep releasedAt in sync with status
+paymentSchema.pre('save', function (next) {
+  if (this.isModified('status')) {
+    if (this.status === 'released') {
+      this.releasedAt = this.releasedAt || new Date();
+    } else if (this.status !== 'released') {
+      this.releasedAt = undefined;
+    }
+  }
+  next();
+});
 
 module.exports = mongoose.model('Payment', paymentSchema);
