@@ -1,3 +1,5 @@
+// models/Bid.js
+
 const mongoose = require('mongoose');
 
 const bidSchema = new mongoose.Schema(
@@ -36,11 +38,11 @@ const bidSchema = new mongoose.Schema(
       default: 'pending',
       index: true,
     },
-    // NEW: when bid was accepted (for successful bids growth stats)
+    // when bid was accepted (for successful bids growth stats)
     acceptedAt: {
       type: Date,
     },
-    // NEW: when bid was rejected
+    // when bid was rejected
     rejectedAt: {
       type: Date,
     },
@@ -48,8 +50,8 @@ const bidSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-// OPTIONAL: keep acceptedAt / rejectedAt in sync when status changes
-bidSchema.pre('save', function (next) {
+// Use promise style: no next()
+bidSchema.pre('save', function () {
   if (this.isModified('status')) {
     if (this.status === 'accepted') {
       this.acceptedAt = this.acceptedAt || new Date();
@@ -62,7 +64,6 @@ bidSchema.pre('save', function (next) {
       this.rejectedAt = undefined;
     }
   }
-  next();
 });
 
 module.exports = mongoose.model('Bid', bidSchema);
