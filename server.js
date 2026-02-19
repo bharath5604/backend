@@ -36,7 +36,7 @@ app.get("/", (req, res) => {
 // =========================
 
 // Public stats route for landing page (matches StatsService baseUrl)
-app.use("/api/stats", require("./routes/stats")); // <-- use stats.js here [file:53]
+app.use("/api/stats", require("./routes/stats")); // <-- use stats.js here
 
 app.use("/api/auth", require("./routes/auth"));
 app.use("/api/users", require("./routes/user"));
