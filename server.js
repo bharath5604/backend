@@ -24,7 +24,7 @@ app.use(
 );
 
 // =========================
-// HEALTH CHECK
+/* HEALTH CHECK */
 // =========================
 
 app.get("/", (req, res) => {
@@ -36,7 +36,7 @@ app.get("/", (req, res) => {
 // =========================
 
 // Public stats route for landing page (matches StatsService baseUrl)
-app.use("/api/stats", require("./routes/stats")); // <-- use stats.js here
+app.use("/api/stats", require("./routes/stats"));
 
 app.use("/api/auth", require("./routes/auth"));
 app.use("/api/users", require("./routes/user"));
@@ -48,13 +48,27 @@ app.use("/api/payments", require("./routes/payments"));
 app.use("/api/admin", require("./routes/admin"));
 
 // =========================
+// GLOBAL ERROR HANDLER
+// =========================
+
+app.use((err, req, res, next) => {
+  console.error("GLOBAL ERROR HANDLER:", err);
+  if (res.headersSent) {
+    return next(err);
+  }
+  res
+    .status(500)
+    .json({ message: "Server error", error: err.message || String(err) });
+});
+
+// =========================
 // DATABASE
 // =========================
 
 connectDB();
 
 // =========================
-// SERVER
+/* SERVER */
 // =========================
 
 const PORT = process.env.PORT || 5000;
