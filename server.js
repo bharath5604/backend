@@ -1,5 +1,3 @@
-// server.js
-
 const express = require("express");
 const connectDB = require("./config/db");
 const cors = require("cors");
@@ -22,7 +20,7 @@ app.get("/", (req, res) => {
 });
 
 // =========================
-// CORE ROUTES
+// ROUTES
 // =========================
 app.use("/api/auth", require("./routes/auth"));
 app.use("/api/users", require("./routes/user"));
@@ -30,11 +28,9 @@ app.use("/api/tasks", require("./routes/tasks"));
 app.use("/api/bids", require("./routes/bids"));
 app.use("/api/payments", require("./routes/payments"));
 
-// =========================
-// ADMIN ROUTES
-// =========================
+// ✅ ADMIN ROUTES
 const adminStatsRouter = require("./routes/admin");        // stats, overview, etc.
-const adminTaskPayRouter = require("./routes/adminRoutes"); // completed, pending-payments, pay/:taskId
+const adminTaskPayRouter = require("./routes/AdminRoutes"); // completed, pending-payments, pay/:taskId
 
 // Analytics + stats used by Flutter admin dashboard
 app.use("/api/admin", adminStatsRouter);
