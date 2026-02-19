@@ -6,7 +6,7 @@ const Payment = require('../models/Payment');
 const verifyJWT = require('../middleware/authMiddleware');
 
 // GET /api/students/:id/public-profile
-// Now also returns pending and earned amounts based on Payment.netToStudent
+// Returns profile + ratings + payment stats based on Payment.netToStudent
 router.get('/:id/public-profile', verifyJWT, async (req, res) => {
   try {
     const student = await User.findById(req.params.id).select(
@@ -17,24 +17,27 @@ router.get('/:id/public-profile', verifyJWT, async (req, res) => {
       return res.status(404).json({ message: 'Student not found' });
     }
 
+    // Per-domain feedback stats
     const domains = (student.feedbackScores || []).map((d) => ({
       domain: d.domain,
       averageScore: d.count > 0 ? d.totalScore / d.count : 0,
       count: d.count,
     }));
 
+    // Overall average rating
     const totalAverage =
       (student.totalScoreCount || 0) > 0
         ? (student.totalScore || 0) / student.totalScoreCount
         : 0;
 
-    // Compute pending and earned payments for this student
-    const [pendingAgg, earnedAgg] = await Promise.all([
+    // Payment aggregates for this student (all in terms of netToStudent, i.e., student bid amount)
+    const [pendingAgg, earnedAgg, acceptedAgg] = await Promise.all([
+      // Pending (held) amount: admin has not yet released
       Payment.aggregate([
         {
           $match: {
             student: student._id,
-            status: 'held', // waiting for admin release
+            status: 'held',
           },
         },
         {
@@ -44,11 +47,28 @@ router.get('/:id/public-profile', verifyJWT, async (req, res) => {
           },
         },
       ]),
+      // Earned (released) amount: already released by admin
       Payment.aggregate([
         {
           $match: {
             student: student._id,
-            status: 'released', // already released by admin
+            status: 'released',
+          },
+        },
+        {
+          $group: {
+            _id: null,
+            total: { $sum: '$netToStudent' },
+          },
+        },
+      ]),
+      // Accepted quotes = all bids that got a Payment record
+      // (both held + released)
+      Payment.aggregate([
+        {
+          $match: {
+            student: student._id,
+            status: { $in: ['held', 'released'] },
           },
         },
         {
@@ -64,6 +84,8 @@ router.get('/:id/public-profile', verifyJWT, async (req, res) => {
       pendingAgg.length > 0 ? pendingAgg[0].total : 0;
     const earnedPayments =
       earnedAgg.length > 0 ? earnedAgg[0].total : 0;
+    const acceptedQuoteTotal =
+      acceptedAgg.length > 0 ? acceptedAgg[0].total : 0;
 
     res.json({
       id: student._id,
@@ -76,8 +98,10 @@ router.get('/:id/public-profile', verifyJWT, async (req, res) => {
       totalScoreCount: student.totalScoreCount || 0,
       totalAverageScore: totalAverage,
       domains,
-      pendingPayments, // sum of netToStudent where status = 'held'
-      earnedPayments,  // sum of netToStudent where status = 'released'
+      // sums of student-side amounts (their bid, not client proposal)
+      pendingPayments,      // sum netToStudent where status = 'held'
+      earnedPayments,       // sum netToStudent where status = 'released'
+      acceptedQuoteTotal,   // sum netToStudent where status in ['held','released']
     });
   } catch (err) {
     res.status(500).json({

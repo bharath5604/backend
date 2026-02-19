@@ -1,348 +1,189 @@
 const mongoose = require('mongoose');
 
-
-
 ////////////////////////////////////////////////////
 /// Feedback Score Schema
 ////////////////////////////////////////////////////
 
 const feedbackScoreSchema = new mongoose.Schema(
-
-{
-
-domain: { type: String, required: true },
-
-totalScore: { type: Number, default: 0 },
-
-count: { type: Number, default: 0 },
-
-},
-
-{ _id: false }
-
+  {
+    domain: { type: String, required: true },
+    totalScore: { type: Number, default: 0 },
+    count: { type: Number, default: 0 },
+  },
+  { _id: false }
 );
-
-
 
 ////////////////////////////////////////////////////
 /// Feedback Entry Schema
 ////////////////////////////////////////////////////
 
 const feedbackEntrySchema = new mongoose.Schema(
-
-{
-
-taskId: {
-
-type: mongoose.Schema.Types.ObjectId,
-
-ref: 'Task',
-
-required: true,
-
-},
-
-taskTitle: { type: String, required: true },
-
-clientId: {
-
-type: mongoose.Schema.Types.ObjectId,
-
-ref: 'User',
-
-required: true,
-
-},
-
-clientName: { type: String, required: true },
-
-rating: {
-
-type: Number,
-
-min: 1,
-
-max: 5,
-
-required: true,
-
-},
-
-comment: String,
-
-domain: String,
-
-createdAt: {
-
-type: Date,
-
-default: Date.now,
-
-},
-
-},
-
-{ _id: false }
-
+  {
+    taskId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Task',
+      required: true,
+    },
+    taskTitle: { type: String, required: true },
+    clientId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      required: true,
+    },
+    clientName: { type: String, required: true },
+    rating: {
+      type: Number,
+      min: 1,
+      max: 5,
+      required: true,
+    },
+    comment: String,
+    domain: String,
+    createdAt: {
+      type: Date,
+      default: Date.now,
+    },
+  },
+  { _id: false }
 );
-
-
-
 
 ////////////////////////////////////////////////////
 /// MAIN USER SCHEMA
 ////////////////////////////////////////////////////
 
 const userSchema = new mongoose.Schema(
-
-{
-
-////////////////////////////////////////////////////
-/// BASIC INFO
-////////////////////////////////////////////////////
-
-name: {
-
-type: String,
-
-required: true,
-
-},
-
-email: {
-
-type: String,
-
-unique: true,
-
-required: true,
-
-},
-
-password: {
-
-type: String,
-
-required: true,
-
-},
-
-role: {
-
-type: String,
-
-enum: ['student', 'client', 'admin'],
-
-required: true,
-
-},
-
-
-
-
-////////////////////////////////////////////////////
-/// WALLET
-////////////////////////////////////////////////////
-
-wallet: {
-
-type: Number,
-
-default: 0,
-
-},
-
-
-
-
-////////////////////////////////////////////////////
-/// CLIENT FIELDS
-////////////////////////////////////////////////////
-
-company: String,
-
-location: String,
-
-domain: String,
-
-description: String,
-
-
-
-
-////////////////////////////////////////////////////
-/// STUDENT FIELDS
-////////////////////////////////////////////////////
-
-bio: String,
-
-skills: {
-
-type: [String],
-
-default: [],
-
-},
-
-portfolioUrl: String,
-
-
-
-
-////////////////////////////////////////////////////
-/// ✅ ADD THIS BANK DETAILS FIELD
-////////////////////////////////////////////////////
-
-bankDetails: {
-
-accountHolder: {
-
-type: String,
-
-default: ""
-
-},
-
-accountNumber: {
-
-type: String,
-
-default: ""
-
-},
-
-ifsc: {
-
-type: String,
-
-default: ""
-
-}
-
-},
-
-
-
-
-////////////////////////////////////////////////////
-/// FEEDBACK STATS
-////////////////////////////////////////////////////
-
-tasksCompleted: {
-
-type: Number,
-
-default: 0,
-
-},
-
-totalScore: {
-
-type: Number,
-
-default: 0,
-
-},
-
-totalScoreCount: {
-
-type: Number,
-
-default: 0,
-
-},
-
-feedbackScores: {
-
-type: [feedbackScoreSchema],
-
-default: [],
-
-},
-
-feedbackEntries: {
-
-type: [feedbackEntrySchema],
-
-default: [],
-
-},
-
-
-
-
-////////////////////////////////////////////////////
-/// NOTIFICATIONS
-////////////////////////////////////////////////////
-
-fcmToken: String,
-
-
-
-
-////////////////////////////////////////////////////
-/// LOGIN TRACK
-////////////////////////////////////////////////////
-
-lastLoginAt: {
-
-type: Date,
-
-},
-
-
-
-
-////////////////////////////////////////////////////
-/// APPROVAL
-////////////////////////////////////////////////////
-
-isApproved: {
-
-type: Boolean,
-
-default: function () {
-
-if (this.role === 'student') return true;
-
-if (this.role === 'client') return false;
-
-if (this.role === 'admin') return true;
-
-return false;
-
-},
-
-},
-
-},
-
-{ timestamps: true }
-
+  {
+    ////////////////////////////////////////////////////
+    /// BASIC INFO
+    ////////////////////////////////////////////////////
+
+    name: {
+      type: String,
+      required: true,
+    },
+
+    email: {
+      type: String,
+      unique: true,
+      required: true,
+    },
+
+    password: {
+      type: String,
+      required: true,
+    },
+
+    role: {
+      type: String,
+      enum: ['student', 'client', 'admin'],
+      required: true,
+    },
+
+    ////////////////////////////////////////////////////
+    /// WALLET
+    ////////////////////////////////////////////////////
+
+    wallet: {
+      type: Number,
+      default: 0,
+    },
+
+    ////////////////////////////////////////////////////
+    /// CLIENT FIELDS
+    ////////////////////////////////////////////////////
+
+    company: String,
+    location: String,
+    domain: String,
+    description: String,
+
+    ////////////////////////////////////////////////////
+    /// STUDENT FIELDS
+    ////////////////////////////////////////////////////
+
+    bio: String,
+    skills: {
+      type: [String],
+      default: [],
+    },
+    portfolioUrl: String,
+
+    ////////////////////////////////////////////////////
+    /// BANK DETAILS (FLAT FIELDS)
+    ////////////////////////////////////////////////////
+
+    bankAccountNumber: {
+      type: String,
+      default: '',
+    },
+    ifscCode: {
+      type: String,
+      default: '',
+    },
+
+    ////////////////////////////////////////////////////
+    /// FEEDBACK STATS
+    ////////////////////////////////////////////////////
+
+    tasksCompleted: {
+      type: Number,
+      default: 0,
+    },
+    totalScore: {
+      type: Number,
+      default: 0,
+    },
+    totalScoreCount: {
+      type: Number,
+      default: 0,
+    },
+    feedbackScores: {
+      type: [feedbackScoreSchema],
+      default: [],
+    },
+    feedbackEntries: {
+      type: [feedbackEntrySchema],
+      default: [],
+    },
+
+    ////////////////////////////////////////////////////
+    /// NOTIFICATIONS
+    ////////////////////////////////////////////////////
+
+    fcmToken: String,
+
+    ////////////////////////////////////////////////////
+    /// LOGIN TRACK
+    ////////////////////////////////////////////////////
+
+    lastLoginAt: {
+      type: Date,
+    },
+
+    ////////////////////////////////////////////////////
+    /// APPROVAL
+    ////////////////////////////////////////////////////
+
+    isApproved: {
+      type: Boolean,
+      default: function () {
+        if (this.role === 'student') return true;
+        if (this.role === 'client') return false;
+        if (this.role === 'admin') return true;
+        return false;
+      },
+    },
+  },
+  { timestamps: true }
 );
-
-
-
 
 ////////////////////////////////////////////////////
 /// VIRTUAL AVERAGE RATING
 ////////////////////////////////////////////////////
 
 userSchema.virtual('averageScore').get(function () {
-
-if (!this.totalScoreCount) return 0;
-
-return this.totalScore / this.totalScoreCount;
-
+  if (!this.totalScoreCount) return 0;
+  return this.totalScore / this.totalScoreCount;
 });
 
-
-
-
-module.exports = mongoose.model(
-
-'User',
-
-userSchema
-
-);
+module.exports = mongoose.model('User', userSchema);

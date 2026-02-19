@@ -26,9 +26,10 @@ router.get('/me', verifyJWT, async (req, res) => {
     const user = await User.findById(req.user.id).select('-password');
     if (!user) return res.status(404).json({ message: 'User not found' });
 
-    // If student, also compute pending/earned payments
+    // If student, also compute pending/earned/accepted payments
     if (user.role === 'student') {
-      const [pendingAgg, earnedAgg] = await Promise.all([
+      const [pendingAgg, earnedAgg, acceptedAgg] = await Promise.all([
+        // Pending (held) amount
         Payment.aggregate([
           {
             $match: {
@@ -43,11 +44,27 @@ router.get('/me', verifyJWT, async (req, res) => {
             },
           },
         ]),
+        // Earned (released) amount
         Payment.aggregate([
           {
             $match: {
               student: user._id,
               status: 'released', // already released by admin
+            },
+          },
+          {
+            $group: {
+              _id: null,
+              total: { $sum: '$netToStudent' },
+            },
+          },
+        ]),
+        // Accepted quotes = all bids that have a Payment
+        Payment.aggregate([
+          {
+            $match: {
+              student: user._id,
+              status: { $in: ['held', 'released'] },
             },
           },
           {
@@ -63,11 +80,14 @@ router.get('/me', verifyJWT, async (req, res) => {
         pendingAgg.length > 0 ? pendingAgg[0].total : 0;
       const earnedPayments =
         earnedAgg.length > 0 ? earnedAgg[0].total : 0;
+      const acceptedQuoteTotal =
+        acceptedAgg.length > 0 ? acceptedAgg[0].total : 0;
 
       // attach as plain fields (front-end can read user.pendingPayments etc.)
       const userObj = user.toObject();
       userObj.pendingPayments = pendingPayments;
       userObj.earnedPayments = earnedPayments;
+      userObj.acceptedQuoteTotal = acceptedQuoteTotal;
 
       return res.json(userObj);
     }

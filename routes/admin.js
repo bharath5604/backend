@@ -208,9 +208,9 @@ router.get(
         totalAdmins,
         totalTasks,
         totalBids,
-        totalPayments,       // sum of all accepted bids (netToStudent)
-        completedPayments,   // sum of released bids (netToStudent)
-        totalClientProposed, // sum of client proposed budgets
+        totalPayments,        // sum of all accepted bids (netToStudent)
+        completedPayments,    // sum of released bids (netToStudent)
+        totalClientProposed,  // sum of client proposed budgets
       });
     } catch (err) {
       console.error('Error in /api/admin/stats/overview', err);
@@ -299,6 +299,7 @@ router.get(
 =====================================
 TOP STUDENTS
 Based on netToStudent (student earnings)
+Now returns name/email instead of raw id
 =====================================
 */
 
@@ -317,6 +318,24 @@ router.get(
         },
         { $sort: { total: -1 } },
         { $limit: 5 },
+        {
+          $lookup: {
+            from: 'users',
+            localField: '_id',
+            foreignField: '_id',
+            as: 'studentDoc',
+          },
+        },
+        { $unwind: '$studentDoc' },
+        {
+          $project: {
+            _id: 0,
+            studentId: '$_id',
+            name: '$studentDoc.name',
+            email: '$studentDoc.email',
+            total: 1,
+          },
+        },
       ]);
 
       res.json(stats);
@@ -395,6 +414,7 @@ router.get(
 =====================================
 PENDING PAYMENTS
 Show only held payments; UI should display netToStudent
+Now includes student bank details and bid amount
 =====================================
 */
 
@@ -407,9 +427,12 @@ router.get(
       const payments = await Payment.find({
         status: 'held',
       })
-        .populate('student', 'name email')
+        .populate(
+          'student',
+          'name email bankAccountNumber ifscCode'
+        )
         .populate('task', 'title budget')
-        .populate('bid', 'amount');
+        .populate('bid', 'amount'); // student's bid amount
 
       res.json(payments);
     } catch (err) {
