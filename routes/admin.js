@@ -27,7 +27,6 @@ const ensureAdmin = (req, res, next) => {
 =====================================
 ADMIN USERS LIST
 /api/admin/users
-Used by AdminUsersScreen via AdminService.getUsers
 =====================================
 */
 
@@ -57,7 +56,6 @@ router.get('/users', verifyJWT, ensureAdmin, async (req, res) => {
 =====================================
 ADMIN UPDATE USER APPROVAL
 PATCH /api/admin/users/:id/approve
-Used by AdminUsersScreen via AdminService.updateUserApproval
 =====================================
 */
 
@@ -97,7 +95,6 @@ router.patch(
 =====================================
 ADMIN TASKS LIST
 /api/admin/tasks
-Used by AdminTasksScreen via AdminService.getTasks
 =====================================
 */
 
@@ -128,7 +125,6 @@ router.get('/tasks', verifyJWT, ensureAdmin, async (req, res) => {
 =====================================
 STUDENT DASHBOARD (DETAIL)
 /api/admin/students/:id/dashboard
-Used by AdminStudentDashboardService
 =====================================
 */
 
@@ -150,7 +146,6 @@ router.get(
           Task.countDocuments({ student: studentId }),
           Task.countDocuments({ student: studentId, status: 'completed' }),
           Bid.countDocuments({ student: studentId }),
-          // count of payments where student got paid (released)
           Payment.countDocuments({ student: studentId, status: 'released' }),
         ]);
 
@@ -175,7 +170,6 @@ router.get(
 =====================================
 OVERVIEW STATS
 /api/admin/stats/overview
-Uses netToStudent for totals and adds client proposal sum
 =====================================
 */
 
@@ -202,7 +196,6 @@ router.get(
         User.countDocuments({ role: 'admin' }),
         Task.countDocuments(),
         Bid.countDocuments({}),
-        // Total sum of student-side amounts (all accepted bids)
         Payment.aggregate([
           {
             $group: {
@@ -211,7 +204,6 @@ router.get(
             },
           },
         ]),
-        // Sum of bid amounts actually paid out to students
         Payment.aggregate([
           {
             $match: { status: 'released' },
@@ -223,12 +215,11 @@ router.get(
             },
           },
         ]),
-        // Total sum of client proposed budgets (all tasks)
         Task.aggregate([
           {
             $group: {
               _id: null,
-              totalAmount: { $sum: '$budget' }, // or '$amount' if your Task uses that field
+              totalAmount: { $sum: '$budget' },
             },
           },
         ]),
@@ -248,9 +239,9 @@ router.get(
         totalAdmins,
         totalTasks,
         totalBids,
-        totalPayments,        // sum of all accepted bids (netToStudent)
-        completedPayments,    // sum of released bids (netToStudent)
-        totalClientProposed,  // sum of client proposed budgets
+        totalPayments,
+        completedPayments,
+        totalClientProposed,
       });
     } catch (err) {
       console.error('Error in /api/admin/stats/overview', err);
@@ -338,8 +329,6 @@ router.get(
 /*
 =====================================
 TOP STUDENTS
-Based on netToStudent (student earnings)
-Now returns name/email instead of raw id
 =====================================
 */
 
@@ -353,7 +342,7 @@ router.get(
         {
           $group: {
             _id: '$student',
-            total: { $sum: '$netToStudent' }, // sum of student-side amounts
+            total: { $sum: '$netToStudent' },
           },
         },
         { $sort: { total: -1 } },
@@ -469,10 +458,10 @@ router.get(
       })
         .populate(
           'student',
-          'name email bankAccountNumber ifscCode'
+          'name email bankAccountHolderName bankName bankAccountNumber ifscCode'
         )
         .populate('task', 'title budget')
-        .populate('bid', 'amount'); // student's bid amount
+        .populate('bid', 'amount');
 
       res.json(payments);
     } catch (err) {
@@ -506,11 +495,9 @@ router.post(
         });
       }
 
-      // Mark as released
       payment.status = 'released';
       await payment.save();
 
-      // Credit the student's wallet with the student-side amount
       const student = await User.findById(payment.student);
       if (student) {
         student.wallet += payment.netToStudent;
@@ -531,14 +518,8 @@ router.post(
 
 /*
 =====================================
-GROWTH STATS (TIME-SERIES)
+GROWTH STATS
 GET /api/admin/stats/growth
-Query:
-  metric: users | students | clients | tasks | bids | successfulBids | completedPayments
-  granularity: day | month
-  from: ISO date string
-  to: ISO date string
-Returns: [{ bucket: '2026-02-01', count: 10 }, ...]
 =====================================
 */
 
@@ -583,7 +564,7 @@ router.get(
           break;
         case 'successfulBids':
           model = Bid;
-          match.status = 'accepted'; // adjust if you use a different field
+          match.status = 'accepted';
           break;
         case 'completedPayments':
           model = Payment;
