@@ -206,12 +206,17 @@ const userSchema = new mongoose.Schema(
 );
 
 ////////////////////////////////////////////////////
-/// VIRTUAL AVERAGE RATING
+/// VIRTUALS
 ////////////////////////////////////////////////////
 
 userSchema.virtual('averageScore').get(function () {
   if (!this.totalScoreCount) return 0;
   return this.totalScore / this.totalScoreCount;
+});
+
+// Optional: total accepted earnings (pending + released)
+userSchema.virtual('totalAcceptedEarnings').get(function () {
+  return (this.pendingEarnings || 0) + (this.totalEarningsReleased || 0);
 });
 
 module.exports = mongoose.model('User', userSchema);

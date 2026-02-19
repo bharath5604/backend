@@ -442,7 +442,7 @@ router.get(
 /*
 =====================================
 PENDING PAYMENTS
-Show only held payments for tasks that the client has approved
+Show only payments approved by client (Payment.status = 'approved')
 =====================================
 */
 
@@ -453,23 +453,16 @@ router.get(
   async (req, res) => {
     try {
       const payments = await Payment.find({
-        status: 'held',
+        status: 'approved',
       })
         .populate(
           'student',
           'name email bankAccountHolderName bankName bankAccountNumber ifscCode'
         )
-        .populate({
-          path: 'task',
-          select: 'title budget status',
-          match: { status: 'approved' }, // only tasks approved by client
-        })
+        .populate('task', 'title budget status')
         .populate('bid', 'amount');
 
-      // Remove any payments whose task did not match (i.e. not approved)
-      const filtered = payments.filter((p) => p.task != null);
-
-      res.json(filtered);
+      res.json(payments);
     } catch (err) {
       res.status(500).json({
         message: err.message,
@@ -498,6 +491,13 @@ router.post(
       if (!payment) {
         return res.status(404).json({
           message: 'Not found',
+        });
+      }
+
+      // Only allow releasing client-approved payments
+      if (payment.status !== 'approved') {
+        return res.status(400).json({
+          message: 'Payment is not approved by client yet',
         });
       }
 

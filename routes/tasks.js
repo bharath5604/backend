@@ -384,39 +384,25 @@ router.post('/:id/approve', verifyJWT, async (req, res) => {
     task.status = 'completed';
     await task.save();
 
-    // increment tasksCompleted and wallet (earnings)
+    // update student stats and mark related payment as approved
     if (task.submission.student) {
       const student = await User.findById(task.submission.student);
       if (student) {
-        // find accepted bid to get student's proposed quote
-        const acceptedBid = await Bid.findOne({
+        // increment tasksCompleted (wallet is now handled on admin release)
+        student.tasksCompleted = (student.tasksCompleted || 0) + 1;
+        await student.save();
+
+        // find payment for this task & student that is still held, and approve it
+        const payment = await Payment.findOne({
           task: task._id,
           student: student._id,
-          status: 'accepted',
+          status: 'held',
         });
 
-        // safe payout calculation using quote when valid, else budget
-        let payout = task.budget || 0;
-        if (acceptedBid && acceptedBid.quote != null) {
-          const q = Number(acceptedBid.quote);
-          if (!Number.isNaN(q)) {
-            payout = q;
-          } else {
-            console.warn(
-              'approve: acceptedBid.quote is NaN for bid',
-              acceptedBid._id.toString()
-            );
-          }
-        } else {
-          console.warn(
-            'approve: no acceptedBid with valid quote found, using task.budget',
-            { taskId: task._id.toString(), studentId: student._id.toString() }
-          );
+        if (payment) {
+          payment.status = 'approved';
+          await payment.save();
         }
-
-        student.tasksCompleted = (student.tasksCompleted || 0) + 1;
-        student.wallet = (student.wallet || 0) + payout;
-        await student.save();
 
         await sendNotification(student._id, {
           title: 'Task approved',
@@ -508,7 +494,6 @@ router.post('/:id/rate', verifyJWT, async (req, res) => {
     res.status(500).json({ message: 'Server error', error: err.message });
   }
 });
-
 
 // POST /api/tasks/:id/feedback
 router.post('/:id/feedback', verifyJWT, async (req, res) => {
@@ -651,8 +636,6 @@ router.post('/:id/feedback', verifyJWT, async (req, res) => {
     });
   }
 });
-
-
 
 // DELETE /api/tasks/:id -> delete task (client only)
 router.delete('/:id', verifyJWT, async (req, res) => {

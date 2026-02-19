@@ -36,12 +36,13 @@ const paymentSchema = new mongoose.Schema(
 
     // Status lifecycle
     // created   -> payment object created
-    // held      -> client approved, waiting for admin release
+    // held      -> bid accepted by client, waiting for client approval of work
+    // approved  -> client approved task, waiting for admin release
     // released  -> admin released funds to student
     // cancelled -> payment voided
     status: {
       type: String,
-      enum: ['created', 'held', 'released', 'cancelled'],
+      enum: ['created', 'held', 'approved', 'released', 'cancelled'],
       default: 'created',
     },
 
