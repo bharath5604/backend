@@ -21,7 +21,8 @@ const paymentSchema = new mongoose.Schema(
     // Status with simple held/flow lifecycle
     status: {
       type: String,
-      enum: ['created', 'held', 'completed', 'cancelled','completed','released'],
+      enum: ['created', 'held', 'completed', 'cancelled', 'released'],
+      // if your final state is 'released' not 'completed', you can still include both
       default: 'created',
     },
 

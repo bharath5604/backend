@@ -110,6 +110,7 @@ router.get(
           Task.countDocuments({ student: studentId }),
           Task.countDocuments({ student: studentId, status: 'completed' }),
           Bid.countDocuments({ student: studentId }),
+          // count of payments where student got paid (released/completed)
           Payment.countDocuments({ student: studentId, status: 'released' }),
         ]);
 
@@ -134,6 +135,7 @@ router.get(
 =====================================
 OVERVIEW STATS
 /api/admin/stats/overview
+Now uses netToStudent for totals
 =====================================
 */
 
@@ -159,22 +161,24 @@ router.get(
         User.countDocuments({ role: 'admin' }),
         Task.countDocuments(),
         Bid.countDocuments({}),
+        // Total sum of student-side amounts (all payments)
         Payment.aggregate([
           {
             $group: {
               _id: null,
-              totalAmount: { $sum: '$amount' },
+              totalAmount: { $sum: '$netToStudent' },
             },
           },
         ]),
+        // Sum of amounts actually paid out to students
         Payment.aggregate([
           {
-            $match: { status: 'released' },
+            $match: { status: 'released' }, // or 'completed' if you prefer
           },
           {
             $group: {
               _id: null,
-              totalAmount: { $sum: '$amount' },
+              totalAmount: { $sum: '$netToStudent' },
             },
           },
         ]),
@@ -192,8 +196,8 @@ router.get(
         totalAdmins,
         totalTasks,
         totalBids,
-        totalPayments,
-        completedPayments,
+        totalPayments,       // sum of bid/net amounts proposed by students
+        completedPayments,   // sum actually paid to students (released)
       });
     } catch (err) {
       console.error('Error in /api/admin/stats/overview', err);
@@ -281,6 +285,7 @@ router.get(
 /*
 =====================================
 TOP STUDENTS
+Now based on netToStudent (student earnings)
 =====================================
 */
 
@@ -294,7 +299,7 @@ router.get(
         {
           $group: {
             _id: '$student',
-            total: { $sum: '$amount' },
+            total: { $sum: '$netToStudent' }, // was $amount
           },
         },
         { $sort: { total: -1 } },
@@ -403,6 +408,7 @@ router.get(
 /*
 =====================================
 RELEASE PAYMENT
+Now uses netToStudent when crediting wallet
 =====================================
 */
 
@@ -422,12 +428,14 @@ router.post(
         });
       }
 
+      // Mark as released/completed
       payment.status = 'released';
       await payment.save();
 
+      // Credit the student's wallet with the student-side amount
       const student = await User.findById(payment.student);
       if (student) {
-        student.wallet += payment.amount;
+        student.wallet += payment.netToStudent;
         await student.save();
       }
 
