@@ -5,7 +5,7 @@ const User = require('../models/User');
 const Task = require('../models/Task');
 const Payment = require('../models/Payment');
 const Bid = require('../models/Bid'); // currently unused but kept
-const verifyJWT = require('../middleware/authMiddleware);
+const verifyJWT = require('../middleware/authMiddleware');
 
 /*
 =====================================
