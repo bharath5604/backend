@@ -55,6 +55,46 @@ router.get('/users', verifyJWT, ensureAdmin, async (req, res) => {
 
 /*
 =====================================
+ADMIN UPDATE USER APPROVAL
+PATCH /api/admin/users/:id/approve
+Used by AdminUsersScreen via AdminService.updateUserApproval
+=====================================
+*/
+
+router.patch(
+  '/users/:id/approve',
+  verifyJWT,
+  ensureAdmin,
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { isApproved } = req.body;
+
+      const user = await User.findByIdAndUpdate(
+        id,
+        { isApproved: !!isApproved },
+        { new: true }
+      ).select('-password');
+
+      if (!user) {
+        return res.status(404).json({ message: 'User not found' });
+      }
+
+      res.json({
+        message: 'Approval updated',
+        user,
+      });
+    } catch (err) {
+      console.error('Error in PATCH /api/admin/users/:id/approve', err);
+      res.status(500).json({
+        message: err.message,
+      });
+    }
+  }
+);
+
+/*
+=====================================
 ADMIN TASKS LIST
 /api/admin/tasks
 Used by AdminTasksScreen via AdminService.getTasks
