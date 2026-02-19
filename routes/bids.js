@@ -4,6 +4,7 @@ const router = express.Router();
 const Bid = require('../models/Bid');
 const Task = require('../models/Task');
 const Payment = require('../models/Payment');
+const User = require('../models/User');
 const verifyJWT = require('../middleware/authMiddleware');
 const Joi = require('joi');
 const { sendNotification } = require('../utils/fcm');
@@ -123,6 +124,19 @@ router.post('/accept/:bidId', verifyJWT, async (req, res) => {
       status: 'held', // make sure 'held' is in Payment status enum
       gateway: 'razorpay',
     });
+
+    // IMPORTANT: bump student's pendingEarnings for overview stats
+    try {
+      const student = await User.findById(bid.student);
+      if (student) {
+        student.pendingEarnings =
+          (student.pendingEarnings || 0) + netToStudent;
+        await student.save();
+      }
+    } catch (e) {
+      console.error('Failed to update student.pendingEarnings', e);
+      // do not fail main response
+    }
 
     // Mock order object (replace with real gateway integration later)
     const order = {

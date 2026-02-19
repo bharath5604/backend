@@ -1,73 +1,73 @@
-const express = require("express");
+// const express = require("express");
 
-const router = express.Router();
+// const router = express.Router();
 
-const adminController =
-require("../controllers/adminController");
+// const adminController =
+// require("../controllers/adminController");
 
-const auth =
-require("../middleware/authMiddleware");
-
-
-
-// ================================
-// OVERVIEW STATS
-// ================================
-
-router.get(
-"/stats/overview",
-auth,
-adminController.getOverviewStats
-);
+// const auth =
+// require("../middleware/authMiddleware");
 
 
 
-// ================================
-// TASK STATS
-// ================================
+// // ================================
+// // OVERVIEW STATS
+// // ================================
 
-router.get(
-"/stats/tasks",
-auth,
-adminController.getTaskStats
-);
-
-
-
-// ================================
-// COMPLETED TASKS
-// ================================
-
-router.get(
-"/completed",
-auth,
-adminController.getCompletedTasks
-);
+// router.get(
+// "/stats/overview",
+// auth,
+// adminController.getOverviewStats
+// );
 
 
 
-// ================================
-// PENDING PAYMENTS
-// ================================
+// // ================================
+// // TASK STATS
+// // ================================
 
-router.get(
-"/pending-payments",
-auth,
-adminController.getPendingPayments
-);
-
-
-
-// ================================
-// PAY STUDENT
-// ================================
-
-router.put(
-"/pay/:taskId",
-auth,
-adminController.payStudent
-);
+// router.get(
+// "/stats/tasks",
+// auth,
+// adminController.getTaskStats
+// );
 
 
 
-module.exports = router;
+// // ================================
+// // COMPLETED TASKS
+// // ================================
+
+// router.get(
+// "/completed",
+// auth,
+// adminController.getCompletedTasks
+// );
+
+
+
+// // ================================
+// // PENDING PAYMENTS
+// // ================================
+
+// router.get(
+// "/pending-payments",
+// auth,
+// adminController.getPendingPayments
+// );
+
+
+
+// // ================================
+// // PAY STUDENT
+// // ================================
+
+// router.put(
+// "/pay/:taskId",
+// auth,
+// adminController.payStudent
+// );
+
+
+
+// module.exports = router;

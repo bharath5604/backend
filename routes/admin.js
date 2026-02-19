@@ -442,8 +442,7 @@ router.get(
 /*
 =====================================
 PENDING PAYMENTS
-Show only held payments; UI should display netToStudent
-Now includes student bank details and bid amount
+Show only held payments for tasks that the client has approved
 =====================================
 */
 
@@ -460,10 +459,17 @@ router.get(
           'student',
           'name email bankAccountHolderName bankName bankAccountNumber ifscCode'
         )
-        .populate('task', 'title budget')
+        .populate({
+          path: 'task',
+          select: 'title budget status',
+          match: { status: 'approved' }, // only tasks approved by client
+        })
         .populate('bid', 'amount');
 
-      res.json(payments);
+      // Remove any payments whose task did not match (i.e. not approved)
+      const filtered = payments.filter((p) => p.task != null);
+
+      res.json(filtered);
     } catch (err) {
       res.status(500).json({
         message: err.message,
@@ -475,7 +481,7 @@ router.get(
 /*
 =====================================
 RELEASE PAYMENT
-Uses netToStudent when crediting wallet
+Uses netToStudent for wallet and earnings stats
 =====================================
 */
 
@@ -500,7 +506,19 @@ router.post(
 
       const student = await User.findById(payment.student);
       if (student) {
-        student.wallet += payment.netToStudent;
+        const amt = payment.netToStudent || payment.amount || 0;
+
+        // wallet balance
+        student.wallet = (student.wallet || 0) + amt;
+
+        // earnings stats for profile overview
+        student.pendingEarnings = Math.max(
+          0,
+          (student.pendingEarnings || 0) - amt
+        );
+        student.totalEarningsReleased =
+          (student.totalEarningsReleased || 0) + amt;
+
         await student.save();
       }
 
