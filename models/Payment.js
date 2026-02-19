@@ -4,10 +4,18 @@ const paymentSchema = new mongoose.Schema(
   {
     task: { type: mongoose.Schema.Types.ObjectId, ref: 'Task', required: true },
     bid: { type: mongoose.Schema.Types.ObjectId, ref: 'Bid', required: true },
-    client: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-    student: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    client: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      required: true,
+    },
+    student: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      required: true,
+    },
 
-    // Full task amount (before platform fees)
+    // Full task amount (before platform fees) – proposed by client
     amount: { type: Number, required: true },
     currency: { type: String, default: 'INR' },
 
@@ -15,14 +23,13 @@ const paymentSchema = new mongoose.Schema(
     platformFeeClient: { type: Number, default: 0 },
     platformFeeStudent: { type: Number, default: 0 },
 
-    // Net amount that should go to the student
-    netToStudent: { type: Number, default: 0 },
+    // Net amount that should go to the student (based on student's bid)
+    netToStudent: { type: Number, required: true },
 
-    // Status with simple held/flow lifecycle
+    // Status with simple lifecycle
     status: {
       type: String,
       enum: ['created', 'held', 'completed', 'cancelled', 'released'],
-      // if your final state is 'released' not 'completed', you can still include both
       default: 'created',
     },
 

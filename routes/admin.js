@@ -110,7 +110,7 @@ router.get(
           Task.countDocuments({ student: studentId }),
           Task.countDocuments({ student: studentId, status: 'completed' }),
           Bid.countDocuments({ student: studentId }),
-          // count of payments where student got paid (released/completed)
+          // count of payments where student got paid (released)
           Payment.countDocuments({ student: studentId, status: 'released' }),
         ]);
 
@@ -135,7 +135,7 @@ router.get(
 =====================================
 OVERVIEW STATS
 /api/admin/stats/overview
-Now uses netToStudent for totals
+Uses netToStudent for totals
 =====================================
 */
 
@@ -173,7 +173,7 @@ router.get(
         // Sum of amounts actually paid out to students
         Payment.aggregate([
           {
-            $match: { status: 'released' }, // or 'completed' if you prefer
+            $match: { status: 'released' },
           },
           {
             $group: {
@@ -196,7 +196,7 @@ router.get(
         totalAdmins,
         totalTasks,
         totalBids,
-        totalPayments,       // sum of bid/net amounts proposed by students
+        totalPayments,       // sum of student bid/net amounts
         completedPayments,   // sum actually paid to students (released)
       });
     } catch (err) {
@@ -285,7 +285,7 @@ router.get(
 /*
 =====================================
 TOP STUDENTS
-Now based on netToStudent (student earnings)
+Based on netToStudent (student earnings)
 =====================================
 */
 
@@ -299,7 +299,7 @@ router.get(
         {
           $group: {
             _id: '$student',
-            total: { $sum: '$netToStudent' }, // was $amount
+            total: { $sum: '$netToStudent' }, // sum of student-side amounts
           },
         },
         { $sort: { total: -1 } },
@@ -408,7 +408,7 @@ router.get(
 /*
 =====================================
 RELEASE PAYMENT
-Now uses netToStudent when crediting wallet
+Uses netToStudent when crediting wallet
 =====================================
 */
 
@@ -428,7 +428,7 @@ router.post(
         });
       }
 
-      // Mark as released/completed
+      // Mark as released
       payment.status = 'released';
       await payment.save();
 
