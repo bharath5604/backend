@@ -151,8 +151,8 @@ router.get(
         totalAdmins,
         totalTasks,
         totalBids,
-        totalPayments,
-        completedPayments,
+        paymentsAgg,
+        releasedAgg,
       ] = await Promise.all([
         User.countDocuments(),
         User.countDocuments({ role: 'student' }),
@@ -160,9 +160,31 @@ router.get(
         User.countDocuments({ role: 'admin' }),
         Task.countDocuments(),
         Bid.countDocuments({}),
-        Payment.countDocuments(),
-        Payment.countDocuments({ status: 'released' }),
+        Payment.aggregate([
+          {
+            $group: {
+              _id: null,
+              totalAmount: { $sum: '$amount' },
+            },
+          },
+        ]),
+        Payment.aggregate([
+          {
+            $match: { status: 'released' },
+          },
+          {
+            $group: {
+              _id: null,
+              totalAmount: { $sum: '$amount' },
+            },
+          },
+        ]),
       ]);
+
+      const totalPayments =
+        paymentsAgg.length > 0 ? paymentsAgg[0].totalAmount : 0;
+      const completedPayments =
+        releasedAgg.length > 0 ? releasedAgg[0].totalAmount : 0;
 
       res.json({
         totalUsers,
@@ -175,6 +197,7 @@ router.get(
         completedPayments,
       });
     } catch (err) {
+      console.error('Error in /api/admin/stats/overview', err);
       res.status(500).json({
         message: err.message,
       });
