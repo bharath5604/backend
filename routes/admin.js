@@ -41,7 +41,6 @@ router.get('/users', verifyJWT, ensureAdmin, async (req, res) => {
     if (location) filter.location = location;
     if (domain) filter.domain = domain;
 
-    // NOTE: no forced hide-admin here now; Flutter shows/hides via filters
     const users = await User.find(filter).select('-password');
 
     res.json(users);
@@ -413,6 +412,8 @@ router.post(
   ensureAdmin,
   async (req, res) => {
     try {
+      console.log('POST /api/admin/releasePayment', req.params.id);
+
       const payment = await Payment.findById(req.params.id);
 
       if (!payment) {
@@ -425,13 +426,16 @@ router.post(
       await payment.save();
 
       const student = await User.findById(payment.student);
-      student.wallet += payment.amount;
-      await student.save();
+      if (student) {
+        student.wallet += payment.amount;
+        await student.save();
+      }
 
       res.json({
         message: 'Payment released',
       });
     } catch (err) {
+      console.error('Error in /api/admin/releasePayment/:id', err);
       res.status(500).json({
         message: err.message,
       });
