@@ -10,7 +10,7 @@ const verifyJWT = require('../middleware/authMiddleware');
 
 
 
-/**
+/*
 =====================================
 ADMIN CHECK
 =====================================
@@ -32,364 +32,354 @@ const ensureAdmin = (req, res, next) => {
 
 
 
-/**
+/*
 =====================================
-USERS
-=====================================
-*/
-
-router.get('/users',
-  verifyJWT,
-  ensureAdmin,
-  async (req, res) => {
-
-    try {
-
-      const filter = {};
-
-      if (req.query.role)
-        filter.role = req.query.role;
-      else
-        filter.role = { $ne: 'admin' };
-
-
-      const users =
-        await User.find(filter)
-          .select('-password');
-
-      res.json(users);
-
-    }
-    catch (err) {
-
-      res.status(500).json({
-        message: err.message
-      });
-
-    }
-
-  });
-
-
-
-
-router.patch('/users/:id/approve',
-  verifyJWT,
-  ensureAdmin,
-  async (req, res) => {
-
-    try {
-
-      const user =
-        await User.findByIdAndUpdate(
-          req.params.id,
-          { isApproved: req.body.isApproved },
-          { new: true }
-        ).select('-password');
-
-      res.json(user);
-
-    }
-    catch (err) {
-
-      res.status(500).json({
-        message: err.message
-      });
-
-    }
-
-  });
-
-
-
-
-
-/**
-=====================================
-TASKS
+OVERVIEW (Flutter uses this)
+URL: /api/admin/overview
 =====================================
 */
 
-router.get('/tasks',
-  verifyJWT,
-  ensureAdmin,
-  async (req, res) => {
+router.get('/overview', async (req, res) => {
 
-    try {
+  try {
 
-      const tasks =
-        await Task.find()
-          .populate('client', 'name email')
-          .populate('student', 'name email');
+    const totalUsers = await User.countDocuments();
 
-      res.json(tasks);
+    const totalStudents =
+      await User.countDocuments({ role: "student" });
 
-    }
-    catch (err) {
+    const totalTasks =
+      await Task.countDocuments();
 
-      res.status(500).json({
-        message: err.message
-      });
+    const totalPayments =
+      await Payment.countDocuments();
 
-    }
+    res.json({
 
-  });
+      totalUsers,
+      totalStudents,
+      totalTasks,
+      totalPayments
+
+    });
+
+  }
+
+  catch (err) {
+
+    res.status(500).json({
+      message: err.message
+    });
+
+  }
+
+});
 
 
 
-
-
-/**
+/*
 =====================================
-PAYMENTS
-=====================================
-*/
-
-
-// ALL PAYMENTS
-
-router.get('/payments',
-  verifyJWT,
-  ensureAdmin,
-  async (req, res) => {
-
-    try {
-
-      const filter = {};
-
-      if (req.query.status)
-        filter.status = req.query.status;
-
-
-      const payments =
-        await Payment.find(filter)
-          .populate('student', 'name email wallet')
-          .populate('task', 'title budget')
-          .populate('client', 'name email');
-
-      res.json(payments);
-
-    }
-    catch (err) {
-
-      res.status(500).json({
-        message: err.message
-      });
-
-    }
-
-  });
-
-
-
-
-
-// UPDATE PAYMENT STATUS
-
-router.patch('/payments/:paymentId/status',
-  verifyJWT,
-  ensureAdmin,
-  async (req, res) => {
-
-    try {
-
-      const payment =
-        await Payment.findById(
-          req.params.paymentId
-        );
-
-      if (!payment)
-        return res.status(404).json({
-          message: "Payment not found"
-        });
-
-
-
-      payment.status = req.body.status;
-
-      payment.adminNote =
-        req.body.adminNote || "";
-
-      payment.releasedAt =
-        new Date();
-
-
-      await payment.save();
-
-
-
-      // add money
-
-      if (req.body.status === "released") {
-
-        const student =
-          await User.findById(
-            payment.student
-          );
-
-        student.wallet += payment.amount;
-
-        await student.save();
-
-      }
-
-
-      res.json(payment);
-
-    }
-    catch (err) {
-
-      res.status(500).json({
-        message: err.message
-      });
-
-    }
-
-  });
-
-
-
-
-
-
-/**
-=====================================
-MANUAL PAYMENT LIST
+TASK STATS
 =====================================
 */
 
+router.get('/getTaskStats', async (req, res) => {
 
-router.get('/manual-payments/pending',
-  verifyJWT,
-  ensureAdmin,
-  async (req, res) => {
+  try {
 
-    try {
+    const total = await Task.countDocuments();
 
-      const payments =
-        await Payment.find({
-          status: 'held'
+    const completed =
+      await Task.countDocuments({
+        status: "completed"
+      });
+
+    const pending =
+      await Task.countDocuments({
+        status: "pending"
+      });
+
+    res.json({
+
+      total,
+      completed,
+      pending
+
+    });
+
+  }
+
+  catch (err) {
+
+    res.status(500).json({
+      message: err.message
+    });
+
+  }
+
+});
+
+
+
+/*
+=====================================
+DOMAIN STATS
+=====================================
+*/
+
+router.get('/getDomainStats', async (req, res) => {
+
+  try {
+
+    const stats =
+      await Task.aggregate([
+
+        {
+          $group: {
+            _id: "$domain",
+            count: { $sum: 1 }
+          }
+        }
+
+      ]);
+
+    res.json(stats);
+
+  }
+
+  catch (err) {
+
+    res.status(500).json({
+      message: err.message
+    });
+
+  }
+
+});
+
+
+
+/*
+=====================================
+TOP STUDENTS
+=====================================
+*/
+
+router.get('/getTopStudents', async (req, res) => {
+
+  try {
+
+    const stats =
+      await Payment.aggregate([
+
+        {
+          $group: {
+
+            _id: "$student",
+
+            total:
+              { $sum: "$amount" }
+
+          }
+        },
+
+        { $sort: { total: -1 } },
+
+        { $limit: 5 }
+
+      ]);
+
+    res.json(stats);
+
+  }
+
+  catch (err) {
+
+    res.status(500).json({
+      message: err.message
+    });
+
+  }
+
+});
+
+
+
+/*
+=====================================
+TIME SERIES
+=====================================
+*/
+
+router.get('/getTimeSeriesStats', async (req, res) => {
+
+  try {
+
+    const stats =
+      await Task.aggregate([
+
+        {
+          $group: {
+
+            _id: {
+
+              month:
+                { $month: "$createdAt" }
+
+            },
+
+            count:
+              { $sum: 1 }
+
+          }
+
+        }
+
+      ]);
+
+    res.json(stats);
+
+  }
+
+  catch (err) {
+
+    res.status(500).json({
+      message: err.message
+    });
+
+  }
+
+});
+
+
+
+/*
+=====================================
+TASK FUNNEL
+=====================================
+*/
+
+router.get('/getTaskFunnelStats', async (req, res) => {
+
+  try {
+
+    const stats = {
+
+      total:
+        await Task.countDocuments(),
+
+      assigned:
+        await Task.countDocuments({
+          student: { $ne: null }
+        }),
+
+      completed:
+        await Task.countDocuments({
+          status: "completed"
         })
-          .populate('student', 'name email')
-          .populate('task', 'title budget');
 
-      res.json(payments);
+    };
 
-    }
-    catch (err) {
+    res.json(stats);
 
-      res.status(500).json({
-        message: err.message
-      });
+  }
 
-    }
+  catch (err) {
 
-  });
+    res.status(500).json({
+      message: err.message
+    });
 
+  }
 
-
+});
 
 
 
-
-/**
+/*
 =====================================
-STUDENT DASHBOARD
+PENDING PAYMENTS
 =====================================
 */
 
+router.get('/getPendingPayments', async (req, res) => {
 
-router.get('/students/:studentId/dashboard',
-  verifyJWT,
-  ensureAdmin,
-  async (req, res) => {
+  try {
 
-    try {
+    const payments =
+      await Payment.find({
+        status: "held"
+      })
 
-      const student =
-        await User.findById(
-          req.params.studentId
-        ).select('-password');
+      .populate("student", "name email")
+      .populate("task", "title budget");
 
+    res.json(payments);
 
-      const tasks =
-        await Task.find({
-          student: req.params.studentId
-        });
+  }
 
+  catch (err) {
 
-      const payments =
-        await Payment.find({
-          student: req.params.studentId
-        });
+    res.status(500).json({
+      message: err.message
+    });
 
+  }
 
-      res.json({
-
-        student,
-        tasks,
-        payments
-
-      });
-
-    }
-    catch (err) {
-
-      res.status(500).json({
-        message: err.message
-      });
-
-    }
-
-  });
+});
 
 
 
-
-
-
-/**
+/*
 =====================================
-OVERVIEW STATS
+RELEASE PAYMENT
 =====================================
 */
 
-router.get('/stats/overview',
-  verifyJWT,
-  ensureAdmin,
-  async (req, res) => {
+router.post('/releasePayment/:id', async (req, res) => {
 
-    try {
+  try {
 
-      res.json({
+    const payment =
+      await Payment.findById(req.params.id);
 
-        totalUsers:
-          await User.countDocuments(),
-
-        totalStudents:
-          await User.countDocuments({
-            role: "student"
-          }),
-
-        totalTasks:
-          await Task.countDocuments(),
-
-        totalPayments:
-          await Payment.countDocuments(),
-
+    if (!payment)
+      return res.status(404).json({
+        message: "Not found"
       });
 
-    }
-    catch (err) {
 
-      res.status(500).json({
-        message: err.message
-      });
 
-    }
+    payment.status = "released";
 
-  });
+    await payment.save();
 
+
+
+    const student =
+      await User.findById(payment.student);
+
+    student.wallet += payment.amount;
+
+    await student.save();
+
+
+
+    res.json({
+      message: "Payment released"
+    });
+
+  }
+
+  catch (err) {
+
+    res.status(500).json({
+      message: err.message
+    });
+
+  }
+
+});
 
 
 
