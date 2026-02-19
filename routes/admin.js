@@ -41,11 +41,7 @@ router.get('/users', verifyJWT, ensureAdmin, async (req, res) => {
     if (location) filter.location = location;
     if (domain) filter.domain = domain;
 
-    // Always hide admins from manage-users list
-    if (!filter.role) {
-      filter.role = { $ne: 'admin' };
-    }
-
+    // NOTE: no forced hide-admin here now; Flutter shows/hides via filters
     const users = await User.find(filter).select('-password');
 
     res.json(users);
@@ -125,6 +121,7 @@ router.get(
         totalTasks,
         totalBids,
         totalPayments,
+        completedPayments,
       ] = await Promise.all([
         User.countDocuments(),
         User.countDocuments({ role: 'student' }),
@@ -133,6 +130,7 @@ router.get(
         Task.countDocuments(),
         Bid.countDocuments({}),
         Payment.countDocuments(),
+        Payment.countDocuments({ status: 'released' }),
       ]);
 
       res.json({
@@ -143,6 +141,7 @@ router.get(
         totalTasks,
         totalBids,
         totalPayments,
+        completedPayments,
       });
     } catch (err) {
       res.status(500).json({
@@ -203,15 +202,18 @@ router.get(
         {
           $group: {
             _id: '$domain',
-            count: { $sum: 1 },
+            total: { $sum: 1 },
+            completed: {
+              $sum: { $cond: [{ $eq: ['$status', 'completed'] }, 1, 0] },
+            },
           },
         },
       ]);
 
-      // Normalize domain names for nicer labels
       const mapped = stats.map((s) => ({
         domain: !s._id || s._id === 'general' ? 'Other' : s._id,
-        count: s.count,
+        total: s.total,
+        completed: s.completed,
       }));
 
       res.json(mapped);
