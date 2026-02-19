@@ -43,12 +43,13 @@ app.use("/api/users", require("./routes/user"));
 app.use("/api/tasks", require("./routes/tasks"));
 app.use("/api/bids", require("./routes/bids"));
 app.use("/api/payments", require("./routes/payments"));
+app.use("/api/messages", require("./routes/messages")); // ✅ restore messages feature
 
 // ✅ ADMIN ROUTES
 app.use("/api/admin", require("./routes/admin"));
 
 // =========================
-// GLOBAL ERROR HANDLER
+/* GLOBAL ERROR HANDLER */
 // =========================
 
 app.use((err, req, res, next) => {
