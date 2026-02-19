@@ -42,22 +42,28 @@ router.post('/submit', verifyJWT, async (req, res) => {
       student: req.user.id,
     });
 
-    // Notify client about new bid
-    const task = await Task.findById(value.task).select('client title');
-    if (task) {
-      await sendNotification(task.client, {
-        title: 'New bid received',
-        body: `Your task "${task.title}" has a new bid`,
-        data: {
-          type: 'bid_new',
-          taskId: task._id.toString(),
-          bidId: bid._id.toString(),
-        },
-      });
+    // Notify client about new bid (do not let notification crash the request)
+    try {
+      const task = await Task.findById(value.task).select('client title');
+      if (task) {
+        await sendNotification(task.client, {
+          title: 'New bid received',
+          body: `Your task "${task.title}" has a new bid`,
+          data: {
+            type: 'bid_new',
+            taskId: task._id.toString(),
+            bidId: bid._id.toString(),
+          },
+        });
+      }
+    } catch (notifyErr) {
+      console.error('Error sending bid submit notification', notifyErr);
+      // intentionally do not fail the response
     }
 
     res.json({ message: 'Bid submitted', bid });
   } catch (err) {
+    console.error('Error in /api/bids/submit', err);
     res
       .status(400)
       .json({ message: 'Error submitting bid', error: err.message });
@@ -129,15 +135,19 @@ router.post('/accept/:bidId', verifyJWT, async (req, res) => {
     await payment.save();
 
     // Notify student that bid is accepted
-    await sendNotification(bid.student, {
-      title: 'Bid accepted',
-      body: 'Your bid has been accepted. Please start working on the task.',
-      data: {
-        type: 'bid_accepted',
-        taskId: task._id.toString(),
-        bidId: bid._id.toString(),
-      },
-    });
+    try {
+      await sendNotification(bid.student, {
+        title: 'Bid accepted',
+        body: 'Your bid has been accepted. Please start working on the task.',
+        data: {
+          type: 'bid_accepted',
+          taskId: task._id.toString(),
+          bidId: bid._id.toString(),
+        },
+      });
+    } catch (notifyErr) {
+      console.error('Error sending bid accepted notification', notifyErr);
+    }
 
     res.json({
       message: 'Bid accepted, payment created',
@@ -146,6 +156,7 @@ router.post('/accept/:bidId', verifyJWT, async (req, res) => {
       order,
     });
   } catch (err) {
+    console.error('Error in /api/bids/accept/:bidId', err);
     res
       .status(400)
       .json({ message: 'Error accepting bid', error: err.message });
@@ -169,18 +180,23 @@ router.post('/decline/:bidId', verifyJWT, async (req, res) => {
     bid.status = 'rejected';
     await bid.save();
 
-    await sendNotification(bid.student, {
-      title: 'Bid declined',
-      body: `Your bid on "${bid.task.title}" was declined.`,
-      data: {
-        type: 'bid_declined',
-        taskId: bid.task._id.toString(),
-        bidId: bid._id.toString(),
-      },
-    });
+    try {
+      await sendNotification(bid.student, {
+        title: 'Bid declined',
+        body: `Your bid on "${bid.task.title}" was declined.`,
+        data: {
+          type: 'bid_declined',
+          taskId: bid.task._id.toString(),
+          bidId: bid._id.toString(),
+        },
+      });
+    } catch (notifyErr) {
+      console.error('Error sending bid declined notification', notifyErr);
+    }
 
     res.json({ message: 'Bid declined', bid });
   } catch (err) {
+    console.error('Error in /api/bids/decline/:bidId', err);
     res
       .status(400)
       .json({ message: 'Error declining bid', error: err.message });
@@ -203,6 +219,7 @@ router.get('/my', verifyJWT, async (req, res) => {
 
     res.json(bids);
   } catch (err) {
+    console.error('Error in /api/bids/my', err);
     res
       .status(500)
       .json({ message: 'Error fetching bids', error: err.message });
@@ -230,6 +247,7 @@ router.get('/task/:taskId', verifyJWT, async (req, res) => {
 
     res.json({ task, bids });
   } catch (err) {
+    console.error('Error in /api/bids/task/:taskId', err);
     res
       .status(500)
       .json({ message: 'Error fetching task bids', error: err.message });
