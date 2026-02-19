@@ -162,7 +162,7 @@ router.get(
         User.countDocuments({ role: 'admin' }),
         Task.countDocuments(),
         Bid.countDocuments({}),
-        // Total sum of student-side amounts (all payments)
+        // Total sum of student-side amounts (all accepted bids)
         Payment.aggregate([
           {
             $group: {
@@ -171,7 +171,7 @@ router.get(
             },
           },
         ]),
-        // Sum of amounts actually paid out to students
+        // Sum of bid amounts actually paid out to students
         Payment.aggregate([
           {
             $match: { status: 'released' },
@@ -208,8 +208,8 @@ router.get(
         totalAdmins,
         totalTasks,
         totalBids,
-        totalPayments,       // sum of student bid/net amounts
-        completedPayments,   // sum actually paid to students (released)
+        totalPayments,       // sum of all accepted bids (netToStudent)
+        completedPayments,   // sum of released bids (netToStudent)
         totalClientProposed, // sum of client proposed budgets
       });
     } catch (err) {
