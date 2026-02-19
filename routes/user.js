@@ -18,6 +18,12 @@ const updateMeSchema = Joi.object({
   location: Joi.string().max(200).allow('', null),
   domain: Joi.string().max(200).allow('', null),
   description: Joi.string().max(1000).allow('', null),
+
+  // optional bank fields for students
+  bankAccountHolderName: Joi.string().max(200).allow('', null),
+  bankName: Joi.string().max(200).allow('', null),
+  bankAccountNumber: Joi.string().max(50).allow('', null),
+  ifscCode: Joi.string().max(50).allow('', null),
 });
 
 // GET /api/users/me
@@ -88,6 +94,9 @@ router.get('/me', verifyJWT, async (req, res) => {
       userObj.pendingPayments = pendingPayments;
       userObj.earnedPayments = earnedPayments;
       userObj.acceptedQuoteTotal = acceptedQuoteTotal;
+
+      // also make sure bank fields are present (they already exist on userObj
+      // thanks to the flat fields in User.js, so no extra mapping needed)
 
       return res.json(userObj);
     }
