@@ -20,9 +20,38 @@ const ensureAdmin = (req, res, next) => {
       message: 'Admin only',
     });
   }
-
   next();
 };
+
+/*
+=====================================
+ADMIN USERS LIST
+/api/admin/users
+Used by AdminUsersScreen via AdminService.getUsers
+=====================================
+*/
+
+router.get('/users', verifyJWT, ensureAdmin, async (req, res) => {
+  try {
+    const { role, company, location, domain } = req.query;
+
+    const filter = {};
+    if (role) filter.role = role;
+    if (company) filter.company = company;
+    if (location) filter.location = location;
+    if (domain) filter.domain = domain;
+
+    const users = await User.find(filter).select('-password');
+
+    res.json(users);
+  } catch (err) {
+    console.error('Error in /api/admin/users', err);
+    res.status(500).json({
+      message: 'Error loading users',
+      error: err.message,
+    });
+  }
+});
 
 /*
 =====================================
@@ -112,7 +141,13 @@ router.get(
         },
       ]);
 
-      res.json(stats);
+      // Optional: normalize domain names for nicer labels
+      const mapped = stats.map((s) => ({
+        domain: !s._id || s._id === 'general' ? 'Other' : s._id,
+        count: s.count,
+      }));
+
+      res.json(mapped);
     } catch (err) {
       res.status(500).json({
         message: err.message,
