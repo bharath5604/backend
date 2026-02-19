@@ -56,6 +56,37 @@ router.get('/users', verifyJWT, ensureAdmin, async (req, res) => {
 
 /*
 =====================================
+ADMIN TASKS LIST
+/api/admin/tasks
+Used by AdminTasksScreen via AdminService.getTasks
+=====================================
+*/
+
+router.get('/tasks', verifyJWT, ensureAdmin, async (req, res) => {
+  try {
+    const { company, location, domain } = req.query;
+
+    const filter = {};
+    if (company) filter.company = company;
+    if (location) filter.location = location;
+    if (domain) filter.domain = domain;
+
+    const tasks = await Task.find(filter)
+      .populate('client', 'name email')
+      .populate('student', 'name email');
+
+    res.json(tasks);
+  } catch (err) {
+    console.error('Error in /api/admin/tasks', err);
+    res.status(500).json({
+      message: 'Error loading tasks',
+      error: err.message,
+    });
+  }
+});
+
+/*
+=====================================
 STUDENT DASHBOARD (DETAIL)
 /api/admin/students/:id/dashboard
 Used by AdminStudentDashboardService
