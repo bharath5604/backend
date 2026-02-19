@@ -112,13 +112,25 @@ const userSchema = new mongoose.Schema(
     /// BANK DETAILS (FLAT FIELDS)
     ////////////////////////////////////////////////////
 
+    bankAccountHolderName: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    bankName: {
+      type: String,
+      default: '',
+      trim: true,
+    },
     bankAccountNumber: {
       type: String,
       default: '',
+      trim: true,
     },
     ifscCode: {
       type: String,
       default: '',
+      trim: true,
     },
 
     ////////////////////////////////////////////////////

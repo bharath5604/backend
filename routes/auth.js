@@ -6,17 +6,29 @@ const jwt = require('jsonwebtoken');
 const Joi = require('joi');
 const verifyJWT = require('../middleware/authMiddleware');
 
-// Joi schemas
+////////////////////////////////////////////////////////////
+/// Joi schemas
+////////////////////////////////////////////////////////////
+
 const signupSchema = Joi.object({
   name: Joi.string().min(2).max(100).required(),
   email: Joi.string().email().max(200).required(),
   password: Joi.string().min(6).max(128).required(),
   role: Joi.string().valid('student', 'client', 'admin').required(),
+
+  // client fields
   company: Joi.string().max(200).allow('', null),
   location: Joi.string().max(200).allow('', null),
   domain: Joi.string().max(200).allow('', null),
+
   // For students: skills list used to filter task feed
   skills: Joi.array().items(Joi.string().max(100)).default([]),
+
+  // Bank details (mainly for students, but allowed for any role)
+  bankAccountHolderName: Joi.string().max(200).allow('', null),
+  bankName: Joi.string().max(200).allow('', null),
+  bankAccountNumber: Joi.string().max(50).allow('', null),
+  ifscCode: Joi.string().max(50).allow('', null),
 });
 
 const loginSchema = Joi.object({
@@ -24,12 +36,15 @@ const loginSchema = Joi.object({
   password: Joi.string().min(6).max(128).required(),
 });
 
-// SIGNUP
+////////////////////////////////////////////////////////////
+/// SIGNUP
+////////////////////////////////////////////////////////////
+
 router.post('/signup', async (req, res) => {
   try {
     const { error, value } = signupSchema.validate(req.body, {
       abortEarly: false,
-      stripUnknown: true,
+      stripUnknown: true, // keeps only fields declared in signupSchema
     });
     if (error) {
       return res.status(400).json({
@@ -47,6 +62,10 @@ router.post('/signup', async (req, res) => {
       location,
       domain,
       skills,
+      bankAccountHolderName,
+      bankName,
+      bankAccountNumber,
+      ifscCode,
     } = value;
 
     const existing = await User.findOne({ email });
@@ -61,12 +80,23 @@ router.post('/signup', async (req, res) => {
       email,
       password: hashed,
       role,
+
       // client-specific fields
       company: role === 'client' ? company : undefined,
       location: role === 'client' ? location : undefined,
       domain: role === 'client' ? domain : undefined,
+
       // student-specific fields
       skills: role === 'student' ? skills : [],
+
+      // bank details (typically student)
+      bankAccountHolderName:
+        role === 'student' ? bankAccountHolderName || '' : '',
+      bankName: role === 'student' ? bankName || '' : '',
+      bankAccountNumber:
+        role === 'student' ? bankAccountNumber || '' : '',
+      ifscCode: role === 'student' ? ifscCode || '' : '',
+
       // isApproved default from schema
     });
 
@@ -82,7 +112,10 @@ router.post('/signup', async (req, res) => {
   }
 });
 
-// LOGIN
+////////////////////////////////////////////////////////////
+/// LOGIN
+////////////////////////////////////////////////////////////
+
 router.post('/login', async (req, res) => {
   try {
     const { error, value } = loginSchema.validate(req.body, {
@@ -128,8 +161,11 @@ router.post('/login', async (req, res) => {
   }
 });
 
-// REGISTER / UPDATE FCM TOKEN (idempotent)
-// POST /api/auth/register-fcm   { fcmToken }
+////////////////////////////////////////////////////////////
+/// REGISTER / UPDATE FCM TOKEN (idempotent)
+/// POST /api/auth/register-fcm   { fcmToken }
+////////////////////////////////////////////////////////////
+
 router.post('/register-fcm', verifyJWT, async (req, res) => {
   try {
     const { fcmToken } = req.body;

@@ -32,6 +32,8 @@ exports.signup = async (req, res) => {
 
       // student
       skills,
+      bankAccountHolderName,
+      bankName,
       bankAccountNumber,
       ifscCode,
 
@@ -64,6 +66,8 @@ exports.signup = async (req, res) => {
 
       // student
       skills: skills || [],
+      bankAccountHolderName: bankAccountHolderName || '',
+      bankName: bankName || '',
       bankAccountNumber: bankAccountNumber || '',
       ifscCode: ifscCode || '',
 
