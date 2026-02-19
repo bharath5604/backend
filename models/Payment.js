@@ -1,3 +1,5 @@
+// models/Payment.js
+
 const mongoose = require('mongoose');
 
 const paymentSchema = new mongoose.Schema(
@@ -61,16 +63,15 @@ const paymentSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-// Keep releasedAt in sync with status
-paymentSchema.pre('save', function (next) {
-  if (this.isModified('status')) {
-    if (this.status === 'released') {
-      this.releasedAt = this.releasedAt || new Date();
-    } else if (this.status !== 'released') {
-      this.releasedAt = undefined;
-    }
+// Keep releasedAt in sync with status (promise style: no next)
+paymentSchema.pre('save', function () {
+  if (!this.isModified('status')) return;
+
+  if (this.status === 'released') {
+    this.releasedAt = this.releasedAt || new Date();
+  } else {
+    this.releasedAt = undefined;
   }
-  next();
 });
 
 module.exports = mongoose.model('Payment', paymentSchema);

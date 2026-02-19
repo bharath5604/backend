@@ -441,8 +441,82 @@ router.get(
 
 /*
 =====================================
+ADMIN PAYMENTS LIST
+GET /api/admin/payments?status=held|approved|released|cancelled
+(for generic admin_payment_service.dart listing)
+=====================================
+*/
+
+router.get(
+  '/payments',
+  verifyJWT,
+  ensureAdmin,
+  async (req, res) => {
+    try {
+      const { status } = req.query;
+      const filter = {};
+      if (status) filter.status = status;
+
+      const payments = await Payment.find(filter)
+        .populate('student', 'name email')
+        .populate('client', 'name email')
+        .populate('task', 'title budget status');
+
+      res.json(payments);
+    } catch (err) {
+      console.error('Error in GET /api/admin/payments', err);
+      res.status(500).json({ message: err.message });
+    }
+  }
+);
+
+/*
+=====================================
+ADMIN UPDATE PAYMENT STATUS (generic)
+PATCH /api/admin/payments/:id/status
+body: { status, adminNote? }
+=====================================
+*/
+
+router.patch(
+  '/payments/:id/status',
+  verifyJWT,
+  ensureAdmin,
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { status, adminNote } = req.body;
+
+      const payment = await Payment.findById(id);
+      if (!payment) {
+        return res.status(404).json({ message: 'Payment not found' });
+      }
+
+      if (status) {
+        payment.status = status;
+      }
+      if (adminNote) {
+        payment.declineReason = adminNote;
+      }
+
+      await payment.save();
+
+      res.json({
+        message: 'Payment status updated',
+        payment,
+      });
+    } catch (err) {
+      console.error('Error in PATCH /api/admin/payments/:id/status', err);
+      res.status(500).json({ message: err.message });
+    }
+  }
+);
+
+/*
+=====================================
 PENDING PAYMENTS
 Show only payments approved by client (Payment.status = 'approved')
+Used by old AdminService.getPendingPayments()
 =====================================
 */
 
@@ -475,6 +549,7 @@ router.get(
 =====================================
 RELEASE PAYMENT
 Uses netToStudent for wallet and earnings stats
+POST /api/admin/releasePayment/:id
 =====================================
 */
 

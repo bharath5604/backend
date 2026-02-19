@@ -214,7 +214,7 @@ userSchema.virtual('averageScore').get(function () {
   return this.totalScore / this.totalScoreCount;
 });
 
-// Optional: total accepted earnings (pending + released)
+// total accepted earnings (pending + released)
 userSchema.virtual('totalAcceptedEarnings').get(function () {
   return (this.pendingEarnings || 0) + (this.totalEarningsReleased || 0);
 });
