@@ -1,79 +1,192 @@
-const mongoose = require('mongoose');
+const mongoose = require("mongoose");
 
-const taskSchema = new mongoose.Schema(
+const { Schema } = mongoose;
+
+/**
+ * Submission Sub Schema
+ */
+const submissionSchema = new Schema(
   {
-    title: String,
-    description: String,
+    student: {
+      type: Schema.Types.ObjectId,
+      ref: "User",
+      required: true,
+    },
 
-    // Client who created the task
-    client: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    fileUrl: {
+      type: String,
+      required: true,
+    },
 
-    // Skills required for this task (used to match with student.skills)
+    notes: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+
+    approved: {
+      type: Boolean,
+      default: false,
+    },
+
+    submittedAt: {
+      type: Date,
+      default: Date.now,
+    },
+  },
+  { _id: false }
+);
+
+/**
+ * Main Task Schema
+ */
+const taskSchema = new Schema(
+  {
+    /**
+     * Basic Info
+     */
+    title: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+
+    description: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+
+    /**
+     * Client Info
+     */
+    client: {
+      type: Schema.Types.ObjectId,
+      ref: "User",
+      required: true,
+      index: true,
+    },
+
+    /**
+     * Skills Required
+     */
     requiredSkills: {
       type: [String],
       default: [],
     },
 
-    budget: Number,
-    deadline: Date,
+    /**
+     * Budget & Deadline
+     */
+    budget: {
+      type: Number,
+      required: true,
+      min: 0,
+    },
 
-    // Filters
-    location: String,
-    domain: String,
-    company: String,
+    deadline: {
+      type: Date,
+      required: true,
+    },
 
+    /**
+     * Filters
+     */
+    location: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+
+    domain: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+
+    company: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+
+    /**
+     * Task Status
+     */
     status: {
       type: String,
-      enum: ['open', 'assigned', 'under_review', 'completed'],
-      default: 'open',
+      enum: ["open", "assigned", "under_review", "completed"],
+      default: "open",
+      index: true,
     },
 
-    // Assigned student for this task (used by chat and manual payments)
+    /**
+     * Assigned Student
+     */
     student: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'User',
+      type: Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
     },
 
-    // Attachments uploaded by client for this task
+    /**
+     * Client Attachments
+     */
     attachments: {
-      type: [String], // e.g. Firebase Storage download URLs
+      type: [String],
       default: [],
     },
+
     attachmentNames: {
-      type: [String], // original filenames for display
+      type: [String],
       default: [],
     },
 
-    // Submission from student
+    /**
+     * Student Submission
+     */
     submission: {
-      student: {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: 'User',
-      },
-      fileUrl: String,
-      notes: {
-        type: String,
-        default: '',
-      },
-      approved: { type: Boolean, default: false },
-      submittedAt: {
-        type: Date,
-      },
+      type: submissionSchema,
+      default: null,
     },
 
-    rating: { type: Number, default: 0 },
+    /**
+     * Rating & Feedback
+     */
+    rating: {
+      type: Number,
+      default: 0,
+      min: 0,
+      max: 5,
+    },
 
-    // Client feedback and score
     feedback: {
       type: String,
-      default: '',
+      default: "",
+      trim: true,
     },
+
     score: {
       type: Number,
       default: 0,
+      min: 0,
+      max: 100,
     },
   },
-  { timestamps: true }
+
+  {
+    timestamps: true,
+  }
 );
 
-module.exports = mongoose.model('Task', taskSchema);
+/**
+ * Index for faster searching
+ */
+taskSchema.index({ requiredSkills: 1 });
+taskSchema.index({ domain: 1 });
+taskSchema.index({ location: 1 });
+
+/**
+ * Export Model
+ */
+module.exports = mongoose.model("Task", taskSchema);
