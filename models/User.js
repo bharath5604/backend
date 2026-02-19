@@ -122,13 +122,16 @@ const userSchema = new mongoose.Schema(
     },
 
     ////////////////////////////////////////////////////
-    /// FEEDBACK STATS
+    /// FEEDBACK / TASK / EARNINGS STATS
     ////////////////////////////////////////////////////
 
+    // number of tasks the student has completed
     tasksCompleted: {
       type: Number,
       default: 0,
     },
+
+    // cumulative rating totals
     totalScore: {
       type: Number,
       default: 0,
@@ -137,6 +140,19 @@ const userSchema = new mongoose.Schema(
       type: Number,
       default: 0,
     },
+
+    // sum of accepted quotes not yet released (held payments)
+    pendingEarnings: {
+      type: Number,
+      default: 0,
+    },
+
+    // sum of all released payments to this student
+    totalEarningsReleased: {
+      type: Number,
+      default: 0,
+    },
+
     feedbackScores: {
       type: [feedbackScoreSchema],
       default: [],
