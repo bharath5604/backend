@@ -24,7 +24,7 @@ app.use(
 );
 
 // =========================
-/* HEALTH CHECK */
+// HEALTH CHECK
 // =========================
 
 app.get("/", (req, res) => {
@@ -34,11 +34,9 @@ app.get("/", (req, res) => {
 // =========================
 // ROUTES
 // =========================
-// server.js
-const publicRoutes = require('./routes/public');
 
-// ...
-app.use('/api', publicRoutes); // no verifyJWT here
+// Public stats route for landing page (matches StatsService baseUrl)
+app.use("/api/stats", require("./routes/stats")); // <-- use stats.js here [file:53]
 
 app.use("/api/auth", require("./routes/auth"));
 app.use("/api/users", require("./routes/user"));
@@ -46,8 +44,7 @@ app.use("/api/tasks", require("./routes/tasks"));
 app.use("/api/bids", require("./routes/bids"));
 app.use("/api/payments", require("./routes/payments"));
 
-// ✅ ADMIN ROUTES (use routes/admin.js, not AdminRoutes.js)
-
+// ✅ ADMIN ROUTES
 app.use("/api/admin", require("./routes/admin"));
 
 // =========================
@@ -57,7 +54,7 @@ app.use("/api/admin", require("./routes/admin"));
 connectDB();
 
 // =========================
-/* SERVER */
+// SERVER
 // =========================
 
 const PORT = process.env.PORT || 5000;
