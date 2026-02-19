@@ -41,6 +41,11 @@ router.get('/users', verifyJWT, ensureAdmin, async (req, res) => {
     if (location) filter.location = location;
     if (domain) filter.domain = domain;
 
+    // Always hide admins from manage-users list
+    if (!filter.role) {
+      filter.role = { $ne: 'admin' };
+    }
+
     const users = await User.find(filter).select('-password');
 
     res.json(users);
@@ -55,6 +60,52 @@ router.get('/users', verifyJWT, ensureAdmin, async (req, res) => {
 
 /*
 =====================================
+STUDENT DASHBOARD (DETAIL)
+/api/admin/students/:id/dashboard
+Used by AdminStudentDashboardService
+=====================================
+*/
+
+router.get(
+  '/students/:id/dashboard',
+  verifyJWT,
+  ensureAdmin,
+  async (req, res) => {
+    try {
+      const studentId = req.params.id;
+
+      const student = await User.findById(studentId).select('-password');
+      if (!student || student.role !== 'student') {
+        return res.status(404).json({ message: 'Student not found' });
+      }
+
+      const [totalTasks, completedTasks, totalBids, totalPayments] =
+        await Promise.all([
+          Task.countDocuments({ student: studentId }),
+          Task.countDocuments({ student: studentId, status: 'completed' }),
+          Bid.countDocuments({ student: studentId }),
+          Payment.countDocuments({ student: studentId, status: 'released' }),
+        ]);
+
+      res.json({
+        student,
+        totalTasks,
+        completedTasks,
+        totalBids,
+        totalPayments,
+      });
+    } catch (err) {
+      console.error('Error in /api/admin/students/:id/dashboard', err);
+      res.status(500).json({
+        message: 'Error loading student dashboard',
+        error: err.message,
+      });
+    }
+  }
+);
+
+/*
+=====================================
 OVERVIEW STATS
 /api/admin/stats/overview
 =====================================
@@ -66,15 +117,31 @@ router.get(
   ensureAdmin,
   async (req, res) => {
     try {
-      const totalUsers = await User.countDocuments();
-      const totalStudents = await User.countDocuments({ role: 'student' });
-      const totalTasks = await Task.countDocuments();
-      const totalPayments = await Payment.countDocuments();
+      const [
+        totalUsers,
+        totalStudents,
+        totalClients,
+        totalAdmins,
+        totalTasks,
+        totalBids,
+        totalPayments,
+      ] = await Promise.all([
+        User.countDocuments(),
+        User.countDocuments({ role: 'student' }),
+        User.countDocuments({ role: 'client' }),
+        User.countDocuments({ role: 'admin' }),
+        Task.countDocuments(),
+        Bid.countDocuments({}),
+        Payment.countDocuments(),
+      ]);
 
       res.json({
         totalUsers,
         totalStudents,
+        totalClients,
+        totalAdmins,
         totalTasks,
+        totalBids,
         totalPayments,
       });
     } catch (err) {
@@ -141,7 +208,7 @@ router.get(
         },
       ]);
 
-      // Optional: normalize domain names for nicer labels
+      // Normalize domain names for nicer labels
       const mapped = stats.map((s) => ({
         domain: !s._id || s._id === 'general' ? 'Other' : s._id,
         count: s.count,
