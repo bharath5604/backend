@@ -8,8 +8,6 @@ const Bid = require('../models/Bid');
 
 const verifyJWT = require('../middleware/authMiddleware');
 
-
-
 /*
 =====================================
 ADMIN CHECK
@@ -17,19 +15,14 @@ ADMIN CHECK
 */
 
 const ensureAdmin = (req, res, next) => {
-
   if (!req.user || req.user.role !== 'admin') {
-
     return res.status(403).json({
-      message: 'Admin only'
+      message: 'Admin only',
     });
-
   }
 
   next();
-
 };
-
 
 /*
 =====================================
@@ -38,38 +31,30 @@ OVERVIEW STATS
 =====================================
 */
 
-router.get('/stats/overview',
-verifyJWT,
-ensureAdmin,
-async (req, res) => {
+router.get(
+  '/stats/overview',
+  verifyJWT,
+  ensureAdmin,
+  async (req, res) => {
+    try {
+      const totalUsers = await User.countDocuments();
+      const totalStudents = await User.countDocuments({ role: 'student' });
+      const totalTasks = await Task.countDocuments();
+      const totalPayments = await Payment.countDocuments();
 
-  try {
-
-    const totalUsers = await User.countDocuments();
-    const totalStudents = await User.countDocuments({ role: "student" });
-    const totalTasks = await Task.countDocuments();
-    const totalPayments = await Payment.countDocuments();
-
-    res.json({
-      totalUsers,
-      totalStudents,
-      totalTasks,
-      totalPayments
-    });
-
+      res.json({
+        totalUsers,
+        totalStudents,
+        totalTasks,
+        totalPayments,
+      });
+    } catch (err) {
+      res.status(500).json({
+        message: err.message,
+      });
+    }
   }
-
-  catch (err) {
-
-    res.status(500).json({
-      message: err.message
-    });
-
-  }
-
-});
-
-
+);
 
 /*
 =====================================
@@ -77,43 +62,34 @@ TASK STATS
 =====================================
 */
 
-router.get('/getTaskStats', async (req, res) => {
+router.get(
+  '/getTaskStats',
+  verifyJWT,
+  ensureAdmin,
+  async (req, res) => {
+    try {
+      const total = await Task.countDocuments();
 
-  try {
-
-    const total = await Task.countDocuments();
-
-    const completed =
-      await Task.countDocuments({
-        status: "completed"
+      const completed = await Task.countDocuments({
+        status: 'completed',
       });
 
-    const pending =
-      await Task.countDocuments({
-        status: "pending"
+      const pending = await Task.countDocuments({
+        status: 'pending',
       });
 
-    res.json({
-
-      total,
-      completed,
-      pending
-
-    });
-
+      res.json({
+        total,
+        completed,
+        pending,
+      });
+    } catch (err) {
+      res.status(500).json({
+        message: err.message,
+      });
+    }
   }
-
-  catch (err) {
-
-    res.status(500).json({
-      message: err.message
-    });
-
-  }
-
-});
-
-
+);
 
 /*
 =====================================
@@ -121,37 +97,29 @@ DOMAIN STATS
 =====================================
 */
 
-router.get('/getDomainStats', async (req, res) => {
-
-  try {
-
-    const stats =
-      await Task.aggregate([
-
+router.get(
+  '/getDomainStats',
+  verifyJWT,
+  ensureAdmin,
+  async (req, res) => {
+    try {
+      const stats = await Task.aggregate([
         {
           $group: {
-            _id: "$domain",
-            count: { $sum: 1 }
-          }
-        }
-
+            _id: '$domain',
+            count: { $sum: 1 },
+          },
+        },
       ]);
 
-    res.json(stats);
-
+      res.json(stats);
+    } catch (err) {
+      res.status(500).json({
+        message: err.message,
+      });
+    }
   }
-
-  catch (err) {
-
-    res.status(500).json({
-      message: err.message
-    });
-
-  }
-
-});
-
-
+);
 
 /*
 =====================================
@@ -159,45 +127,31 @@ TOP STUDENTS
 =====================================
 */
 
-router.get('/getTopStudents', async (req, res) => {
-
-  try {
-
-    const stats =
-      await Payment.aggregate([
-
+router.get(
+  '/getTopStudents',
+  verifyJWT,
+  ensureAdmin,
+  async (req, res) => {
+    try {
+      const stats = await Payment.aggregate([
         {
           $group: {
-
-            _id: "$student",
-
-            total:
-              { $sum: "$amount" }
-
-          }
+            _id: '$student',
+            total: { $sum: '$amount' },
+          },
         },
-
         { $sort: { total: -1 } },
-
-        { $limit: 5 }
-
+        { $limit: 5 },
       ]);
 
-    res.json(stats);
-
+      res.json(stats);
+    } catch (err) {
+      res.status(500).json({
+        message: err.message,
+      });
+    }
   }
-
-  catch (err) {
-
-    res.status(500).json({
-      message: err.message
-    });
-
-  }
-
-});
-
-
+);
 
 /*
 =====================================
@@ -205,47 +159,31 @@ TIME SERIES
 =====================================
 */
 
-router.get('/getTimeSeriesStats', async (req, res) => {
-
-  try {
-
-    const stats =
-      await Task.aggregate([
-
+router.get(
+  '/getTimeSeriesStats',
+  verifyJWT,
+  ensureAdmin,
+  async (req, res) => {
+    try {
+      const stats = await Task.aggregate([
         {
           $group: {
-
             _id: {
-
-              month:
-                { $month: "$createdAt" }
-
+              month: { $month: '$createdAt' },
             },
-
-            count:
-              { $sum: 1 }
-
-          }
-
-        }
-
+            count: { $sum: 1 },
+          },
+        },
       ]);
 
-    res.json(stats);
-
+      res.json(stats);
+    } catch (err) {
+      res.status(500).json({
+        message: err.message,
+      });
+    }
   }
-
-  catch (err) {
-
-    res.status(500).json({
-      message: err.message
-    });
-
-  }
-
-});
-
-
+);
 
 /*
 =====================================
@@ -253,42 +191,30 @@ TASK FUNNEL
 =====================================
 */
 
-router.get('/getTaskFunnelStats', async (req, res) => {
-
-  try {
-
-    const stats = {
-
-      total:
-        await Task.countDocuments(),
-
-      assigned:
-        await Task.countDocuments({
-          student: { $ne: null }
+router.get(
+  '/getTaskFunnelStats',
+  verifyJWT,
+  ensureAdmin,
+  async (req, res) => {
+    try {
+      const stats = {
+        total: await Task.countDocuments(),
+        assigned: await Task.countDocuments({
+          student: { $ne: null },
         }),
+        completed: await Task.countDocuments({
+          status: 'completed',
+        }),
+      };
 
-      completed:
-        await Task.countDocuments({
-          status: "completed"
-        })
-
-    };
-
-    res.json(stats);
-
+      res.json(stats);
+    } catch (err) {
+      res.status(500).json({
+        message: err.message,
+      });
+    }
   }
-
-  catch (err) {
-
-    res.status(500).json({
-      message: err.message
-    });
-
-  }
-
-});
-
-
+);
 
 /*
 =====================================
@@ -296,33 +222,26 @@ PENDING PAYMENTS
 =====================================
 */
 
-router.get('/getPendingPayments', async (req, res) => {
-
-  try {
-
-    const payments =
-      await Payment.find({
-        status: "held"
+router.get(
+  '/getPendingPayments',
+  verifyJWT,
+  ensureAdmin,
+  async (req, res) => {
+    try {
+      const payments = await Payment.find({
+        status: 'held',
       })
+        .populate('student', 'name email')
+        .populate('task', 'title budget');
 
-      .populate("student", "name email")
-      .populate("task", "title budget");
-
-    res.json(payments);
-
+      res.json(payments);
+    } catch (err) {
+      res.status(500).json({
+        message: err.message,
+      });
+    }
   }
-
-  catch (err) {
-
-    res.status(500).json({
-      message: err.message
-    });
-
-  }
-
-});
-
-
+);
 
 /*
 =====================================
@@ -330,51 +249,36 @@ RELEASE PAYMENT
 =====================================
 */
 
-router.post('/releasePayment/:id', async (req, res) => {
+router.post(
+  '/releasePayment/:id',
+  verifyJWT,
+  ensureAdmin,
+  async (req, res) => {
+    try {
+      const payment = await Payment.findById(req.params.id);
 
-  try {
+      if (!payment) {
+        return res.status(404).json({
+          message: 'Not found',
+        });
+      }
 
-    const payment =
-      await Payment.findById(req.params.id);
+      payment.status = 'released';
+      await payment.save();
 
-    if (!payment)
-      return res.status(404).json({
-        message: "Not found"
+      const student = await User.findById(payment.student);
+      student.wallet += payment.amount;
+      await student.save();
+
+      res.json({
+        message: 'Payment released',
       });
-
-
-
-    payment.status = "released";
-
-    await payment.save();
-
-
-
-    const student =
-      await User.findById(payment.student);
-
-    student.wallet += payment.amount;
-
-    await student.save();
-
-
-
-    res.json({
-      message: "Payment released"
-    });
-
+    } catch (err) {
+      res.status(500).json({
+        message: err.message,
+      });
+    }
   }
-
-  catch (err) {
-
-    res.status(500).json({
-      message: err.message
-    });
-
-  }
-
-});
-
-
+);
 
 module.exports = router;
