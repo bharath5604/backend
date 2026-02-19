@@ -1,58 +1,73 @@
-const express = require('express');
+const express = require("express");
+
 const router = express.Router();
 
-const adminController = require('../controllers/adminController');
-const auth = require('../middleware/authMiddleware');
+const adminController =
+require("../controllers/adminController");
 
-/*
-=====================================
-ADMIN CHECK
-=====================================
-*/
-const ensureAdmin = (req, res, next) => {
-  if (!req.user || req.user.role !== 'admin') {
-    return res.status(403).json({ message: 'Admin only' });
-  }
-  next();
-};
+const auth =
+require("../middleware/authMiddleware");
 
-/*
-=====================================
-COMPLETED TASKS
-URL: /api/admin/tasks/completed
-=====================================
-*/
+
+
+// ================================
+// OVERVIEW STATS
+// ================================
+
 router.get(
-  '/completed',
-  auth,
-  ensureAdmin,
-  adminController.getCompletedTasks
+"/stats/overview",
+auth,
+adminController.getOverviewStats
 );
 
-/*
-=====================================
-PENDING PAYMENTS
-URL: /api/admin/tasks/pending-payments
-=====================================
-*/
+
+
+// ================================
+// TASK STATS
+// ================================
+
 router.get(
-  '/pending-payments',
-  auth,
-  ensureAdmin,
-  adminController.getPendingPayments
+"/stats/tasks",
+auth,
+adminController.getTaskStats
 );
 
-/*
-=====================================
-PAY STUDENT FOR TASK
-URL: /api/admin/tasks/pay/:taskId
-=====================================
-*/
+
+
+// ================================
+// COMPLETED TASKS
+// ================================
+
+router.get(
+"/completed",
+auth,
+adminController.getCompletedTasks
+);
+
+
+
+// ================================
+// PENDING PAYMENTS
+// ================================
+
+router.get(
+"/pending-payments",
+auth,
+adminController.getPendingPayments
+);
+
+
+
+// ================================
+// PAY STUDENT
+// ================================
+
 router.put(
-  '/pay/:taskId',
-  auth,
-  ensureAdmin,
-  adminController.payStudent
+"/pay/:taskId",
+auth,
+adminController.payStudent
 );
+
+
 
 module.exports = router;

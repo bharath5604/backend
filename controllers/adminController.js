@@ -1,172 +1,206 @@
-const Task = require("../models/Task");
 const User = require("../models/User");
 
+const Task = require("../models/Task");
 
-/**
- * =====================================
- * GET ALL COMPLETED TASKS
- * =====================================
- */
-exports.getCompletedTasks = async (req, res) => {
+const Payment = require("../models/Payment");
+
+
+
+// ====================================
+// OVERVIEW STATS
+// ====================================
+
+exports.getOverviewStats = async (req, res) => {
+
   try {
 
-    if (req.user.role !== "admin") {
-      return res.status(403).json({
-        message: "Access denied",
-      });
-    }
+    res.json({
 
-    const tasks = await Task.find({
-      status: "completed",
-    })
-      .populate("student", "name email wallet")
-      .populate("client", "name email")
-      .sort({ updatedAt: -1 });
+      totalUsers:
+      await User.countDocuments(),
 
+      totalStudents:
+      await User.countDocuments({
+        role: "student"
+      }),
 
-    res.json(tasks);
+      totalTasks:
+      await Task.countDocuments(),
 
-  } catch (err) {
+      totalPayments:
+      await Payment.countDocuments(),
 
-    console.error(err);
-
-    res.status(500).json({
-      message: "Failed to fetch",
-      error: err.message,
     });
 
   }
+
+  catch (error) {
+
+    res.status(500).json({
+      message: error.message
+    });
+
+  }
+
 };
 
 
 
-/**
- * =====================================
- * GET PENDING PAYMENTS
- * =====================================
- */
+// ====================================
+// TASK STATS
+// ====================================
+
+exports.getTaskStats = async (req, res) => {
+
+  try {
+
+    res.json({
+
+      total:
+      await Task.countDocuments(),
+
+      completed:
+      await Task.countDocuments({
+        status: "completed"
+      }),
+
+      pending:
+      await Task.countDocuments({
+        status: "pending"
+      }),
+
+    });
+
+  }
+
+  catch (error) {
+
+    res.status(500).json({
+      message: error.message
+    });
+
+  }
+
+};
+
+
+
+// ====================================
+// COMPLETED TASKS
+// ====================================
+
+exports.getCompletedTasks = async (req, res) => {
+
+  try {
+
+    const tasks =
+    await Task.find({
+      status: "completed"
+    })
+    .populate("student", "name email")
+    .populate("client", "name email");
+
+
+    res.json(tasks);
+
+  }
+
+  catch (error) {
+
+    res.status(500).json({
+      message: error.message
+    });
+
+  }
+
+};
+
+
+
+// ====================================
+// PENDING PAYMENTS
+// ====================================
+
 exports.getPendingPayments = async (req, res) => {
 
   try {
 
-    if (req.user.role !== "admin") {
-      return res.status(403).json({
-        message: "Access denied",
-      });
-    }
-
-    const tasks = await Task.find({
-      status: "completed",
-      paymentStatus: "pending",
+    const payments =
+    await Payment.find({
+      status: "held"
     })
-      .populate("student", "name email wallet")
-      .populate("client", "name email");
+    .populate("student", "name email")
+    .populate("task", "title budget");
 
 
-    res.json(tasks);
+    res.json(payments);
 
-  } catch (err) {
+  }
 
-    console.error(err);
+  catch (error) {
 
     res.status(500).json({
-      message: "Failed",
-      error: err.message,
+      message: error.message
     });
 
   }
+
 };
 
 
 
-/**
- * =====================================
- * MARK PAYMENT AS PAID
- * =====================================
- */
+// ====================================
+// PAY STUDENT
+// ====================================
+
 exports.payStudent = async (req, res) => {
 
   try {
 
-    if (req.user.role !== "admin") {
+    const payment =
+    await Payment.findOne({
+      task: req.params.taskId
+    });
 
-      return res.status(403).json({
-        message: "Access denied",
-      });
+    if (!payment)
 
-    }
-
-
-    const task = await Task.findById(req.params.taskId);
-
-    if (!task)
       return res.status(404).json({
-        message: "Task not found",
+
+        message: "Payment not found"
+
       });
 
 
 
-    if (task.paymentStatus === "paid") {
+    payment.status = "released";
 
-      return res.json({
-        message: "Already paid",
-      });
-
-    }
+    await payment.save();
 
 
 
-    const student = await User.findById(task.student);
+    const student =
+    await User.findById(payment.student);
 
-    if (!student)
-      return res.status(404).json({
-        message: "Student not found",
-      });
-
-
-
-    /**
-     * UPDATE WALLET
-     */
-
-    student.wallet =
-      (student.wallet || 0) + task.budget;
+    student.wallet += payment.amount;
 
     await student.save();
 
 
 
-    /**
-     * UPDATE TASK
-     */
-
-    task.paymentStatus = "paid";
-
-    task.paidAt = new Date();
-
-    await task.save();
-
-
-
     res.json({
 
-      message: "Payment successful",
+      message: "Payment released successfully"
 
-      wallet: student.wallet,
-
-      task,
-
-    });
-
-
-  } catch (err) {
-
-    console.error(err);
-
-    res.status(500).json({
-      message: "Payment failed",
-      error: err.message,
     });
 
   }
+
+  catch (error) {
+
+    res.status(500).json({
+      message: error.message
+    });
+
+  }
+
 };

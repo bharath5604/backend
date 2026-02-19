@@ -1,42 +1,41 @@
-const jwt = require('jsonwebtoken');
-require('dotenv').config();
+const jwt = require("jsonwebtoken");
 
-const verifyJWT = (req, res, next) => {
-  const authHeader = req.headers['authorization'] || '';
+module.exports = (req, res, next) => {
 
-  // Debug: log incoming header (do not log full token in production)
-  console.log('[AUTH] Incoming Authorization header:', authHeader);
+  try {
 
-  // Expected format: "Bearer <token>"
-  if (!authHeader.startsWith('Bearer ')) {
-    console.warn('[AUTH] No Bearer token provided');
-    return res.status(401).json({ message: 'No token provided' });
-  }
+    const token =
+    req.headers.authorization?.split(" ")[1];
 
-  const token = authHeader.split(' ')[1]; // extract the real token
+    if (!token)
 
-  if (!process.env.JWT_SECRET) {
-    console.error('[AUTH] JWT_SECRET is not defined in environment');
-    return res
-      .status(500)
-      .json({ message: 'Server misconfigured: JWT secret missing' });
-  }
+      return res.status(401).json({
 
-  jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
-    if (err) {
-      console.error('[AUTH] JWT verify error:', err.name, err.message);
-      return res.status(401).json({ message: 'Invalid token' });
-    }
+        message: "No token"
 
-    // Debug: successful decode
-    console.log('[AUTH] JWT verified OK:', {
-      id: decoded.id,
-      role: decoded.role,
-    });
+      });
+
+
+
+    const decoded =
+    jwt.verify(token, process.env.JWT_SECRET);
+
+
 
     req.user = decoded;
-    next();
-  });
-};
 
-module.exports = verifyJWT;
+    next();
+
+  }
+
+  catch (error) {
+
+    res.status(401).json({
+
+      message: "Invalid token"
+
+    });
+
+  }
+
+};
