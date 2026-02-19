@@ -1,8 +1,10 @@
 // routes/user.js
 const express = require('express');
 const router = express.Router();
+const mongoose = require('mongoose');
 const User = require('../models/User');
 const Payment = require('../models/Payment');
+const Bid = require('../models/Bid');
 const verifyJWT = require('../middleware/authMiddleware');
 const Joi = require('joi');
 
@@ -32,7 +34,7 @@ router.get('/me', verifyJWT, async (req, res) => {
     const user = await User.findById(req.user.id).select('-password');
     if (!user) return res.status(404).json({ message: 'User not found' });
 
-    // If student, also compute pending/earned/accepted payments
+    // If student, also compute pending/earned/accepted payments (money-based)
     if (user.role === 'student') {
       const [pendingAgg, earnedAgg, acceptedAgg] = await Promise.all([
         // Pending (held) amount
@@ -65,7 +67,7 @@ router.get('/me', verifyJWT, async (req, res) => {
             },
           },
         ]),
-        // Accepted quotes = all bids that have a Payment
+        // Accepted quotes (money-side) = all payments (held + released)
         Payment.aggregate([
           {
             $match: {
@@ -89,14 +91,10 @@ router.get('/me', verifyJWT, async (req, res) => {
       const acceptedQuoteTotal =
         acceptedAgg.length > 0 ? acceptedAgg[0].total : 0;
 
-      // attach as plain fields (front-end can read user.pendingPayments etc.)
       const userObj = user.toObject();
       userObj.pendingPayments = pendingPayments;
       userObj.earnedPayments = earnedPayments;
       userObj.acceptedQuoteTotal = acceptedQuoteTotal;
-
-      // also make sure bank fields are present (they already exist on userObj
-      // thanks to the flat fields in User.js, so no extra mapping needed)
 
       return res.json(userObj);
     }
@@ -107,6 +105,75 @@ router.get('/me', verifyJWT, async (req, res) => {
     res
       .status(500)
       .json({ message: 'Error fetching profile', error: err.message });
+  }
+});
+
+/*
+=====================================
+QUOTE-BASED PAYMENT STATS FOR STUDENT
+GET /api/users/me/payment-stats
+- totalAcceptedQuotes   => sum of Bid.quote (status 'accepted') for this student
+- totalReceivedQuotes   => sum of Bid.quote where Payment.status 'released'
+- totalPendingQuotes    => accepted - received
+=====================================
+*/
+router.get('/me/payment-stats', verifyJWT, async (req, res) => {
+  try {
+    const userId = req.user.id;
+
+    const studentId = new mongoose.Types.ObjectId(userId);
+
+    // 1) Sum of this student's accepted bid quotes
+    const acceptedAgg = await Bid.aggregate([
+      { $match: { student: studentId, status: 'accepted' } },
+      {
+        $group: {
+          _id: null,
+          totalAcceptedQuotes: { $sum: '$quote' },
+        },
+      },
+    ]);
+
+    const totalAcceptedQuotes =
+      acceptedAgg.length > 0 ? acceptedAgg[0].totalAcceptedQuotes : 0;
+
+    // 2) Sum of quotes for payments that are released (received) for this student
+    const receivedAgg = await Payment.aggregate([
+      { $match: { student: studentId, status: 'released' } },
+      {
+        $lookup: {
+          from: 'bids',
+          localField: 'bid',
+          foreignField: '_id',
+          as: 'bid',
+        },
+      },
+      { $unwind: '$bid' },
+      { $match: { 'bid.status': 'accepted' } },
+      {
+        $group: {
+          _id: null,
+          totalReceivedQuotes: { $sum: '$bid.quote' },
+        },
+      },
+    ]);
+
+    const totalReceivedQuotes =
+      receivedAgg.length > 0 ? receivedAgg[0].totalReceivedQuotes : 0;
+
+    const totalPendingQuotes = totalAcceptedQuotes - totalReceivedQuotes;
+
+    res.json({
+      totalAcceptedQuotes,
+      totalPendingQuotes,
+      totalReceivedQuotes,
+    });
+  } catch (err) {
+    console.error('Error in GET /api/users/me/payment-stats', err);
+    res.status(500).json({
+      message: 'Error computing student payment stats',
+      error: err.message,
+    });
   }
 });
 

@@ -254,6 +254,77 @@ router.get(
 
 /*
 =====================================
+PAYMENT QUOTE STATS (NEW)
+/api/admin/stats/payments
+- totalAcceptedQuotes: sum of Bid.quote with status 'accepted'
+- totalCompletedQuotes: sum of Bid.quote where Payment.status 'released'
+- totalPendingQuotes: difference
+=====================================
+*/
+
+router.get(
+  '/stats/payments',
+  verifyJWT,
+  ensureAdmin,
+  async (req, res) => {
+    try {
+      // Sum of all accepted bid quotes
+      const acceptedAgg = await Bid.aggregate([
+        { $match: { status: 'accepted' } },
+        {
+          $group: {
+            _id: null,
+            totalAcceptedQuotes: { $sum: '$quote' },
+          },
+        },
+      ]);
+
+      const totalAcceptedQuotes =
+        acceptedAgg.length > 0 ? acceptedAgg[0].totalAcceptedQuotes : 0;
+
+      // Sum of quotes for payments that are released (completed)
+      const completedAgg = await Payment.aggregate([
+        { $match: { status: 'released' } },
+        {
+          $lookup: {
+            from: 'bids',
+            localField: 'bid',
+            foreignField: '_id',
+            as: 'bid',
+          },
+        },
+        { $unwind: '$bid' },
+        { $match: { 'bid.status': 'accepted' } },
+        {
+          $group: {
+            _id: null,
+            totalCompletedQuotes: { $sum: '$bid.quote' },
+          },
+        },
+      ]);
+
+      const totalCompletedQuotes =
+        completedAgg.length > 0 ? completedAgg[0].totalCompletedQuotes : 0;
+
+      const totalPendingQuotes = totalAcceptedQuotes - totalCompletedQuotes;
+
+      res.json({
+        totalAcceptedQuotes,
+        totalCompletedQuotes,
+        totalPendingQuotes,
+      });
+    } catch (err) {
+      console.error('Error in /api/admin/stats/payments', err);
+      res.status(500).json({
+        message: 'Error computing payment stats',
+        error: err.message,
+      });
+    }
+  }
+);
+
+/*
+=====================================
 TASK STATS
 =====================================
 */
