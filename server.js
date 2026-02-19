@@ -9,6 +9,10 @@ const notificationRoutes = require('./routes/notifications');
 const statsRoutes = require('./routes/stats');
 const bidRoutes = require('./routes/bids');
 
+// Admin routers
+const adminAnalyticsRoutes = require('./routes/admin');        // overview, getTaskStats, etc.
+const adminTaskPaymentRoutes = require('./routes/adminRoutes'); // completed, pending-payments, pay/:taskId
+
 const app = express();
 
 // Middlewares
@@ -19,7 +23,13 @@ app.use(express.json());
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/tasks', require('./routes/tasks'));      // includes /recommended, /mine, /assigned
 app.use('/api/bids', bidRoutes);
-app.use('/api/admin', require('./routes/admin'));
+
+// Admin:
+// - /api/admin/...           -> routes/admin.js  (dashboard & analytics)
+// - /api/admin/tasks/...     -> routes/adminRoutes.js (completed / pay)
+app.use('/api/admin', adminAnalyticsRoutes);
+app.use('/api/admin/tasks', adminTaskPaymentRoutes);
+
 app.use('/api/users', require('./routes/user'));
 
 // Domain routes
