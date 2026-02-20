@@ -52,12 +52,12 @@ router.get('/me', verifyJWT, async (req, res) => {
             },
           },
         ]),
-        // Earned (released) amount
+        // Earned (completed) amount
         Payment.aggregate([
           {
             $match: {
               student: user._id,
-              status: 'released', // already released by admin
+              status: 'completed', // released by admin
             },
           },
           {
@@ -67,12 +67,12 @@ router.get('/me', verifyJWT, async (req, res) => {
             },
           },
         ]),
-        // Accepted quotes (money-side) = all payments (held + released)
+        // Accepted quotes (money-side) = all payments (held + completed)
         Payment.aggregate([
           {
             $match: {
               student: user._id,
-              status: { $in: ['held', 'released'] },
+              status: { $in: ['held', 'completed'] },
             },
           },
           {
@@ -113,7 +113,7 @@ router.get('/me', verifyJWT, async (req, res) => {
 QUOTE-BASED PAYMENT STATS FOR STUDENT
 GET /api/users/me/payment-stats
 - totalAcceptedQuotes   => sum of Bid.quote (status 'accepted') for this student
-- totalReceivedQuotes   => sum of Bid.quote where Payment.status 'released'
+- totalReceivedQuotes   => sum of Bid.quote where Payment.status 'completed'
 - totalPendingQuotes    => accepted - received
 =====================================
 */
@@ -137,9 +137,9 @@ router.get('/me/payment-stats', verifyJWT, async (req, res) => {
     const totalAcceptedQuotes =
       acceptedAgg.length > 0 ? acceptedAgg[0].totalAcceptedQuotes : 0;
 
-    // 2) Sum of quotes for payments that are released (received) for this student
+    // 2) Sum of quotes for payments that are completed (received) for this student
     const receivedAgg = await Payment.aggregate([
-      { $match: { student: studentId, status: 'released' } },
+      { $match: { student: studentId, status: 'completed' } },
       {
         $lookup: {
           from: 'bids',
