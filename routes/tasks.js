@@ -207,6 +207,7 @@ router.get('/recommended', verifyJWT, async (req, res) => {
 });
 
 // GET /api/tasks/assigned (student workspace)
+// GET /api/tasks/assigned (student workspace)
 router.get('/assigned', verifyJWT, async (req, res) => {
   try {
     if (req.user.role !== 'student') {
@@ -225,7 +226,12 @@ router.get('/assigned', verifyJWT, async (req, res) => {
     }
 
     const taskIds = acceptedBids.map((b) => b.task);
-    const tasks = await Task.find({ _id: { $in: taskIds } })
+
+    // Only return tasks that are still active for the student
+    const tasks = await Task.find({
+      _id: { $in: taskIds },
+      status: { $in: ['assigned', 'under_review', 'completed'] }, // exclude 'declined'
+    })
       .populate('client', 'name company location')
       .lean();
 
@@ -237,6 +243,7 @@ router.get('/assigned', verifyJWT, async (req, res) => {
       .json({ message: 'Server error', error: err.message });
   }
 });
+
 
 // GET /api/tasks/mine (client’s tasks, with bidsCount)
 router.get('/mine', verifyJWT, async (req, res) => {
