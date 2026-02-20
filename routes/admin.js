@@ -171,7 +171,7 @@ router.get(
 OVERVIEW STATS
 /api/admin/stats/overview
 
-Client payments card uses totalClientProposed (sum of Task.budget, unchanged)
+Client payments card uses totalClientProposed (sum of Task.budget)
 =====================================
 */
 
@@ -261,7 +261,6 @@ PAYMENT QUOTE STATS (NEW)
 - totalAcceptedQuotes: sum of Bid.quote with status 'accepted'
 - totalCompletedQuotes: sum of Bid.quote where Payment.status 'released'
 - totalPendingQuotes: difference
-Use these in dashboard for Payments/Completed (quote-based)
 =====================================
 */
 
@@ -517,7 +516,6 @@ router.get(
 =====================================
 ADMIN PAYMENTS LIST
 GET /api/admin/payments?status=held|approved|released|cancelled
-(for generic admin_payment_service.dart listing)
 =====================================
 */
 
@@ -535,7 +533,7 @@ router.get(
         .populate('student', 'name email')
         .populate('client', 'name email')
         .populate('task', 'title budget status')
-        .populate('bid', 'quote amount'); // expose quote for UI
+        .populate('bid', 'quote amount');
 
       res.json(payments);
     } catch (err) {
@@ -591,8 +589,6 @@ router.patch(
 =====================================
 PENDING PAYMENTS
 Show only payments approved by client (Payment.status = 'approved')
-Used by old AdminService.getPendingPayments()
-Now also populates bid.quote so Pay button can show quote amount.
 =====================================
 */
 
@@ -610,7 +606,7 @@ router.get(
           'name email bankAccountHolderName bankName bankAccountNumber ifscCode'
         )
         .populate('task', 'title budget status')
-        .populate('bid', 'quote amount'); // include quote for Pay button
+        .populate('bid', 'quote amount');
 
       res.json(payments);
     } catch (err) {
