@@ -91,7 +91,7 @@ router.post('/create', verifyJWT, async (req, res) => {
       company: company || client.company,
       requiredSkills: requiredSkills || [],
       status: 'open',
-      // persist attachments
+      // attempts tracking uses schema defaults (attemptCount=0, maxAttempts=3)
       attachments: attachments || [],
       attachmentNames: attachmentNames || [],
     });
@@ -309,7 +309,7 @@ router.post('/:id/submit', verifyJWT, async (req, res) => {
       return res.status(404).json({ message: 'Task not found' });
     }
 
-    // Only assigned student should submit
+    // Only assigned student should submit (via accepted bid)
     const acceptedBid = await Bid.findOne({
       task: task._id,
       student: req.user.id,
@@ -322,7 +322,18 @@ router.post('/:id/submit', verifyJWT, async (req, res) => {
         .json({ message: 'You are not the accepted student for this task' });
     }
 
-    // prevent multiple submissions
+    // Block if no more attempts or task closed
+    if (
+      task.attemptCount >= (task.maxAttempts || 3) ||
+      task.status === 'completed' ||
+      task.status === 'declined'
+    ) {
+      return res
+        .status(400)
+        .json({ message: 'No more submissions allowed for this task' });
+    }
+
+    // prevent double active submission; after decline we clear submission
     if (task.submission && task.submission.student) {
       return res
         .status(400)
@@ -388,7 +399,6 @@ router.post('/:id/approve', verifyJWT, async (req, res) => {
     if (task.submission.student) {
       const student = await User.findById(task.submission.student);
       if (student) {
-        // increment tasksCompleted (wallet is now handled on admin release)
         student.tasksCompleted = (student.tasksCompleted || 0) + 1;
         await student.save();
 
@@ -422,7 +432,7 @@ router.post('/:id/approve', verifyJWT, async (req, res) => {
   }
 });
 
-// POST /api/tasks/:id/decline
+// POST /api/tasks/:id/decline  (3‑attempts + payments aware)
 router.post('/:id/decline', verifyJWT, async (req, res) => {
   try {
     const { reason } = req.body;
@@ -437,26 +447,74 @@ router.post('/:id/decline', verifyJWT, async (req, res) => {
         .status(403)
         .json({ message: 'Not allowed to decline this task' });
     }
-
-    // reopen the task
-    task.status = 'open';
-    await task.save();
-
-    if (task.submission && task.submission.student) {
-      await sendNotification(task.submission.student, {
-        title: 'Task declined',
-        body: `Your submission for "${task.title}" was declined.${
-          reason ? ' Reason: ' + reason : ''
-        }`,
-        data: {
-          type: 'task_declined',
-          taskId: task._id.toString(),
-        },
-      });
+    if (!task.submission || !task.submission.student) {
+      return res
+        .status(400)
+        .json({ message: 'No submission to decline' });
     }
 
-    res.json({ message: 'Task declined and reopened', task });
+    const maxAttempts = task.maxAttempts || 3;
+
+    // increment attempts
+    task.attemptCount = (task.attemptCount || 0) + 1;
+
+    // keep student; clear current submission so they can resubmit if allowed
+    const declinedStudent = task.submission.student;
+    task.submission = null;
+
+    if (task.attemptCount >= maxAttempts) {
+      // final decline: lock task and cancel payments
+      task.status = 'declined';
+
+      await Payment.updateMany(
+        {
+          task: task._id,
+          student: declinedStudent,
+          status: { $in: ['created', 'held', 'approved'] },
+        },
+        {
+          $set: {
+            status: 'declined',
+            declineReason:
+              reason ||
+              'Declined by client after maximum allowed attempts',
+          },
+        }
+      );
+    } else {
+      // allow further attempt with same student
+      task.status = 'assigned';
+    }
+
+    await task.save();
+
+    // notify student
+    await sendNotification(declinedStudent, {
+      title:
+        task.status === 'declined'
+          ? 'Task permanently declined'
+          : 'Task submission declined',
+      body:
+        task.status === 'declined'
+          ? `Your submission for "${task.title}" was declined after multiple attempts.${
+              reason ? ' Reason: ' + reason : ''
+            }`
+          : `Your submission for "${task.title}" was declined.${reason ? ' Reason: ' + reason : ''}`,
+      data: {
+        type: 'task_declined',
+        taskId: task._id.toString(),
+      },
+    });
+
+    res.json({
+      message:
+        task.status === 'declined'
+          ? 'Task declined finally, no more attempts allowed'
+          : 'Submission declined, student can resubmit',
+      task,
+    });
   } catch (err) {
+    console.error('Error in POST /api/tasks/:id/decline:', err);
     res.status(500).json({ message: 'Server error', error: err.message });
   }
 });
@@ -535,10 +593,8 @@ router.post('/:id/feedback', verifyJWT, async (req, res) => {
         .json({ message: 'Student not found for this task' });
     }
 
-    // DEBUG: see what entries exist (optional)
     console.log('feedbackEntries before check:', student.feedbackEntries);
 
-    // Check if this client has already given feedback for this task
     if (Array.isArray(student.feedbackEntries)) {
       const already = student.feedbackEntries.some(
         (entry) =>
@@ -589,7 +645,6 @@ router.post('/:id/feedback', verifyJWT, async (req, res) => {
       student.feedbackEntries = [];
     }
 
-    // load client to get latest name
     const client = await User.findById(task.client).select('name');
 
     student.feedbackEntries.push({
