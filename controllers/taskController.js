@@ -1,5 +1,6 @@
 const Task = require("../models/Task");
 const User = require("../models/User");
+const Payment = require("../models/Payment");
 
 /**
  * ===============================
@@ -47,7 +48,7 @@ exports.createTask = async (req, res) => {
       client: req.user.id,
       status: "open",
       attemptCount: 0,
-      // maxAttempts will use default = 3 from schema
+      // maxAttempts uses default = 3 from schema
     });
 
     await task.save();
@@ -127,8 +128,9 @@ exports.assignTask = async (req, res) => {
 
     const task = await Task.findById(req.params.taskId);
 
-    if (!task)
+    if (!task) {
       return res.status(404).json({ message: "Task not found" });
+    }
 
     if (req.user.id !== task.client.toString()) {
       return res.status(403).json({
@@ -168,10 +170,11 @@ exports.submitWork = async (req, res) => {
 
     const task = await Task.findById(req.params.taskId);
 
-    if (!task)
+    if (!task) {
       return res.status(404).json({
         message: "Task not found",
       });
+    }
 
     if (!task.student || task.student.toString() !== req.user.id) {
       return res.status(403).json({
@@ -225,10 +228,11 @@ exports.approveWork = async (req, res) => {
   try {
     const task = await Task.findById(req.params.taskId);
 
-    if (!task)
+    if (!task) {
       return res.status(404).json({
         message: "Task not found",
       });
+    }
 
     if (req.user.id !== task.client.toString()) {
       return res.status(403).json({
@@ -249,15 +253,14 @@ exports.approveWork = async (req, res) => {
     await task.save();
 
     /**
-     * PAY STUDENT
-     * (You may later move this to a Payment model if needed)
+     * PAY STUDENT (legacy wallet credit)
+     * You also have Payment model + admin release flow for actual payouts.
      */
     const student = await User.findById(task.submission.student);
 
     if (student) {
       student.wallet = (student.wallet || 0) + task.budget;
-      student.tasksCompleted =
-        (student.tasksCompleted || 0) + 1;
+      student.tasksCompleted = (student.tasksCompleted || 0) + 1;
 
       await student.save();
     }
@@ -279,20 +282,21 @@ exports.approveWork = async (req, res) => {
 
 /**
  * ===============================
- * CLIENT DECLINE WORK (NEW)
+ * CLIENT DECLINE WORK (3‑attempt logic)
  * ===============================
  * - Increments attemptCount
- * - If attempts < maxAttempts, student can resubmit
- * - If attempts >= maxAttempts, task is marked declined and chat should be locked
+ * - If attempts < maxAttempts, student can resubmit (status: assigned)
+ * - If attempts >= maxAttempts, task is marked declined and related payments are cancelled
  */
 exports.declineWork = async (req, res) => {
   try {
     const task = await Task.findById(req.params.taskId);
 
-    if (!task)
+    if (!task) {
       return res.status(404).json({
         message: "Task not found",
       });
+    }
 
     if (req.user.id !== task.client.toString()) {
       return res.status(403).json({
@@ -306,17 +310,33 @@ exports.declineWork = async (req, res) => {
       });
     }
 
+    const maxAttempts = task.maxAttempts || 3;
+
     // Increase attempt count
     task.attemptCount = (task.attemptCount || 0) + 1;
 
-    // Clear submission when declined
+    // Clear submission when declined so student can resubmit
     task.submission = null;
 
-    if (task.attemptCount >= (task.maxAttempts || 3)) {
+    if (task.attemptCount >= maxAttempts) {
       // Hard decline: no more submissions or messages
       task.status = "declined";
+
+      // Cancel any non‑released payments for this task
+      await Payment.updateMany(
+        {
+          task: task._id,
+          status: { $in: ["created", "held", "approved"] },
+        },
+        {
+          $set: {
+            status: "declined",
+            declineReason: "Max attempts reached",
+          },
+        }
+      );
     } else {
-      // Allow student to try again
+      // Allow student to try again with same task
       task.status = "assigned";
     }
 
@@ -350,10 +370,11 @@ exports.rateStudent = async (req, res) => {
 
     const task = await Task.findById(req.params.taskId);
 
-    if (!task)
+    if (!task) {
       return res.status(404).json({
         message: "Task not found",
       });
+    }
 
     if (req.user.id !== task.client.toString()) {
       return res.status(403).json({
