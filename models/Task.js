@@ -1,5 +1,4 @@
 const mongoose = require("mongoose");
-
 const { Schema } = mongoose;
 
 /**
@@ -112,10 +111,16 @@ const taskSchema = new Schema(
 
     /**
      * Task Status
+     *
+     * open          - posted, no student assigned yet
+     * assigned      - student accepted / bid accepted
+     * under_review  - student submitted; client reviewing
+     * completed     - approved & paid
+     * declined      - hard-declined after max attempts
      */
     status: {
       type: String,
-      enum: ["open", "assigned", "under_review", "completed"],
+      enum: ["open", "assigned", "under_review", "completed", "declined"],
       default: "open",
       index: true,
     },
@@ -127,6 +132,23 @@ const taskSchema = new Schema(
       type: Schema.Types.ObjectId,
       ref: "User",
       default: null,
+    },
+
+    /**
+     * Submission attempts
+     * - attemptCount: how many times client has declined this student's submission
+     * - maxAttempts: maximum allowed declines / resubmits (business rule = 3)
+     */
+    attemptCount: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+
+    maxAttempts: {
+      type: Number,
+      default: 3,
+      min: 1,
     },
 
     /**
@@ -173,7 +195,6 @@ const taskSchema = new Schema(
       max: 100,
     },
   },
-
   {
     timestamps: true,
   }

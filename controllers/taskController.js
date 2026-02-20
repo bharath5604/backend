@@ -1,7 +1,6 @@
 const Task = require("../models/Task");
 const User = require("../models/User");
 
-
 /**
  * ===============================
  * CREATE TASK (Client only)
@@ -47,6 +46,8 @@ exports.createTask = async (req, res) => {
       attachmentNames,
       client: req.user.id,
       status: "open",
+      attemptCount: 0,
+      // maxAttempts will use default = 3 from schema
     });
 
     await task.save();
@@ -64,8 +65,6 @@ exports.createTask = async (req, res) => {
     });
   }
 };
-
-
 
 /**
  * ===============================
@@ -88,8 +87,6 @@ exports.getAllTasks = async (req, res) => {
     });
   }
 };
-
-
 
 /**
  * ===============================
@@ -119,8 +116,6 @@ exports.getTaskById = async (req, res) => {
   }
 };
 
-
-
 /**
  * ===============================
  * ASSIGN TASK TO STUDENT
@@ -143,6 +138,8 @@ exports.assignTask = async (req, res) => {
 
     task.student = studentId;
     task.status = "assigned";
+    // reset attempts whenever a task is (re)assigned
+    task.attemptCount = 0;
 
     await task.save();
 
@@ -160,8 +157,6 @@ exports.assignTask = async (req, res) => {
   }
 };
 
-
-
 /**
  * ===============================
  * STUDENT SUBMIT WORK
@@ -178,9 +173,20 @@ exports.submitWork = async (req, res) => {
         message: "Task not found",
       });
 
-    if (task.student.toString() !== req.user.id) {
+    if (!task.student || task.student.toString() !== req.user.id) {
       return res.status(403).json({
         message: "Not your task",
+      });
+    }
+
+    // Block submission if max attempts already reached or task closed
+    if (
+      task.attemptCount >= (task.maxAttempts || 3) ||
+      task.status === "completed" ||
+      task.status === "declined"
+    ) {
+      return res.status(400).json({
+        message: "No more submissions allowed for this task",
       });
     }
 
@@ -210,8 +216,6 @@ exports.submitWork = async (req, res) => {
   }
 };
 
-
-
 /**
  * ===============================
  * CLIENT APPROVE WORK
@@ -238,24 +242,20 @@ exports.approveWork = async (req, res) => {
       });
     }
 
+    // Mark submission approved and close task
     task.submission.approved = true;
     task.status = "completed";
 
     await task.save();
 
-
     /**
      * PAY STUDENT
+     * (You may later move this to a Payment model if needed)
      */
-
-    const student = await User.findById(
-      task.submission.student
-    );
+    const student = await User.findById(task.submission.student);
 
     if (student) {
-      student.wallet =
-        (student.wallet || 0) + task.budget;
-
+      student.wallet = (student.wallet || 0) + task.budget;
       student.tasksCompleted =
         (student.tasksCompleted || 0) + 1;
 
@@ -277,7 +277,67 @@ exports.approveWork = async (req, res) => {
   }
 };
 
+/**
+ * ===============================
+ * CLIENT DECLINE WORK (NEW)
+ * ===============================
+ * - Increments attemptCount
+ * - If attempts < maxAttempts, student can resubmit
+ * - If attempts >= maxAttempts, task is marked declined and chat should be locked
+ */
+exports.declineWork = async (req, res) => {
+  try {
+    const task = await Task.findById(req.params.taskId);
 
+    if (!task)
+      return res.status(404).json({
+        message: "Task not found",
+      });
+
+    if (req.user.id !== task.client.toString()) {
+      return res.status(403).json({
+        message: "Not authorized",
+      });
+    }
+
+    if (!task.submission) {
+      return res.status(400).json({
+        message: "No submission to decline",
+      });
+    }
+
+    // Increase attempt count
+    task.attemptCount = (task.attemptCount || 0) + 1;
+
+    // Clear submission when declined
+    task.submission = null;
+
+    if (task.attemptCount >= (task.maxAttempts || 3)) {
+      // Hard decline: no more submissions or messages
+      task.status = "declined";
+    } else {
+      // Allow student to try again
+      task.status = "assigned";
+    }
+
+    await task.save();
+
+    res.json({
+      message:
+        task.status === "declined"
+          ? "Task declined, no more attempts allowed"
+          : "Submission declined, student can resubmit",
+      task,
+    });
+  } catch (err) {
+    console.error(err);
+
+    res.status(500).json({
+      message: "Decline failed",
+      error: err.message,
+    });
+  }
+};
 
 /**
  * ===============================
@@ -288,9 +348,7 @@ exports.rateStudent = async (req, res) => {
   try {
     const { rating, feedback } = req.body;
 
-    const task = await Task.findById(
-      req.params.taskId
-    );
+    const task = await Task.findById(req.params.taskId);
 
     if (!task)
       return res.status(404).json({
@@ -322,8 +380,6 @@ exports.rateStudent = async (req, res) => {
   }
 };
 
-
-
 /**
  * ===============================
  * GET STUDENT TASKS
@@ -345,8 +401,6 @@ exports.getStudentTasks = async (req, res) => {
     });
   }
 };
-
-
 
 /**
  * ===============================

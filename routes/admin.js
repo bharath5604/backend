@@ -123,6 +123,41 @@ router.get('/tasks', verifyJWT, ensureAdmin, async (req, res) => {
 
 /*
 =====================================
+TASK FILTER VALUES (NEW)
+/api/admin/tasks/filters
+Return distinct lists for dropdowns: company, location, domain
+=====================================
+*/
+
+router.get(
+  '/tasks/filters',
+  verifyJWT,
+  ensureAdmin,
+  async (req, res) => {
+    try {
+      const [companies, locations, domains] = await Promise.all([
+        Task.distinct('company'),
+        Task.distinct('location'),
+        Task.distinct('domain'),
+      ]);
+
+      res.json({
+        companies: companies.filter(Boolean),
+        locations: locations.filter(Boolean),
+        domains: domains.filter(Boolean),
+      });
+    } catch (err) {
+      console.error('Error in /api/admin/tasks/filters', err);
+      res.status(500).json({
+        message: 'Error loading task filters',
+        error: err.message,
+      });
+    }
+  }
+);
+
+/*
+=====================================
 STUDENT DASHBOARD (DETAIL)
 /api/admin/students/:id/dashboard
 =====================================
@@ -146,7 +181,10 @@ router.get(
           Task.countDocuments({ student: studentId }),
           Task.countDocuments({ student: studentId, status: 'completed' }),
           Bid.countDocuments({ student: studentId }),
-          Payment.countDocuments({ student: studentId, status: 'released' }),
+          Payment.countDocuments({
+            student: studentId,
+            status: 'released',
+          }),
         ]);
 
       res.json({
@@ -198,6 +236,7 @@ router.get(
         User.countDocuments({ role: 'admin' }),
         Task.countDocuments(),
         Bid.countDocuments({}),
+        // total payments (all netToStudent, regardless of status)
         Payment.aggregate([
           {
             $group: {
@@ -206,6 +245,7 @@ router.get(
             },
           },
         ]),
+        // completed payments = released
         Payment.aggregate([
           {
             $match: { status: 'released' },
@@ -217,6 +257,7 @@ router.get(
             },
           },
         ]),
+        // sum of client proposed task budgets
         Task.aggregate([
           {
             $group: {
@@ -256,7 +297,7 @@ router.get(
 
 /*
 =====================================
-PAYMENT QUOTE STATS (NEW)
+PAYMENT QUOTE STATS
 /api/admin/stats/payments
 - totalAcceptedQuotes: sum of Bid.quote with status 'accepted'
 - totalCompletedQuotes: sum of Bid.quote where Payment.status 'released'
@@ -328,6 +369,7 @@ router.get(
 /*
 =====================================
 TASK STATS
+(getTaskStats card)
 =====================================
 */
 
@@ -343,9 +385,8 @@ router.get(
         status: 'completed',
       });
 
-      const pending = await Task.countDocuments({
-        status: 'pending',
-      });
+      // pending = everything not completed (open + assigned + under_review + declined)
+      const pending = total - completed;
 
       res.json({
         total,
@@ -378,7 +419,9 @@ router.get(
             _id: '$domain',
             total: { $sum: 1 },
             completed: {
-              $sum: { $cond: [{ $eq: ['$status', 'completed'] }, 1, 0] },
+              $sum: {
+                $cond: [{ $eq: ['$status', 'completed'] }, 1, 0],
+              },
             },
           },
         },
@@ -412,6 +455,9 @@ router.get(
   async (req, res) => {
     try {
       const stats = await Payment.aggregate([
+        {
+          $match: { status: 'released' }, // only count actually released payments
+        },
         {
           $group: {
             _id: '$student',
@@ -515,7 +561,7 @@ router.get(
 /*
 =====================================
 ADMIN PAYMENTS LIST
-GET /api/admin/payments?status=held|approved|released|cancelled
+GET /api/admin/payments?status=held|approved|released|cancelled|declined
 =====================================
 */
 

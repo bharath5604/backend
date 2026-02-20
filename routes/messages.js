@@ -11,29 +11,42 @@ const messageSchema = Joi.object({
   text: Joi.string().min(1).max(2000).allow('', null),
   fileUrl: Joi.string().uri().max(2000).allow('', null),
   fileName: Joi.string().max(255).allow('', null),
-}).custom((value, helpers) => {
-  const hasText =
-    typeof value.text === 'string' && value.text.trim().length > 0;
-  const hasFileUrl =
-    typeof value.fileUrl === 'string' && value.fileUrl.trim().length > 0;
+})
+  .custom((value, helpers) => {
+    const hasText =
+      typeof value.text === 'string' && value.text.trim().length > 0;
+    const hasFileUrl =
+      typeof value.fileUrl === 'string' && value.fileUrl.trim().length > 0;
 
-  if (!hasText && !hasFileUrl) {
-    return helpers.error('any.custom');
-  }
-  return value;
-}, 'text or file validation').messages({
-  'any.custom': 'Message must have either text or a file attachment',
-});
+    if (!hasText && !hasFileUrl) {
+      return helpers.error('any.custom');
+    }
+    return value;
+  }, 'text or file validation')
+  .messages({
+    'any.custom': 'Message must have either text or a file attachment',
+  });
 
 // GET /api/messages/task/:taskId
 // List messages between client & assigned student for this task
 router.get('/task/:taskId', verifyJWT, async (req, res) => {
   try {
     const task = await Task.findById(req.params.taskId).select(
-      'client student status'
+      'client student status attemptCount maxAttempts'
     );
     if (!task) {
       return res.status(404).json({ message: 'Task not found' });
+    }
+
+    // Stop chat after approval or after max attempts / hard decline
+    if (
+      task.status === 'completed' ||
+      task.status === 'declined' ||
+      task.attemptCount >= (task.maxAttempts || 3)
+    ) {
+      return res.status(403).json({
+        message: 'Conversation closed for this task',
+      });
     }
 
     // Enforce: chat only after acceptance (student assigned & task assigned)
@@ -92,11 +105,22 @@ router.post('/task/:taskId', verifyJWT, async (req, res) => {
     }
 
     const task = await Task.findById(req.params.taskId).select(
-      'client student title status'
+      'client student title status attemptCount maxAttempts'
     );
     if (!task) {
       console.log('Task not found for id', req.params.taskId);
       return res.status(404).json({ message: 'Task not found' });
+    }
+
+    // Block sending messages after approval / final decline / 3 attempts
+    if (
+      task.status === 'completed' ||
+      task.status === 'declined' ||
+      task.attemptCount >= (task.maxAttempts || 3)
+    ) {
+      return res.status(403).json({
+        message: 'Conversation closed for this task',
+      });
     }
 
     // Enforce: chat only after acceptance (student assigned & task assigned)

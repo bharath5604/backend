@@ -37,14 +37,15 @@ const paymentSchema = new mongoose.Schema(
     netToStudent: { type: Number, required: true },
 
     // Status lifecycle
-    // created   -> payment object created
-    // held      -> bid accepted by client, waiting for client approval of work
-    // approved  -> client approved task, waiting for admin release
-    // released  -> admin released funds to student
-    // cancelled -> payment voided
+    // created    -> payment object created
+    // held       -> bid accepted by client, waiting for client approval of work
+    // approved   -> client approved task, waiting for admin release
+    // released   -> admin released funds to student
+    // cancelled  -> payment voided (e.g., task expired or manually cancelled)
+    // declined   -> task hard-declined after max attempts; no payout
     status: {
       type: String,
-      enum: ['created', 'held', 'approved', 'released', 'cancelled'],
+      enum: ['created', 'held', 'approved', 'released', 'cancelled', 'declined'],
       default: 'created',
     },
 
@@ -53,7 +54,7 @@ const paymentSchema = new mongoose.Schema(
       type: Date,
     },
 
-    // Optional manual notes, e.g., “paid offline on UPI” etc.
+    // Optional manual notes, e.g., “paid offline on UPI”, “3 attempts failed”, etc.
     declineReason: { type: String },
 
     // Optional gateway info
