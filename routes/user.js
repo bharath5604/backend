@@ -120,16 +120,35 @@ GET /api/users/me/payment-stats
 router.get('/me/payment-stats', verifyJWT, async (req, res) => {
   try {
     const userId = req.user.id;
-
     const studentId = new mongoose.Types.ObjectId(userId);
 
-    // 1) Sum of this student's accepted bid quotes
-    const acceptedAgg = await Bid.aggregate([
-      { $match: { student: studentId, status: 'accepted' } },
+    // 1) Sum of this student's accepted bid quotes where payment is NOT cancelled
+    const acceptedAgg = await Payment.aggregate([
+      {
+        $match: {
+          student: studentId,
+          status: { $in: ['held', 'completed'] }, // ignore cancelled / created
+        },
+      },
+      {
+        $lookup: {
+          from: 'bids',
+          localField: 'bid',
+          foreignField: '_id',
+          as: 'bid',
+        },
+      },
+      { $unwind: '$bid' },
+      {
+        $match: {
+          'bid.student': studentId,
+          'bid.status': 'accepted',
+        },
+      },
       {
         $group: {
           _id: null,
-          totalAcceptedQuotes: { $sum: '$quote' },
+          totalAcceptedQuotes: { $sum: '$bid.quote' },
         },
       },
     ]);
@@ -176,6 +195,8 @@ router.get('/me/payment-stats', verifyJWT, async (req, res) => {
     });
   }
 });
+
+
 
 // internal helper to apply validated updates
 async function applyProfileUpdate(req, res) {
