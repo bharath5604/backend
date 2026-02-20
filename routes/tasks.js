@@ -395,22 +395,23 @@ router.post('/:id/approve', verifyJWT, async (req, res) => {
     task.status = 'completed';
     await task.save();
 
-    // update student stats and mark related payment as approved
+    // update student stats and mark related payment as held (waiting admin release)
     if (task.submission.student) {
       const student = await User.findById(task.submission.student);
       if (student) {
         student.tasksCompleted = (student.tasksCompleted || 0) + 1;
         await student.save();
 
-        // find payment for this task & student that is still held, and approve it
+        // find payment for this task & student that is still non-final
         const payment = await Payment.findOne({
           task: task._id,
           student: student._id,
-          status: 'held',
+          status: { $in: ['created', 'held'] },
         });
 
         if (payment) {
-          payment.status = 'approved';
+          // move to held; admin will later set 'completed' and credit wallet
+          payment.status = 'held';
           await payment.save();
         }
 
@@ -432,7 +433,7 @@ router.post('/:id/approve', verifyJWT, async (req, res) => {
   }
 });
 
-// POST /api/tasks/:id/decline  (3‑attempts + payments aware)
+// POST /api/tasks/:id/decline  (3-attempts + payments aware)
 router.post('/:id/decline', verifyJWT, async (req, res) => {
   try {
     const { reason } = req.body;
@@ -470,11 +471,11 @@ router.post('/:id/decline', verifyJWT, async (req, res) => {
         {
           task: task._id,
           student: declinedStudent,
-          status: { $in: ['created', 'held', 'approved'] },
+          status: { $in: ['created', 'held'] },
         },
         {
           $set: {
-            status: 'declined',
+            status: 'cancelled',
             declineReason:
               reason ||
               'Declined by client after maximum allowed attempts',

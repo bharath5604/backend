@@ -181,9 +181,10 @@ router.get(
           Task.countDocuments({ student: studentId }),
           Task.countDocuments({ student: studentId, status: 'completed' }),
           Bid.countDocuments({ student: studentId }),
+          // only payments actually released to student
           Payment.countDocuments({
             student: studentId,
-            status: 'released',
+            status: 'completed',
           }),
         ]);
 
@@ -227,7 +228,7 @@ router.get(
         totalTasks,
         totalBids,
         paymentsAgg,
-        releasedAgg,
+        completedAgg,
         clientProposedAgg,
       ] = await Promise.all([
         User.countDocuments(),
@@ -245,10 +246,10 @@ router.get(
             },
           },
         ]),
-        // completed payments = released
+        // completed payments = fully released to student
         Payment.aggregate([
           {
-            $match: { status: 'released' },
+            $match: { status: 'completed' },
           },
           {
             $group: {
@@ -271,7 +272,7 @@ router.get(
       const totalPayments =
         paymentsAgg.length > 0 ? paymentsAgg[0].totalAmount : 0;
       const completedPayments =
-        releasedAgg.length > 0 ? releasedAgg[0].totalAmount : 0;
+        completedAgg.length > 0 ? completedAgg[0].totalAmount : 0;
       const totalClientProposed =
         clientProposedAgg.length > 0 ? clientProposedAgg[0].totalAmount : 0;
 
@@ -300,7 +301,7 @@ router.get(
 PAYMENT QUOTE STATS
 /api/admin/stats/payments
 - totalAcceptedQuotes: sum of Bid.quote with status 'accepted'
-- totalCompletedQuotes: sum of Bid.quote where Payment.status 'released'
+- totalCompletedQuotes: sum of Bid.quote where Payment.status 'completed'
 - totalPendingQuotes: difference
 =====================================
 */
@@ -325,9 +326,9 @@ router.get(
       const totalAcceptedQuotes =
         acceptedAgg.length > 0 ? acceptedAgg[0].totalAcceptedQuotes : 0;
 
-      // Sum of quotes for payments that are released (completed)
+      // Sum of quotes for payments that are completed (released)
       const completedAgg = await Payment.aggregate([
-        { $match: { status: 'released' } },
+        { $match: { status: 'completed' } },
         {
           $lookup: {
             from: 'bids',
@@ -456,7 +457,8 @@ router.get(
     try {
       const stats = await Payment.aggregate([
         {
-          $match: { status: 'released' }, // only count actually released payments
+          // only count payments actually completed (released)
+          $match: { status: 'completed' },
         },
         {
           $group: {
@@ -561,7 +563,7 @@ router.get(
 /*
 =====================================
 ADMIN PAYMENTS LIST
-GET /api/admin/payments?status=held|approved|released|cancelled|declined
+GET /api/admin/payments?status=created|held|completed|cancelled
 =====================================
 */
 
@@ -612,7 +614,7 @@ router.patch(
       }
 
       if (status) {
-        payment.status = status;
+        payment.status = status; // must be one of ['created','held','completed','cancelled']
       }
       if (adminNote) {
         payment.declineReason = adminNote;
@@ -634,7 +636,7 @@ router.patch(
 /*
 =====================================
 PENDING PAYMENTS
-Show only payments approved by client (Payment.status = 'approved')
+Show only payments approved by client (Payment.status = 'held')
 =====================================
 */
 
@@ -645,7 +647,7 @@ router.get(
   async (req, res) => {
     try {
       const payments = await Payment.find({
-        status: 'approved',
+        status: 'held', // set in /tasks/:id/approve
       })
         .populate(
           'student',
@@ -688,13 +690,14 @@ router.post(
       }
 
       // Only allow releasing client-approved payments
-      if (payment.status !== 'approved') {
+      if (payment.status !== 'held') {
         return res.status(400).json({
           message: 'Payment is not approved by client yet',
         });
       }
 
-      payment.status = 'released';
+      // final state: completed
+      payment.status = 'completed';
       await payment.save();
 
       const student = await User.findById(payment.student);
@@ -779,7 +782,7 @@ router.get(
           break;
         case 'completedPayments':
           model = Payment;
-          match.status = 'released';
+          match.status = 'completed';
           break;
         default:
           return res.status(400).json({ message: 'Invalid metric' });
