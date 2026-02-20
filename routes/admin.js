@@ -312,13 +312,31 @@ router.get(
   ensureAdmin,
   async (req, res) => {
     try {
-      // Sum of all accepted bid quotes
-      const acceptedAgg = await Bid.aggregate([
-        { $match: { status: 'accepted' } },
+      // Sum of accepted bid quotes where related payment is NOT cancelled
+      const acceptedAgg = await Payment.aggregate([
+        {
+          $match: {
+            status: { $in: ['held', 'completed'] }, // ignore cancelled / created
+          },
+        },
+        {
+          $lookup: {
+            from: 'bids',
+            localField: 'bid',
+            foreignField: '_id',
+            as: 'bid',
+          },
+        },
+        { $unwind: '$bid' },
+        {
+          $match: {
+            'bid.status': 'accepted',
+          },
+        },
         {
           $group: {
             _id: null,
-            totalAcceptedQuotes: { $sum: '$quote' },
+            totalAcceptedQuotes: { $sum: '$bid.quote' },
           },
         },
       ]);
@@ -366,6 +384,7 @@ router.get(
     }
   }
 );
+
 
 /*
 =====================================
