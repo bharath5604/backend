@@ -482,7 +482,7 @@ router.get(
         {
           $group: {
             _id: '$student',
-            total: { $sum: '$netToStudent' },
+            total: { $sum: '$amount' },
           },
         },
         { $sort: { total: -1 } },
