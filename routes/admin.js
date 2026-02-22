@@ -468,53 +468,45 @@ TOP STUDENTS
 =====================================
 */
 
-router.get(
-  '/getTopStudents',
-  verifyJWT,
-  ensureAdmin,
-  async (req, res) => {
-    try {
-      const stats = await Payment.aggregate([
-        {
-          // only count payments actually completed (released)
-          $match: { status: 'completed' },
-        },
-        {
-          $group: {
-            _id: '$student',
-            total: { $sum: '$netToStudent' },
-          },
-        },
-        { $sort: { total: -1 } },
-        { $limit: 5 },
-        {
-          $lookup: {
-            from: 'users',
-            localField: '_id',
-            foreignField: '_id',
-            as: 'studentDoc',
-          },
-        },
-        { $unwind: '$studentDoc' },
-        {
-          $project: {
-            _id: 0,
-            studentId: '$_id',
-            name: '$studentDoc.name',
-            email: '$studentDoc.email',
-            total: 1,
-          },
-        },
-      ]);
+// TOP STUDENTS by TOTAL ACCEPTED QUOTE
+router.get('/getTopStudents', async (req, res) => {
+  try {
+    const stats = await Payment.aggregate([
+      // consider only completed (released) payments
+      { $match: { status: 'completed' } }, // or 'held' + 'completed' if you want both
 
-      res.json(stats);
-    } catch (err) {
-      res.status(500).json({
-        message: err.message,
-      });
-    }
+      // join the bid to get the quote
+      {
+        $lookup: {
+          from: 'bids',
+          localField: 'bid',
+          foreignField: '_id',
+          as: 'bid',
+        },
+      },
+      { $unwind: '$bid' },
+
+      // only accepted bids
+      { $match: { 'bid.status': 'accepted' } },
+
+      // group by student and sum the quote amount
+      {
+        $group: {
+          _id: '$student',
+          totalQuote: { $sum: '$bid.quote' },
+        },
+      },
+      { $sort: { totalQuote: -1 } },
+      { $limit: 5 },
+    ]);
+
+    res.json(stats);
+  } catch (err) {
+    console.error('Error in /api/admin/getTopStudents', err);
+    res.status(500).json({ message: 'Error computing top students' });
   }
-);
+});
+
 
 /*
 =====================================
