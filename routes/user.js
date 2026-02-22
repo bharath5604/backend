@@ -117,6 +117,84 @@ GET /api/users/me/payment-stats
 - totalPendingQuotes    => accepted - received
 =====================================
 */
+router.get('/me/payment-stats', verifyJWT, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const studentId = new mongoose.Types.ObjectId(userId);
+
+    // 1) Sum of this student's accepted bid quotes where payment is NOT cancelled
+    const acceptedAgg = await Payment.aggregate([
+      {
+        $match: {
+          student: studentId,
+          status: { $in: ['held', 'completed'] }, // ignore cancelled / created
+        },
+      },
+      {
+        $lookup: {
+          from: 'bids',
+          localField: 'bid',
+          foreignField: '_id',
+          as: 'bid',
+        },
+      },
+      { $unwind: '$bid' },
+      {
+        $match: {
+          'bid.student': studentId,
+          'bid.status': 'accepted',
+        },
+      },
+      {
+        $group: {
+          _id: null,
+          totalAcceptedQuotes: { $sum: '$bid.quote' },
+        },
+      },
+    ]);
+
+    const totalAcceptedQuotes =
+      acceptedAgg.length > 0 ? acceptedAgg[0].totalAcceptedQuotes : 0;
+
+    // 2) Sum of quotes for payments that are completed (received) for this student
+    const receivedAgg = await Payment.aggregate([
+      { $match: { student: studentId, status: 'completed' } },
+      {
+        $lookup: {
+          from: 'bids',
+          localField: 'bid',
+          foreignField: '_id',
+          as: 'bid',
+        },
+      },
+      { $unwind: '$bid' },
+      { $match: { 'bid.status': 'accepted' } },
+      {
+        $group: {
+          _id: null,
+          totalReceivedQuotes: { $sum: '$bid.quote' },
+        },
+      },
+    ]);
+
+    const totalReceivedQuotes =
+      receivedAgg.length > 0 ? receivedAgg[0].totalReceivedQuotes : 0;
+
+    const totalPendingQuotes = totalAcceptedQuotes - totalReceivedQuotes;
+
+    res.json({
+      totalAcceptedQuotes,
+      totalPendingQuotes,
+      totalReceivedQuotes,
+    });
+  } catch (err) {
+    console.error('Error in GET /api/users/me/payment-stats', err);
+    res.status(500).json({
+      message: 'Error computing student payment stats',
+      error: err.message,
+    });
+  }
+});
 
 
 
