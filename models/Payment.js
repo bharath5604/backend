@@ -45,7 +45,7 @@ const paymentSchema = new mongoose.Schema(
     // declined   -> task hard-declined after max attempts; no payout
     status: {
       type: String,
-      enum: ['created', 'held', 'approved', 'released', 'cancelled', 'declined'],
+      enum: ['created', 'held', 'approved', 'released', 'cancelled', 'declined','completed'],
       default: 'created',
     },
 
