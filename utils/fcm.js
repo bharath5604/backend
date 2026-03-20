@@ -26,6 +26,14 @@ try {
  * Send notification to a user:
  * - Always creates a Notification document.
  * - Tries FCM push only if Firebase Admin is configured and user has fcmToken.
+ *
+ * data.type is important for app logic:
+ *   - task_request
+ *   - task_request_accepted
+ *   - task_submitted
+ *   - task_approved
+ *   - task_declined
+ *   - etc.
  */
 async function sendNotification(userId, { title, body, data = {} }) {
   // Always create DB notification

@@ -83,6 +83,7 @@ const taskSchema = new Schema(
       min: 0,
     },
 
+    // NOTE: stored as Date; your route converts from string
     deadline: {
       type: Date,
       required: true,

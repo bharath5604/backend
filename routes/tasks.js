@@ -1,5 +1,7 @@
 const express = require('express');
 const router = express.Router();
+const mongoose = require('mongoose');
+
 const Task = require('../models/Task');
 const User = require('../models/User');
 const Payment = require('../models/Payment');
@@ -7,6 +9,7 @@ const Bid = require('../models/Bid');
 const verifyJWT = require('../middleware/authMiddleware');
 const Joi = require('joi');
 const { sendNotification } = require('../utils/fcm');
+
 
 // Joi schemas
 const createTaskSchema = Joi.object({
@@ -39,6 +42,7 @@ const submissionSchema = Joi.object({
   fileUrl: Joi.string().uri().max(2000).required(),
   notes: Joi.string().max(2000).allow('', null),
 });
+
 
 // POST /api/tasks/create -> create new task (client)
 router.post('/create', verifyJWT, async (req, res) => {
@@ -105,6 +109,7 @@ router.post('/create', verifyJWT, async (req, res) => {
   }
 });
 
+
 // GET /api/tasks (student feed + filters)
 router.get('/', verifyJWT, async (req, res) => {
   try {
@@ -148,6 +153,7 @@ router.get('/', verifyJWT, async (req, res) => {
   }
 });
 
+
 // GET /api/tasks/search
 router.get('/search', verifyJWT, async (req, res) => {
   try {
@@ -174,6 +180,7 @@ router.get('/search', verifyJWT, async (req, res) => {
     });
   }
 });
+
 
 // GET /api/tasks/recommended (latest 5 based on student skills)
 router.get('/recommended', verifyJWT, async (req, res) => {
@@ -206,7 +213,7 @@ router.get('/recommended', verifyJWT, async (req, res) => {
   }
 });
 
-// GET /api/tasks/assigned (student workspace)
+
 // GET /api/tasks/assigned (student workspace)
 router.get('/assigned', verifyJWT, async (req, res) => {
   try {
@@ -290,6 +297,78 @@ router.get('/mine', verifyJWT, async (req, res) => {
     res.status(500).json({ message: 'Server error', error: err.message });
   }
 });
+
+
+// NEW: GET /api/tasks/:id/candidates
+// Candidate students for a task (after creation) based on requiredSkills, sorted by rating & tasksCompleted
+router.get('/:id/candidates', verifyJWT, async (req, res) => {
+  try {
+    if (req.user.role !== 'client') {
+      return res
+        .status(403)
+        .json({ message: 'Only clients can view candidates' });
+    }
+
+    const task = await Task.findById(req.params.id).select('requiredSkills client status');
+    if (!task) {
+      return res.status(404).json({ message: 'Task not found' });
+    }
+    if (task.client.toString() !== req.user.id) {
+      return res.status(403).json({ message: 'Not your task' });
+    }
+
+    // Optional: only show candidates for open tasks
+    if (task.status !== 'open') {
+      return res.status(400).json({ message: 'Task is not open anymore' });
+    }
+
+    const match = { role: 'student' };
+    if (Array.isArray(task.requiredSkills) && task.requiredSkills.length > 0) {
+      match.skills = { $in: task.requiredSkills };
+    }
+
+    const students = await User.aggregate([
+      { $match: match },
+      {
+        $addFields: {
+          averageScore: {
+            $cond: [
+              { $gt: ['$totalScoreCount', 0] },
+              { $divide: ['$totalScore', '$totalScoreCount'] },
+              0,
+            ],
+          },
+        },
+      },
+      {
+        $sort: {
+          averageScore: -1,
+          tasksCompleted: -1,
+        },
+      },
+      { $limit: 50 },
+      {
+        $project: {
+          name: 1,
+          skills: 1,
+          tasksCompleted: 1,
+          totalScore: 1,
+          totalScoreCount: 1,
+          averageScore: 1,
+        },
+      },
+    ]);
+
+    res.json(students);
+  } catch (err) {
+    console.error('Error in GET /api/tasks/:id/candidates:', err);
+    res.status(500).json({
+      message: 'Error loading candidates',
+      error: err.message,
+    });
+  }
+});
+
 
 // POST /api/tasks/:id/submit (student submits work)
 router.post('/:id/submit', verifyJWT, async (req, res) => {
@@ -377,6 +456,7 @@ router.post('/:id/submit', verifyJWT, async (req, res) => {
   }
 });
 
+
 // POST /api/tasks/:id/approve
 router.post('/:id/approve', verifyJWT, async (req, res) => {
   try {
@@ -439,6 +519,7 @@ router.post('/:id/approve', verifyJWT, async (req, res) => {
     res.status(500).json({ message: 'Server error', error: err.message });
   }
 });
+
 
 // POST /api/tasks/:id/decline  (3-attempts + payments aware)
 router.post('/:id/decline', verifyJWT, async (req, res) => {
@@ -527,6 +608,7 @@ router.post('/:id/decline', verifyJWT, async (req, res) => {
   }
 });
 
+
 // POST /api/tasks/:id/rate
 router.post('/:id/rate', verifyJWT, async (req, res) => {
   try {
@@ -560,6 +642,7 @@ router.post('/:id/rate', verifyJWT, async (req, res) => {
     res.status(500).json({ message: 'Server error', error: err.message });
   }
 });
+
 
 // POST /api/tasks/:id/feedback
 router.post('/:id/feedback', verifyJWT, async (req, res) => {
@@ -700,6 +783,7 @@ router.post('/:id/feedback', verifyJWT, async (req, res) => {
   }
 });
 
+
 // DELETE /api/tasks/:id -> delete task (client only)
 router.delete('/:id', verifyJWT, async (req, res) => {
   try {
@@ -728,5 +812,6 @@ router.delete('/:id', verifyJWT, async (req, res) => {
       .json({ message: 'Error deleting task', error: err.message });
   }
 });
+
 
 module.exports = router;

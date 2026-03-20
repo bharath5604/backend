@@ -45,6 +45,12 @@ app.use("/api/bids", require("./routes/bids"));
 app.use("/api/payments", require("./routes/payments"));
 app.use("/api/messages", require("./routes/messages")); // ✅ restore messages feature
 
+// NEW: global skills list (for signup, task creation, filters)
+app.use("/api/skills", require("./routes/skills"));
+
+// NEW: client→student task requests (inline in student workspace)
+app.use("/api/task-requests", require("./routes/taskrequests"));
+
 // ✅ ADMIN ROUTES
 app.use("/api/admin", require("./routes/admin"));
 
