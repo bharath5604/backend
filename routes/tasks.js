@@ -10,7 +10,6 @@ const verifyJWT = require('../middleware/authMiddleware');
 const Joi = require('joi');
 const { sendNotification } = require('../utils/fcm');
 
-
 // Joi schemas
 const createTaskSchema = Joi.object({
   title: Joi.string().min(3).max(200).required(),
@@ -42,7 +41,6 @@ const submissionSchema = Joi.object({
   fileUrl: Joi.string().uri().max(2000).required(),
   notes: Joi.string().max(2000).allow('', null),
 });
-
 
 // POST /api/tasks/create -> create new task (client)
 router.post('/create', verifyJWT, async (req, res) => {
@@ -109,7 +107,6 @@ router.post('/create', verifyJWT, async (req, res) => {
   }
 });
 
-
 // GET /api/tasks (student feed + filters)
 router.get('/', verifyJWT, async (req, res) => {
   try {
@@ -153,7 +150,6 @@ router.get('/', verifyJWT, async (req, res) => {
   }
 });
 
-
 // GET /api/tasks/search
 router.get('/search', verifyJWT, async (req, res) => {
   try {
@@ -180,7 +176,6 @@ router.get('/search', verifyJWT, async (req, res) => {
     });
   }
 });
-
 
 // GET /api/tasks/recommended (latest 5 based on student skills)
 router.get('/recommended', verifyJWT, async (req, res) => {
@@ -212,7 +207,6 @@ router.get('/recommended', verifyJWT, async (req, res) => {
       .json({ message: 'Error fetching recommended tasks', error: err.message });
   }
 });
-
 
 // GET /api/tasks/assigned (student workspace)
 router.get('/assigned', verifyJWT, async (req, res) => {
@@ -250,7 +244,6 @@ router.get('/assigned', verifyJWT, async (req, res) => {
       .json({ message: 'Server error', error: err.message });
   }
 });
-
 
 // GET /api/tasks/mine (client’s tasks, with bidsCount)
 router.get('/mine', verifyJWT, async (req, res) => {
@@ -297,7 +290,6 @@ router.get('/mine', verifyJWT, async (req, res) => {
     res.status(500).json({ message: 'Server error', error: err.message });
   }
 });
-
 
 // NEW: GET /api/tasks/:id/candidates
 // Candidate students for a task (after creation) based on requiredSkills, sorted by rating & tasksCompleted
@@ -368,7 +360,6 @@ router.get('/:id/candidates', verifyJWT, async (req, res) => {
     });
   }
 });
-
 
 // POST /api/tasks/:id/submit (student submits work)
 router.post('/:id/submit', verifyJWT, async (req, res) => {
@@ -456,7 +447,6 @@ router.post('/:id/submit', verifyJWT, async (req, res) => {
   }
 });
 
-
 // POST /api/tasks/:id/approve
 router.post('/:id/approve', verifyJWT, async (req, res) => {
   try {
@@ -519,7 +509,6 @@ router.post('/:id/approve', verifyJWT, async (req, res) => {
     res.status(500).json({ message: 'Server error', error: err.message });
   }
 });
-
 
 // POST /api/tasks/:id/decline  (3-attempts + payments aware)
 router.post('/:id/decline', verifyJWT, async (req, res) => {
@@ -608,7 +597,6 @@ router.post('/:id/decline', verifyJWT, async (req, res) => {
   }
 });
 
-
 // POST /api/tasks/:id/rate
 router.post('/:id/rate', verifyJWT, async (req, res) => {
   try {
@@ -642,7 +630,6 @@ router.post('/:id/rate', verifyJWT, async (req, res) => {
     res.status(500).json({ message: 'Server error', error: err.message });
   }
 });
-
 
 // POST /api/tasks/:id/feedback
 router.post('/:id/feedback', verifyJWT, async (req, res) => {
@@ -686,21 +673,19 @@ router.post('/:id/feedback', verifyJWT, async (req, res) => {
 
     console.log('feedbackEntries before check:', student.feedbackEntries);
 
+    // --- find previous feedback for this task+client (if any) ---
+    let previousScoreForTask = 0;
+    let previousDomain = task.domain || 'general';
+
     if (Array.isArray(student.feedbackEntries)) {
-      const already = student.feedbackEntries.some(
+      const prev = student.feedbackEntries.find(
         (entry) =>
           entry.taskId.toString() === task._id.toString() &&
           entry.clientId.toString() === req.user.id.toString()
       );
-      console.log('duplicate check ->', {
-        taskId: task._id.toString(),
-        clientId: req.user.id.toString(),
-        already,
-      });
-      if (already) {
-        return res
-          .status(400)
-          .json({ message: 'Feedback already given for this task' });
+      if (prev) {
+        previousScoreForTask = prev.rating || 0;
+        previousDomain = prev.domain || previousDomain;
       }
     }
 
@@ -710,16 +695,37 @@ router.post('/:id/feedback', verifyJWT, async (req, res) => {
     task.rating = cleanScore;
     await task.save();
 
-    // overall totals (score is 1–5)
-    student.totalScore = (student.totalScore || 0) + cleanScore;
-    student.totalScoreCount = (student.totalScoreCount || 0) + 1;
+    // overall totals (score is 1–5), adjust for previous score if existed
+    const safeTotalScore = student.totalScore || 0;
+    const safeTotalCount = student.totalScoreCount || 0;
 
-    // per-domain feedback
+    student.totalScore = safeTotalScore - previousScoreForTask + cleanScore;
+    if (previousScoreForTask === 0) {
+      student.totalScoreCount = safeTotalCount + 1;
+    } else {
+      student.totalScoreCount = safeTotalCount; // count unchanged on overwrite
+    }
+
+    // per-domain feedback (adjust old domain entry if needed)
     const domain = task.domain || 'general';
     if (!Array.isArray(student.feedbackScores)) {
       student.feedbackScores = [];
     }
-    const aggEntry = student.feedbackScores.find((e) => e.domain === domain);
+
+    // adjust previous domain entry if previous feedback existed
+    if (previousScoreForTask > 0) {
+      const prevDomEntry = student.feedbackScores.find(
+        (e) => e.domain === previousDomain
+      );
+      if (prevDomEntry) {
+        prevDomEntry.totalScore -= previousScoreForTask;
+        // count unchanged because it's still one feedback in that domain
+        if (prevDomEntry.totalScore < 0) prevDomEntry.totalScore = 0;
+      }
+    }
+
+    // now add to current domain
+    let aggEntry = student.feedbackScores.find((e) => e.domain === domain);
     if (!aggEntry) {
       student.feedbackScores.push({
         domain,
@@ -728,12 +734,21 @@ router.post('/:id/feedback', verifyJWT, async (req, res) => {
       });
     } else {
       aggEntry.totalScore += cleanScore;
-      aggEntry.count += 1;
+      if (previousScoreForTask === 0) {
+        aggEntry.count += 1;
+      }
     }
 
-    // detailed feedback entry for student's own profile
+    // detailed feedback entry for student's own profile:
+    // keep only the latest feedback per task+client
     if (!Array.isArray(student.feedbackEntries)) {
       student.feedbackEntries = [];
+    } else {
+      student.feedbackEntries = student.feedbackEntries.filter(
+        (entry) =>
+          entry.taskId.toString() !== task._id.toString() ||
+          entry.clientId.toString() !== req.user.id.toString()
+      );
     }
 
     const client = await User.findById(task.client).select('name');
@@ -783,7 +798,6 @@ router.post('/:id/feedback', verifyJWT, async (req, res) => {
   }
 });
 
-
 // DELETE /api/tasks/:id -> delete task (client only)
 router.delete('/:id', verifyJWT, async (req, res) => {
   try {
@@ -812,6 +826,5 @@ router.delete('/:id', verifyJWT, async (req, res) => {
       .json({ message: 'Error deleting task', error: err.message });
   }
 });
-
 
 module.exports = router;
