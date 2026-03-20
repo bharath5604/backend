@@ -38,22 +38,12 @@ router.get('/task/:taskId', verifyJWT, async (req, res) => {
       return res.status(404).json({ message: 'Task not found' });
     }
 
-    // Stop chat after approval or after max attempts / hard decline
-    if (
-      task.status === 'completed' ||
-      task.status === 'declined' ||
-      task.attemptCount >= (task.maxAttempts || 3)
-    ) {
-      return res.status(403).json({
-        message: 'Conversation closed for this task',
-      });
-    }
-
     // Enforce: chat only between client and the assigned student
-    // Allow in active task states (assigned, under_review, etc.)
+    // Require an assigned student, but do NOT block on status/attempts
     if (!task.student) {
       return res.status(403).json({
-        message: 'Chat is available only after a bid is accepted for this task',
+        message:
+          'Chat is available only after a bid is accepted for this task',
       });
     }
 
@@ -112,22 +102,12 @@ router.post('/task/:taskId', verifyJWT, async (req, res) => {
       return res.status(404).json({ message: 'Task not found' });
     }
 
-    // Block sending messages after approval / final decline / 3 attempts
-    if (
-      task.status === 'completed' ||
-      task.status === 'declined' ||
-      task.attemptCount >= (task.maxAttempts || 3)
-    ) {
-      return res.status(403).json({
-        message: 'Conversation closed for this task',
-      });
-    }
-
     // Enforce: chat only between client and the assigned student
-    // Allow while task is active (assigned, under_review, etc.)
+    // Require an assigned student, but do NOT block on status/attempts
     if (!task.student) {
       return res.status(403).json({
-        message: 'Chat is available only after a bid is accepted for this task',
+        message:
+          'Chat is available only after a bid is accepted for this task',
       });
     }
 
