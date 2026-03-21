@@ -99,7 +99,10 @@ router.get('/mine', verifyJWT, async (req, res) => {
       student: studentId,
       status: 'pending',
     })
-      .populate('task', 'title description budget deadline requiredSkills status')
+      .populate(
+        'task',
+        'title description budget deadline requiredSkills status'
+      )
       .populate('client', 'name company')
       .sort({ createdAt: -1 });
 
@@ -113,8 +116,43 @@ router.get('/mine', verifyJWT, async (req, res) => {
   }
 });
 
+// NEW: GET /api/task-requests/by-task/:taskId
+// Client: view all accepted students for a task
+router.get('/by-task/:taskId', verifyJWT, async (req, res) => {
+  try {
+    if (req.user.role !== 'client') {
+      return res
+        .status(403)
+        .json({ message: 'Only clients can view this' });
+    }
+
+    const task = await Task.findById(req.params.taskId).select('client title');
+    if (!task) {
+      return res.status(404).json({ message: 'Task not found' });
+    }
+    if (task.client.toString() !== req.user.id) {
+      return res.status(403).json({ message: 'Not your task' });
+    }
+
+    const requests = await TaskRequest.find({
+      task: task._id,
+      status: 'accepted',
+    })
+      .populate('student', 'name email')
+      .sort({ createdAt: -1 });
+
+    res.json({ task, requests });
+  } catch (err) {
+    console.error('Error in GET /api/task-requests/by-task/:taskId', err);
+    res.status(500).json({
+      message: 'Error loading requests',
+      error: err.message,
+    });
+  }
+});
+
 // POST /api/task-requests/:id/accept
-// Student accepts a request; others are cancelled and task assigned
+// Student accepts a request; MULTIPLE students may accept, task NOT assigned yet
 router.post('/:id/accept', verifyJWT, async (req, res) => {
   try {
     if (req.user.role !== 'student') {
@@ -141,51 +179,22 @@ router.post('/:id/accept', verifyJWT, async (req, res) => {
       return res.status(404).json({ message: 'Task not found' });
     }
 
-    if (task.status !== 'open') {
+    if (task.status === 'completed' || task.status === 'declined') {
       return res
         .status(400)
         .json({ message: 'Task is not open anymore' });
     }
 
-    // 1) Mark this request accepted
+    // 1) Mark ONLY this request as accepted
     request.status = 'accepted';
     await request.save();
 
-    // 2) Cancel all other pending requests for this task
-    await TaskRequest.updateMany(
-      {
-        task: task._id,
-        _id: { $ne: request._id },
-        status: 'pending',
-      },
-      { $set: { status: 'cancelled' } }
-    );
+    // 2) DO NOT cancel other requests
+    // They stay pending so other students can accept too.
 
-    // 3) Create or update an accepted Bid for this student
-    let bid = await Bid.findOne({
-      task: task._id,
-      student: req.user.id,
-    });
+    // 3) No automatic task assignment; client will select one later.
 
-    if (!bid) {
-      bid = await Bid.create({
-        task: task._id,
-        student: req.user.id,
-        quote: task.budget, // default to task budget; you can adjust later
-        timeline: task.deadline,
-        status: 'accepted',
-      });
-    } else {
-      bid.status = 'accepted';
-      await bid.save();
-    }
-
-    // 4) Update task: assign student + set status
-    task.status = 'assigned';
-    task.student = req.user.id; // IMPORTANT: link accepted student here
-    await task.save();
-
-    // 5) Notify client that a student accepted
+    // 4) Notify client that this student accepted
     await sendNotification(task.client, {
       title: 'Task request accepted',
       body: `A student accepted your request for "${task.title}".`,
@@ -193,13 +202,14 @@ router.post('/:id/accept', verifyJWT, async (req, res) => {
         type: 'task_request_accepted',
         taskId: task._id.toString(),
         studentId: req.user.id.toString(),
+        requestId: request._id.toString(),
       },
     });
 
     res.json({
       message: 'Request accepted',
       taskId: task._id,
-      bidId: bid._id,
+      requestId: request._id,
     });
   } catch (err) {
     console.error('Error in POST /api/task-requests/:id/accept:', err);
@@ -241,6 +251,117 @@ router.post('/:id/decline', verifyJWT, async (req, res) => {
     console.error('Error in POST /api/task-requests/:id/decline:', err);
     res.status(500).json({
       message: 'Error declining request',
+      error: err.message,
+    });
+  }
+});
+
+// NEW: POST /api/task-requests/:id/client-decline
+// Client declines a specific accepted/pending student → their chat should be disabled
+router.post('/:id/client-decline', verifyJWT, async (req, res) => {
+  try {
+    if (req.user.role !== 'client') {
+      return res
+        .status(403)
+        .json({ message: 'Only clients can decline students' });
+    }
+
+    const request = await TaskRequest.findById(req.params.id).populate('task');
+    if (!request) {
+      return res.status(404).json({ message: 'Task request not found' });
+    }
+
+    const task = request.task;
+    if (!task || task.client.toString() !== req.user.id) {
+      return res.status(403).json({ message: 'Not your task' });
+    }
+
+    if (!['pending', 'accepted'].includes(request.status)) {
+      return res
+        .status(400)
+        .json({ message: 'Request already processed' });
+    }
+
+    request.status = 'declined';
+    await request.save();
+
+    // Optionally notify student
+    await sendNotification(request.student, {
+      title: 'Request declined',
+      body: `Your request for "${task.title}" was declined by the client.`,
+      data: {
+        type: 'task_request_declined',
+        taskId: task._id.toString(),
+        requestId: request._id.toString(),
+      },
+    });
+
+    res.json({ message: 'Student declined for this task' });
+  } catch (err) {
+    console.error('Error in POST /api/task-requests/:id/client-decline:', err);
+    res.status(500).json({
+      message: 'Error declining student',
+      error: err.message,
+    });
+  }
+});
+
+// NEW: POST /api/task-requests/:id/client-select
+// Client chooses final student: assign task, decline other accepted students
+router.post('/:id/client-select', verifyJWT, async (req, res) => {
+  try {
+    if (req.user.role !== 'client') {
+      return res
+        .status(403)
+        .json({ message: 'Only clients can select students' });
+    }
+
+    const request = await TaskRequest.findById(req.params.id).populate('task');
+    if (!request) {
+      return res.status(404).json({ message: 'Task request not found' });
+    }
+
+    const task = request.task;
+    if (!task || task.client.toString() !== req.user.id) {
+      return res.status(403).json({ message: 'Not your task' });
+    }
+
+    if (request.status !== 'accepted') {
+      return res
+        .status(400)
+        .json({ message: 'Student has not accepted this request' });
+    }
+
+    // 1) Assign task to this student
+    task.student = request.student;
+    task.status = 'assigned';
+    await task.save();
+
+    // 2) Decline all other accepted requests for this task
+    await TaskRequest.updateMany(
+      {
+        task: task._id,
+        _id: { $ne: request._id },
+        status: 'accepted',
+      },
+      { $set: { status: 'declined' } }
+    );
+
+    // 3) Notify selected student
+    await sendNotification(request.student, {
+      title: 'You have been selected',
+      body: `You were selected for "${task.title}".`,
+      data: {
+        type: 'task_request_selected',
+        taskId: task._id.toString(),
+      },
+    });
+
+    res.json({ message: 'Student selected and task assigned', taskId: task._id });
+  } catch (err) {
+    console.error('Error in POST /api/task-requests/:id/client-select:', err);
+    res.status(500).json({
+      message: 'Error selecting student',
       error: err.message,
     });
   }
