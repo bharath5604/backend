@@ -11,14 +11,12 @@ const Bid = require('../models/Bid');
 const verifyJWT = require('../middleware/authMiddleware');
 const { sendNotification } = require('../utils/fcm');
 
-
 // Joi schemas
 const createRequestSchema = Joi.object({
   taskId: Joi.string().required(),
   studentIds: Joi.array().items(Joi.string().required()).min(1).required(),
   message: Joi.string().max(2000).allow('', null),
 });
-
 
 // POST /api/task-requests
 // Client selects students after creating a task
@@ -85,7 +83,6 @@ router.post('/', verifyJWT, async (req, res) => {
   }
 });
 
-
 // GET /api/task-requests/mine
 // Student workspace: view pending requests
 router.get('/mine', verifyJWT, async (req, res) => {
@@ -115,7 +112,6 @@ router.get('/mine', verifyJWT, async (req, res) => {
     });
   }
 });
-
 
 // POST /api/task-requests/:id/accept
 // Student accepts a request; others are cancelled and task assigned
@@ -184,8 +180,9 @@ router.post('/:id/accept', verifyJWT, async (req, res) => {
       await bid.save();
     }
 
-    // 4) Update task status to 'assigned'
+    // 4) Update task: assign student + set status
     task.status = 'assigned';
+    task.student = req.user.id; // IMPORTANT: link accepted student here
     await task.save();
 
     // 5) Notify client that a student accepted
@@ -212,7 +209,6 @@ router.post('/:id/accept', verifyJWT, async (req, res) => {
     });
   }
 });
-
 
 // POST /api/task-requests/:id/decline
 // Student declines a request → it disappears from workspace
@@ -249,6 +245,5 @@ router.post('/:id/decline', verifyJWT, async (req, res) => {
     });
   }
 });
-
 
 module.exports = router;
