@@ -69,12 +69,34 @@ exports.createTask = async (req, res) => {
 
 /**
  * ===============================
- * GET ALL OPEN TASKS
+ * GET ALL OPEN TASKS (with optional clientId filter)
  * ===============================
  */
 exports.getAllTasks = async (req, res) => {
   try {
-    const tasks = await Task.find({ status: "open" })
+    const { clientId, domain, minBudget, maxBudget } = req.query;
+
+    const query = {
+      status: "open",
+    };
+
+    // Optional filter: only tasks of a particular client
+    if (clientId) {
+      query.client = clientId;
+    }
+
+    // Optional filters you may want to support as well
+    if (domain) {
+      query.domain = domain;
+    }
+    if (minBudget) {
+      query.budget = { ...(query.budget || {}), $gte: Number(minBudget) };
+    }
+    if (maxBudget) {
+      query.budget = { ...(query.budget || {}), $lte: Number(maxBudget) };
+    }
+
+    const tasks = await Task.find(query)
       .populate("client", "name email")
       .sort({ createdAt: -1 });
 
@@ -284,9 +306,6 @@ exports.approveWork = async (req, res) => {
  * ===============================
  * CLIENT DECLINE WORK (3‑attempt logic)
  * ===============================
- * - Increments attemptCount
- * - If attempts < maxAttempts, student can resubmit (status: assigned)
- * - If attempts >= maxAttempts, task is marked declined and related payments are cancelled
  */
 exports.declineWork = async (req, res) => {
   try {
