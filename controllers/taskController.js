@@ -69,23 +69,25 @@ exports.createTask = async (req, res) => {
 
 /**
  * ===============================
- * GET ALL OPEN TASKS (with optional clientId filter)
+ * GET ALL TASKS (feed + client filter)
  * ===============================
+ * - When clientId is NOT provided: only open tasks (public feed)
+ * - When clientId IS provided: return ALL tasks of that client (any status)
  */
 exports.getAllTasks = async (req, res) => {
   try {
     const { clientId, domain, minBudget, maxBudget } = req.query;
 
-    const query = {
-      status: "open",
-    };
+    const query = {};
 
-    // Optional filter: only tasks of a particular client
     if (clientId) {
+      // For client profile: show all tasks of this client, not just open
       query.client = clientId;
+    } else {
+      // Public feed: only open tasks
+      query.status = "open";
     }
 
-    // Optional filters you may want to support as well
     if (domain) {
       query.domain = domain;
     }
@@ -97,7 +99,7 @@ exports.getAllTasks = async (req, res) => {
     }
 
     const tasks = await Task.find(query)
-      .populate("client", "name email")
+      .populate("client", "name email company")
       .sort({ createdAt: -1 });
 
     res.json(tasks);
@@ -119,7 +121,7 @@ exports.getAllTasks = async (req, res) => {
 exports.getTaskById = async (req, res) => {
   try {
     const task = await Task.findById(req.params.taskId)
-      .populate("client", "name email")
+      .populate("client", "name email company")
       .populate("student", "name email");
 
     if (!task) {
@@ -143,6 +145,7 @@ exports.getTaskById = async (req, res) => {
  * ===============================
  * ASSIGN TASK TO STUDENT
  * ===============================
+ * Used when client finally selects one student.
  */
 exports.assignTask = async (req, res) => {
   try {
@@ -422,14 +425,16 @@ exports.rateStudent = async (req, res) => {
 
 /**
  * ===============================
- * GET STUDENT TASKS
+ * GET STUDENT TASKS (Workspace)
  * ===============================
+ * Only return tasks that are actually assigned to this student.
  */
 exports.getStudentTasks = async (req, res) => {
   try {
     const tasks = await Task.find({
       student: req.user.id,
-    });
+      status: { $in: ["assigned", "under_review", "completed", "declined"] },
+    }).sort({ createdAt: -1 });
 
     res.json(tasks);
   } catch (err) {
@@ -451,7 +456,7 @@ exports.getClientTasks = async (req, res) => {
   try {
     const tasks = await Task.find({
       client: req.user.id,
-    });
+    }).sort({ createdAt: -1 });
 
     res.json(tasks);
   } catch (err) {

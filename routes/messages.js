@@ -12,6 +12,8 @@ const messageSchema = Joi.object({
   text: Joi.string().min(1).max(2000).allow('', null),
   fileUrl: Joi.string().uri().max(2000).allow('', null),
   fileName: Joi.string().max(255).allow('', null),
+  // client-side passes this only when task is not yet assigned
+  studentId: Joi.string().allow('', null),
 })
   .custom((value, helpers) => {
     const hasText =
@@ -29,22 +31,46 @@ const messageSchema = Joi.object({
   });
 
 // helper: check if user is allowed to chat on this task
-async function checkChatPermission(task, userId) {
+// extended to optionally check per-student in pre-assignment flow
+async function checkChatPermission(task, userId, studentIdForClient) {
   const isClient = task.client.toString() === userId;
   const isAssignedStudent =
     task.student && task.student.toString() === userId;
 
   // If task is formally assigned, only client + assigned student can chat
   if (task.student) {
-    return { allowed: isClient || isAssignedStudent, isClient, peerId: null };
+    return {
+      allowed: isClient || isAssignedStudent,
+      isClient,
+      peerId: isClient ? task.student.toString() : task.client.toString(),
+      studentId: task.student.toString(),
+    };
   }
 
-  // If no assigned student yet, allow:
-  // - client: can chat with any accepted-request student (peer decided on client side)
+  // If no assigned student yet:
+  // - client: can chat only with a student who has accepted this task
   // - student: can chat if they have an accepted TaskRequest for this task
   if (isClient) {
-    // For the client, we just say "allowed"; actual peerId will be chosen per message
-    return { allowed: true, isClient: true, peerId: null };
+    if (!studentIdForClient) {
+      return { allowed: false, isClient: true, peerId: null, studentId: null };
+    }
+
+    const accepted = await TaskRequest.exists({
+      task: task._id,
+      student: studentIdForClient,
+      status: 'accepted',
+    });
+
+    if (!accepted) {
+      return { allowed: false, isClient: true, peerId: null, studentId: null };
+    }
+
+    return {
+      allowed: true,
+      isClient: true,
+      peerId: studentIdForClient,
+      studentId: studentIdForClient,
+    };
   }
 
   // Student: must have accepted request
@@ -55,17 +81,28 @@ async function checkChatPermission(task, userId) {
   });
 
   if (!hasAcceptedRequest) {
-    return { allowed: false, isClient: false, peerId: null };
+    return { allowed: false, isClient: false, peerId: null, studentId: null };
   }
 
-  return { allowed: true, isClient: false, peerId: task.client };
+  return {
+    allowed: true,
+    isClient: false,
+    peerId: task.client.toString(),
+    studentId: userId,
+  };
 }
 
-// GET /api/messages/task/:taskId
-// List messages between client & student for this task
-router.get('/task/:taskId', verifyJWT, async (req, res) => {
+// GET /api/messages/task
+// Query: taskId (required), studentId (optional, for pre-assignment client↔student)
+router.get('/task', verifyJWT, async (req, res) => {
   try {
-    const task = await Task.findById(req.params.taskId).select(
+    const { taskId, studentId } = req.query;
+
+    if (!taskId) {
+      return res.status(400).json({ message: 'taskId is required' });
+    }
+
+    const task = await Task.findById(taskId).select(
       'client student status attemptCount maxAttempts'
     );
     if (!task) {
@@ -74,7 +111,7 @@ router.get('/task/:taskId', verifyJWT, async (req, res) => {
 
     const userId = req.user.id;
 
-    const permission = await checkChatPermission(task, userId);
+    const permission = await checkChatPermission(task, userId, studentId || null);
     if (!permission.allowed) {
       return res.status(403).json({
         message:
@@ -82,7 +119,13 @@ router.get('/task/:taskId', verifyJWT, async (req, res) => {
       });
     }
 
-    const messages = await Message.find({ task: task._id })
+    const filter = { task: task._id };
+    // If pre-assignment, filter by student field as well
+    if (!task.student && permission.studentId) {
+      filter.student = permission.studentId;
+    }
+
+    const messages = await Message.find(filter)
       .sort({ createdAt: 1 })
       .populate('sender', 'name role')
       .populate('receiver', 'name role');
@@ -96,16 +139,21 @@ router.get('/task/:taskId', verifyJWT, async (req, res) => {
   }
 });
 
-// POST /api/messages/task/:taskId
-// Send a message between client & student on this task
-router.post('/task/:taskId', verifyJWT, async (req, res) => {
-  console.log('POST /api/messages/task/:taskId called', {
-    taskId: req.params.taskId,
-    userId: req.user && req.user.id,
+// POST /api/messages/task
+// Body: { taskId, text?, fileUrl?, fileName?, studentId? }
+router.post('/task', verifyJWT, async (req, res) => {
+  console.log('POST /api/messages/task called', {
     body: req.body,
+    userId: req.user && req.user.id,
   });
 
   try {
+    const { taskId } = req.body;
+
+    if (!taskId) {
+      return res.status(400).json({ message: 'taskId is required' });
+    }
+
     const { error, value } = messageSchema.validate(req.body, {
       abortEarly: false,
       stripUnknown: true,
@@ -118,16 +166,25 @@ router.post('/task/:taskId', verifyJWT, async (req, res) => {
       });
     }
 
-    const task = await Task.findById(req.params.taskId).select(
+    const task = await Task.findById(taskId).select(
       'client student title status attemptCount maxAttempts'
     );
     if (!task) {
-      console.log('Task not found for id', req.params.taskId);
+      console.log('Task not found for id', taskId);
       return res.status(404).json({ message: 'Task not found' });
     }
 
     const userId = req.user.id;
-    const permission = await checkChatPermission(task, userId);
+    const studentIdForClient =
+      req.user.role === 'client' && value.studentId
+        ? value.studentId
+        : null;
+
+    const permission = await checkChatPermission(
+      task,
+      userId,
+      studentIdForClient
+    );
     if (!permission.allowed) {
       return res.status(403).json({
         message:
@@ -136,31 +193,8 @@ router.post('/task/:taskId', verifyJWT, async (req, res) => {
     }
 
     const isClient = permission.isClient;
-    let receiver;
-
-    if (task.student) {
-      // Assigned flow: always between client and assigned student
-      receiver = isClient ? task.student : task.client;
-    } else {
-      // Request flow before final selection:
-      // - if sender is student, receiver is client
-      // - if sender is client, you may need a specific student; for now we
-      //   send messages back to the first accepted student is not defined,
-      //   but in your UI you'll usually open chat from a specific student.
-      if (isClient) {
-        // For safety, require client to specify studentId in body when not assigned
-        const { studentId } = req.body;
-        if (!studentId) {
-          return res.status(400).json({
-            message:
-              'studentId is required when task is not yet assigned and client is sending a message',
-          });
-        }
-        receiver = studentId;
-      } else {
-        receiver = task.client;
-      }
-    }
+    const receiver = permission.peerId;
+    const studentForMessage = permission.studentId || null;
 
     const trimmedText =
       typeof value.text === 'string' ? value.text.trim() : '';
@@ -173,6 +207,7 @@ router.post('/task/:taskId', verifyJWT, async (req, res) => {
       task: task._id,
       sender: userId,
       receiver,
+      student: studentForMessage,
       text: trimmedText || undefined,
       fileUrl: trimmedFileUrl || undefined,
       fileName: trimmedFileName || undefined,
@@ -187,6 +222,7 @@ router.post('/task/:taskId', verifyJWT, async (req, res) => {
 
     res.status(201).json(message);
 
+    // fire-and-forget FCM
     (async () => {
       try {
         const notificationBody =

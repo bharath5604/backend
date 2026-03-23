@@ -1,11 +1,9 @@
 const express = require('express');
 const router = express.Router();
-const mongoose = require('mongoose');
 
 const Task = require('../models/Task');
 const User = require('../models/User');
 const Payment = require('../models/Payment');
-const Bid = require('../models/Bid');
 const verifyJWT = require('../middleware/authMiddleware');
 const Joi = require('joi');
 const { sendNotification } = require('../utils/fcm');
@@ -208,7 +206,7 @@ router.get('/recommended', verifyJWT, async (req, res) => {
   }
 });
 
-// GET /api/tasks/assigned (student workspace)
+// GET /api/tasks/assigned (student workspace, TaskRequest-based)
 router.get('/assigned', verifyJWT, async (req, res) => {
   try {
     if (req.user.role !== 'student') {
@@ -217,23 +215,12 @@ router.get('/assigned', verifyJWT, async (req, res) => {
         .json({ message: 'Only students can view assigned tasks' });
     }
 
-    const acceptedBids = await Bid.find({
-      student: req.user.id,
-      status: 'accepted',
-    }).select('task');
-
-    if (acceptedBids.length === 0) {
-      return res.json([]);
-    }
-
-    const taskIds = acceptedBids.map((b) => b.task);
-
-    // Only return tasks that are still active for the student
     const tasks = await Task.find({
-      _id: { $in: taskIds },
-      status: { $in: ['assigned', 'under_review', 'completed'] }, // exclude 'declined'
+      student: req.user.id,
+      status: { $in: ['assigned', 'under_review', 'completed', 'declined'] },
     })
       .populate('client', 'name company location')
+      .sort({ createdAt: -1 })
       .lean();
 
     res.json(tasks);
@@ -245,7 +232,7 @@ router.get('/assigned', verifyJWT, async (req, res) => {
   }
 });
 
-// GET /api/tasks/mine (client’s tasks, with bidsCount)
+// GET /api/tasks/mine (client’s tasks) – no bidsCount in new flow
 router.get('/mine', verifyJWT, async (req, res) => {
   try {
     if (req.user.role !== 'client') {
@@ -256,35 +243,10 @@ router.get('/mine', verifyJWT, async (req, res) => {
 
     const tasks = await Task.find({ client: req.user.id })
       .populate('client', 'name company')
+      .sort({ createdAt: -1 })
       .lean();
 
-    if (tasks.length === 0) {
-      return res.json([]);
-    }
-
-    const taskIds = tasks.map((t) => t._id);
-
-    const counts = await Bid.aggregate([
-      { $match: { task: { $in: taskIds } } },
-      {
-        $group: {
-          _id: '$task',
-          count: { $sum: 1 },
-        },
-      },
-    ]);
-
-    const countMap = {};
-    for (const c of counts) {
-      countMap[c._id.toString()] = c.count;
-    }
-
-    const enriched = tasks.map((t) => ({
-      ...t,
-      bidsCount: countMap[t._id.toString()] || 0,
-    }));
-
-    res.json(enriched);
+    res.json(tasks);
   } catch (err) {
     console.error('Error in GET /api/tasks/mine:', err);
     res.status(500).json({ message: 'Server error', error: err.message });
@@ -386,17 +348,11 @@ router.post('/:id/submit', verifyJWT, async (req, res) => {
       return res.status(404).json({ message: 'Task not found' });
     }
 
-    // Only assigned student should submit (via accepted bid)
-    const acceptedBid = await Bid.findOne({
-      task: task._id,
-      student: req.user.id,
-      status: 'accepted',
-    });
-
-    if (!acceptedBid) {
+    // Only assigned student should submit
+    if (!task.student || task.student.toString() !== req.user.id) {
       return res
         .status(403)
-        .json({ message: 'You are not the accepted student for this task' });
+        .json({ message: 'You are not the assigned student for this task' });
     }
 
     // Block if no more attempts or task closed
@@ -814,7 +770,6 @@ router.delete('/:id', verifyJWT, async (req, res) => {
       return res.status(403).json({ message: 'Not your task' });
     }
 
-    await Bid.deleteMany({ task: task._id });
     await Payment.deleteMany({ task: task._id });
     await task.deleteOne();
 
@@ -826,6 +781,5 @@ router.delete('/:id', verifyJWT, async (req, res) => {
       .json({ message: 'Error deleting task', error: err.message });
   }
 });
-
 
 module.exports = router;

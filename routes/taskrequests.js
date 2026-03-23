@@ -307,7 +307,7 @@ router.post('/:id/client-decline', verifyJWT, async (req, res) => {
 });
 
 // NEW: POST /api/task-requests/:id/client-select
-// Client chooses final student: assign task, decline other accepted students
+// Client chooses final student: assign task, mark this request selected, decline other accepted students
 router.post('/:id/client-select', verifyJWT, async (req, res) => {
   try {
     if (req.user.role !== 'client') {
@@ -337,7 +337,11 @@ router.post('/:id/client-select', verifyJWT, async (req, res) => {
     task.status = 'assigned';
     await task.save();
 
-    // 2) Decline all other accepted requests for this task
+    // 2) Mark this request as selected
+    request.status = 'selected';
+    await request.save();
+
+    // 3) Decline all other accepted requests for this task
     await TaskRequest.updateMany(
       {
         task: task._id,
@@ -347,7 +351,7 @@ router.post('/:id/client-select', verifyJWT, async (req, res) => {
       { $set: { status: 'declined' } }
     );
 
-    // 3) Notify selected student
+    // 4) Notify selected student
     await sendNotification(request.student, {
       title: 'You have been selected',
       body: `You were selected for "${task.title}".`,
