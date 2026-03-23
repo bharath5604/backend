@@ -1,4 +1,3 @@
-// routes/messages.js
 const express = require('express');
 const router = express.Router();
 const Message = require('../models/Message');
@@ -31,7 +30,7 @@ const messageSchema = Joi.object({
   });
 
 // helper: check if user is allowed to chat on this task
-// extended to optionally check per-student in pre-assignment flow
+// extended so that accepted + selected students can chat
 async function checkChatPermission(task, userId, studentIdForClient) {
   const isClient = task.client.toString() === userId;
   const isAssignedStudent =
@@ -58,7 +57,7 @@ async function checkChatPermission(task, userId, studentIdForClient) {
     const accepted = await TaskRequest.exists({
       task: task._id,
       student: studentIdForClient,
-      status: 'accepted',
+      status: { $in: ['accepted', 'selected'] }, // allow both
     });
 
     if (!accepted) {
@@ -73,11 +72,11 @@ async function checkChatPermission(task, userId, studentIdForClient) {
     };
   }
 
-  // Student: must have accepted request
+  // Student: must have accepted (or been selected for) this task
   const hasAcceptedRequest = await TaskRequest.exists({
     task: task._id,
     student: userId,
-    status: 'accepted',
+    status: { $in: ['accepted', 'selected'] }, // allow both
   });
 
   if (!hasAcceptedRequest) {
