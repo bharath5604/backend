@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-
+const TaskRequest = require('../models/TaskRequest');
 const Task = require('../models/Task');
 const User = require('../models/User');
 const Payment = require('../models/Payment');
@@ -781,5 +781,26 @@ router.delete('/:id', verifyJWT, async (req, res) => {
       .json({ message: 'Error deleting task', error: err.message });
   }
 });
+// GET /api/tasks/chats-for-student
+router.get('/chats-for-student', verifyJWT, async (req, res) => {
+  try {
+    const userId = req.user.id; // student
 
+    // Find taskIds where this student has accepted/selected request
+    const requests = await TaskRequest.find({
+      student: userId,
+      status: { $in: ['accepted', 'selected'] },
+    }).select('task');
+
+    const taskIds = [...new Set(requests.map(r => r.task.toString()))];
+
+    const tasks = await Task.find({ _id: { $in: taskIds } })
+      .sort({ createdAt: -1 });
+
+    res.json(tasks);
+  } catch (err) {
+    console.error('chats-for-student error', err);
+    res.status(500).json({ message: 'Error loading chat tasks' });
+  }
+});
 module.exports = router;
