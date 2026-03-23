@@ -338,7 +338,7 @@ router.post('/:id/client-select', verifyJWT, async (req, res) => {
     await task.save();
 
     // 2) Mark this request as selected
-    request.status = 'accepted'; //selected
+    request.status = 'selected';//accepted
     await request.save();
 
     // 3) Decline all other accepted requests for this task
