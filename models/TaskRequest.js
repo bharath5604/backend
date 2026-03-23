@@ -9,7 +9,7 @@ const taskRequestSchema = new mongoose.Schema(
     message: { type: String, default: '' },
     status: {
       type: String,
-      enum: ['pending', 'accepted', 'declined', 'cancelled'],
+      enum: ['pending', 'accepted', 'declined', 'cancelled','selected'],
       default: 'pending',
     },
   },
