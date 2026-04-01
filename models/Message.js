@@ -1,4 +1,3 @@
-// models/Message.js
 const mongoose = require('mongoose');
 
 const messageSchema = new mongoose.Schema(
@@ -10,22 +9,21 @@ const messageSchema = new mongoose.Schema(
       index: true,
     },
 
-    // Who sent the message
     sender: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
       required: true,
+      index: true,
     },
 
-    // Who receives this specific message
     receiver: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
       required: true,
+      index: true,
     },
 
-    // Optional: for pre‑assignment client↔student chat we may want to know
-    // which student this thread is about (even if not yet assigned on Task)
+    // Assigned student context for this task, not a direct client-student thread
     student: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
@@ -33,31 +31,47 @@ const messageSchema = new mongoose.Schema(
       index: true,
     },
 
-    // Text is optional because a message can be "file only"
     text: {
       type: String,
       trim: true,
+      maxlength: 2000,
+      default: null,
     },
 
-    // Optional Firebase Storage download URL for an attachment
     fileUrl: {
       type: String,
       trim: true,
+      maxlength: 2000,
+      default: null,
     },
 
-    // Optional display name for the attachment
     fileName: {
       type: String,
       trim: true,
+      maxlength: 255,
+      default: null,
     },
   },
   { timestamps: true }
 );
 
-// For querying messages per task (+ optional student) efficiently
-messageSchema.index({ task: 1, student: 1, createdAt: 1 });
+messageSchema.pre('validate', function (next) {
+  const hasText =
+    typeof this.text === 'string' && this.text.trim().length > 0;
+  const hasFileUrl =
+    typeof this.fileUrl === 'string' && this.fileUrl.trim().length > 0;
 
-// Auto-delete messages 24 hours after creation
-messageSchema.index({ createdAt: 1 }, { expireAfterSeconds: 24 * 60 * 60 });
+  if (!hasText && !hasFileUrl) {
+    return next(
+      new Error('Message must have either text or a file attachment')
+    );
+  }
+
+  next();
+});
+
+messageSchema.index({ task: 1, createdAt: 1 });
+messageSchema.index({ task: 1, student: 1, createdAt: 1 });
+messageSchema.index({ sender: 1, receiver: 1, createdAt: -1 });
 
 module.exports = mongoose.model('Message', messageSchema);
