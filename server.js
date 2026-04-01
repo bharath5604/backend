@@ -74,7 +74,6 @@ const bidRoutes = loadRoute('./routes/bids', 'bidRoutes');
 const paymentRoutes = loadRoute('./routes/payments', 'paymentRoutes');
 const messageRoutes = loadRoute('./routes/messages', 'messageRoutes');
 const skillRoutes = loadRoute('./routes/skills', 'skillRoutes');
-const taskRequestRoutes = loadRoute('./routes/taskrequests', 'taskRequestRoutes');
 const adminRoutes = loadRoute('./routes/admin', 'adminRoutes');
 
 app.use('/api/stats', statsRoutes);
@@ -85,7 +84,6 @@ app.use('/api/bids', bidRoutes);
 app.use('/api/payments', paymentRoutes);
 app.use('/api/messages', messageRoutes);
 app.use('/api/skills', skillRoutes);
-app.use('/api/task-requests', taskRequestRoutes);
 app.use('/api/admin', adminRoutes);
 
 /*
