@@ -6,6 +6,7 @@ const User = require('../models/User');
 const Task = require('../models/Task');
 const Payment = require('../models/Payment');
 const Bid = require('../models/Bid');
+const Message = require('../models/Message');
 
 const verifyJWT = require('../middleware/authMiddleware');
 
@@ -13,11 +14,10 @@ function clean(value) {
   return typeof value === 'string' ? value.trim() : '';
 }
 
-/*
-=====================================
-ADMIN CHECK
-=====================================
-*/
+function normalizeId(value) {
+  return clean(value);
+}
+
 const ensureAdmin = (req, res, next) => {
   if (!req.user || req.user.role !== 'admin') {
     return res.status(403).json({
@@ -27,11 +27,6 @@ const ensureAdmin = (req, res, next) => {
   next();
 };
 
-/*
-=====================================
-JOI SCHEMAS
-=====================================
-*/
 const approveUserSchema = Joi.object({
   isApproved: Joi.boolean().required(),
 });
@@ -56,12 +51,13 @@ const paymentStatusSchema = Joi.object({
   adminNote: Joi.string().max(2000).allow('', null),
 });
 
-/*
-=====================================
-ADMIN USERS LIST
-/api/admin/users
-=====================================
-*/
+const adminMessageSchema = Joi.object({
+  text: Joi.string().allow('', null),
+  fileUrl: Joi.string().uri().allow('', null),
+  fileName: Joi.string().allow('', null),
+  studentId: Joi.string().allow('', null),
+});
+
 router.get('/users', verifyJWT, ensureAdmin, async (req, res) => {
   try {
     const role = clean(req.query.role);
@@ -87,12 +83,6 @@ router.get('/users', verifyJWT, ensureAdmin, async (req, res) => {
   }
 });
 
-/*
-=====================================
-ADMIN UPDATE USER APPROVAL
-PATCH /api/admin/users/:id/approve
-=====================================
-*/
 router.patch(
   '/users/:id/approve',
   verifyJWT,
@@ -136,12 +126,6 @@ router.patch(
   }
 );
 
-/*
-=====================================
-ADMIN TASKS LIST
-/api/admin/tasks
-=====================================
-*/
 router.get('/tasks', verifyJWT, ensureAdmin, async (req, res) => {
   try {
     const { error, value } = adminTaskFilterSchema.validate(req.query, {
@@ -178,12 +162,6 @@ router.get('/tasks', verifyJWT, ensureAdmin, async (req, res) => {
   }
 });
 
-/*
-=====================================
-TASK FILTER VALUES
-/api/admin/tasks/filters
-=====================================
-*/
 router.get('/tasks/filters', verifyJWT, ensureAdmin, async (req, res) => {
   try {
     const [companies, locations, domains] = await Promise.all([
@@ -206,12 +184,6 @@ router.get('/tasks/filters', verifyJWT, ensureAdmin, async (req, res) => {
   }
 });
 
-/*
-=====================================
-TASK CANDIDATES FOR ADMIN
-GET /api/admin/tasks/:id/candidates
-=====================================
-*/
 router.get('/tasks/:id/candidates', verifyJWT, ensureAdmin, async (req, res) => {
   try {
     const task = await Task.findById(req.params.id).select(
@@ -276,12 +248,6 @@ router.get('/tasks/:id/candidates', verifyJWT, ensureAdmin, async (req, res) => 
   }
 });
 
-/*
-=====================================
-ADMIN ASSIGN STUDENT TO TASK
-POST /api/admin/tasks/:id/assign
-=====================================
-*/
 router.post('/tasks/:id/assign', verifyJWT, ensureAdmin, async (req, res) => {
   try {
     const { error, value } = assignStudentSchema.validate(req.body, {
@@ -347,12 +313,127 @@ router.post('/tasks/:id/assign', verifyJWT, ensureAdmin, async (req, res) => {
   }
 });
 
-/*
-=====================================
-STUDENT DASHBOARD (DETAIL)
-/api/admin/students/:id/dashboard
-=====================================
-*/
+router.get(
+  '/tasks/:id/messages',
+  verifyJWT,
+  ensureAdmin,
+  async (req, res) => {
+    try {
+      const taskId = normalizeId(req.params.id);
+      const studentId = normalizeId(req.query.studentId);
+
+      if (!taskId) {
+        return res.status(400).json({ message: 'Task ID is required' });
+      }
+
+      const task = await Task.findById(taskId).populate(
+        'client student',
+        '_id name email role'
+      );
+
+      if (!task) {
+        return res.status(404).json({ message: 'Task not found' });
+      }
+
+      const filter = { task: taskId };
+
+      if (studentId) {
+        filter.$or = [
+          { student: studentId },
+          { peerStudentId: studentId },
+        ];
+      }
+
+      const messages = await Message.find(filter)
+        .populate('sender', 'name email role')
+        .sort({ createdAt: 1 });
+
+      return res.json(messages);
+    } catch (err) {
+      console.error('Error in GET /api/admin/tasks/:id/messages', err);
+      return res.status(500).json({
+        message: 'Error loading task messages',
+        error: err.message,
+      });
+    }
+  }
+);
+
+router.post(
+  '/tasks/:id/messages',
+  verifyJWT,
+  ensureAdmin,
+  async (req, res) => {
+    try {
+      const taskId = normalizeId(req.params.id);
+
+      const { error, value } = adminMessageSchema.validate(req.body, {
+        abortEarly: false,
+        stripUnknown: true,
+      });
+
+      if (error) {
+        return res.status(400).json({
+          message: 'Validation error',
+          details: error.details.map((d) => d.message),
+        });
+      }
+
+      if (!taskId) {
+        return res.status(400).json({ message: 'Task ID is required' });
+      }
+
+      const task = await Task.findById(taskId).populate(
+        'client student',
+        '_id name email role'
+      );
+
+      if (!task) {
+        return res.status(404).json({ message: 'Task not found' });
+      }
+
+      const text = clean(value.text);
+      const fileUrl = clean(value.fileUrl);
+      const fileName = clean(value.fileName);
+      const studentId = normalizeId(value.studentId);
+
+      if (!text && !fileUrl) {
+        return res.status(400).json({
+          message: 'Message text or file is required',
+        });
+      }
+
+      const payload = {
+        task: taskId,
+        sender: req.user.id,
+        text,
+        fileUrl: fileUrl || undefined,
+        fileName: fileName || undefined,
+      };
+
+      if (studentId) {
+        payload.student = studentId;
+        payload.peerStudentId = studentId;
+      }
+
+      const message = await Message.create(payload);
+
+      const populated = await Message.findById(message._id).populate(
+        'sender',
+        'name email role'
+      );
+
+      return res.status(201).json(populated);
+    } catch (err) {
+      console.error('Error in POST /api/admin/tasks/:id/messages', err);
+      return res.status(500).json({
+        message: 'Error sending message',
+        error: err.message,
+      });
+    }
+  }
+);
+
 router.get(
   '/students/:id/dashboard',
   verifyJWT,
@@ -394,12 +475,6 @@ router.get(
   }
 );
 
-/*
-=====================================
-OVERVIEW STATS
-/api/admin/stats/overview
-=====================================
-*/
 router.get(
   '/stats/overview',
   verifyJWT,
@@ -479,12 +554,6 @@ router.get(
   }
 );
 
-/*
-=====================================
-PAYMENT QUOTE STATS
-/api/admin/stats/payments
-=====================================
-*/
 router.get(
   '/stats/payments',
   verifyJWT,
@@ -562,11 +631,6 @@ router.get(
   }
 );
 
-/*
-=====================================
-TASK STATS
-=====================================
-*/
 router.get('/getTaskStats', verifyJWT, ensureAdmin, async (req, res) => {
   try {
     const total = await Task.countDocuments();
@@ -587,11 +651,6 @@ router.get('/getTaskStats', verifyJWT, ensureAdmin, async (req, res) => {
   }
 });
 
-/*
-=====================================
-DOMAIN STATS
-=====================================
-*/
 router.get('/getDomainStats', verifyJWT, ensureAdmin, async (req, res) => {
   try {
     const stats = await Task.aggregate([
@@ -622,11 +681,6 @@ router.get('/getDomainStats', verifyJWT, ensureAdmin, async (req, res) => {
   }
 });
 
-/*
-=====================================
-TOP STUDENTS
-=====================================
-*/
 router.get('/getTopStudents', verifyJWT, ensureAdmin, async (req, res) => {
   try {
     const stats = await Payment.aggregate([
@@ -676,11 +730,6 @@ router.get('/getTopStudents', verifyJWT, ensureAdmin, async (req, res) => {
   }
 });
 
-/*
-=====================================
-TIME SERIES
-=====================================
-*/
 router.get(
   '/getTimeSeriesStats',
   verifyJWT,
@@ -708,11 +757,6 @@ router.get(
   }
 );
 
-/*
-=====================================
-TASK FUNNEL
-=====================================
-*/
 router.get(
   '/getTaskFunnelStats',
   verifyJWT,
@@ -738,12 +782,6 @@ router.get(
   }
 );
 
-/*
-=====================================
-ADMIN PAYMENTS LIST
-GET /api/admin/payments?status=created|held|completed|cancelled
-=====================================
-*/
 router.get('/payments', verifyJWT, ensureAdmin, async (req, res) => {
   try {
     const status = clean(req.query.status);
@@ -763,12 +801,6 @@ router.get('/payments', verifyJWT, ensureAdmin, async (req, res) => {
   }
 });
 
-/*
-=====================================
-ADMIN UPDATE PAYMENT STATUS (generic)
-PATCH /api/admin/payments/:id/status
-=====================================
-*/
 router.patch(
   '/payments/:id/status',
   verifyJWT,
@@ -812,12 +844,6 @@ router.patch(
   }
 );
 
-/*
-=====================================
-PENDING PAYMENTS
-Show only payments approved by client (Payment.status = 'held')
-=====================================
-*/
 router.get('/getPendingPayments', verifyJWT, ensureAdmin, async (req, res) => {
   try {
     const payments = await Payment.find({
@@ -838,12 +864,6 @@ router.get('/getPendingPayments', verifyJWT, ensureAdmin, async (req, res) => {
   }
 });
 
-/*
-=====================================
-RELEASE PAYMENT
-POST /api/admin/releasePayment/:id
-=====================================
-*/
 router.post(
   '/releasePayment/:id',
   verifyJWT,
@@ -895,12 +915,6 @@ router.post(
   }
 );
 
-/*
-=====================================
-GROWTH STATS
-GET /api/admin/stats/growth
-=====================================
-*/
 router.get(
   '/stats/growth',
   verifyJWT,
