@@ -1,9 +1,11 @@
 const express = require('express');
 const router = express.Router();
+const Joi = require('joi');
+
 const Message = require('../models/Message');
 const Task = require('../models/Task');
+const User = require('../models/User');
 const verifyJWT = require('../middleware/authMiddleware');
-const Joi = require('joi');
 const { sendNotification } = require('../utils/fcm');
 
 const messageSchema = Joi.object({
@@ -11,7 +13,7 @@ const messageSchema = Joi.object({
   text: Joi.string().min(1).max(2000).allow('', null),
   fileUrl: Joi.string().uri().max(2000).allow('', null),
   fileName: Joi.string().max(255).allow('', null),
-  targetRole: Joi.string().valid('client', 'student').required(),
+  targetRole: Joi.string().valid('admin', 'client', 'student').required(),
 })
   .custom((value, helpers) => {
     const hasText =
@@ -33,84 +35,99 @@ function clean(value) {
   return typeof value === 'string' ? value.trim() : '';
 }
 
-function isTaskChatClosed(task) {
-  return (
-    task.status === 'declined' ||
-    task.attemptCount >= (task.maxAttempts || 3)
-  );
+function normalizeId(value) {
+  return clean(value);
 }
 
-function resolveAdminMediatedAccess(task, user, targetRole = null) {
+function isTaskChatClosed(task) {
+  return task.status === 'declined';
+}
+
+function getTaskPartyIds(task) {
+  return {
+    clientId: task.client ? task.client.toString() : null,
+    studentId: task.student ? task.student.toString() : null,
+  };
+}
+
+function canAccessTaskChat(task, user) {
   const userId = user.id.toString();
   const role = user.role;
-  const clientId = task.client?.toString() || null;
-  const studentId = task.student?.toString() || null;
-
-  if (!clientId) {
-    return { allowed: false, reason: 'Task client is missing', peerId: null };
-  }
-
-  if (!studentId && (role === 'student' || targetRole === 'student')) {
-    return {
-      allowed: false,
-      reason: 'No student is assigned to this task yet',
-      peerId: null,
-    };
-  }
+  const { clientId, studentId } = getTaskPartyIds(task);
 
   if (role === 'admin') {
-    if (!targetRole) {
-      return {
-        allowed: false,
-        reason: 'targetRole is required for admin messages',
-        peerId: null,
-      };
-    }
+    return { allowed: true, reason: null };
+  }
 
+  if (role === 'client') {
+    if (!clientId || userId !== clientId) {
+      return { allowed: false, reason: 'Not your task' };
+    }
+    return { allowed: true, reason: null };
+  }
+
+  if (role === 'student') {
+    if (!studentId || userId !== studentId) {
+      return { allowed: false, reason: 'You are not assigned to this task' };
+    }
+    return { allowed: true, reason: null };
+  }
+
+  return { allowed: false, reason: 'Unauthorized role' };
+}
+
+async function resolveReceiverForMessage(task, user, targetRole) {
+  const role = user.role;
+  const { clientId, studentId } = getTaskPartyIds(task);
+
+  if (role === 'admin') {
     if (targetRole === 'client') {
-      return { allowed: true, reason: null, peerId: clientId };
+      if (!clientId) {
+        return { ok: false, status: 400, message: 'Task client is missing' };
+      }
+      return { ok: true, receiverId: clientId };
     }
 
     if (targetRole === 'student') {
       if (!studentId) {
         return {
-          allowed: false,
-          reason: 'No student is assigned to this task yet',
-          peerId: null,
+          ok: false,
+          status: 400,
+          message: 'No student is assigned to this task yet',
         };
       }
-      return { allowed: true, reason: null, peerId: studentId };
+      return { ok: true, receiverId: studentId };
     }
+
+    return {
+      ok: false,
+      status: 400,
+      message: 'Admin targetRole must be client or student',
+    };
   }
 
-  if (role === 'client') {
-    if (userId !== clientId) {
-      return { allowed: false, reason: 'Not your task', peerId: null };
+  if (role === 'client' || role === 'student') {
+    const access = canAccessTaskChat(task, user);
+    if (!access.allowed) {
+      return { ok: false, status: 403, message: access.reason };
     }
-    return { allowed: true, reason: null, peerId: null };
+
+    const adminUser = await User.findOne({ role: 'admin' }).select('_id');
+    if (!adminUser) {
+      return { ok: false, status: 500, message: 'No admin available for chat' };
+    }
+
+    return { ok: true, receiverId: adminUser._id.toString() };
   }
 
-  if (role === 'student') {
-    if (!studentId || userId !== studentId) {
-      return {
-        allowed: false,
-        reason: 'You are not assigned to this task',
-        peerId: null,
-      };
-    }
-    return { allowed: true, reason: null, peerId: null };
-  }
-
-  return { allowed: false, reason: 'Unauthorized role', peerId: null };
+  return { ok: false, status: 403, message: 'Unauthorized role' };
 }
 
-// GET /api/messages/task?taskId=...
-// Admin sees all task messages.
-// Client sees only messages where admin is sender/receiver and client is sender/receiver.
-// Student sees only messages where admin is sender/receiver and student is sender/receiver.
+// GET /api/messages/task?taskId=...&studentId=...
 router.get('/task', verifyJWT, async (req, res) => {
   try {
-    const taskId = clean(req.query.taskId);
+    const taskId = normalizeId(req.query.taskId);
+    const requestedStudentId = normalizeId(req.query.studentId);
 
     if (!taskId) {
       return res.status(400).json({ message: 'taskId is required' });
@@ -130,19 +147,21 @@ router.get('/task', verifyJWT, async (req, res) => {
       });
     }
 
-    const access = resolveAdminMediatedAccess(task, req.user);
+    const access = canAccessTaskChat(task, req.user);
     if (!access.allowed) {
       return res.status(403).json({ message: access.reason });
     }
 
-    let filter = { task: task._id };
+    const filter = { task: task._id };
 
-    if (req.user.role === 'client') {
-      filter.$or = [
-        { sender: req.user.id },
-        { receiver: req.user.id },
-      ];
-    } else if (req.user.role === 'student') {
+    if (req.user.role === 'admin') {
+      if (requestedStudentId) {
+        filter.$or = [
+          { student: requestedStudentId },
+          { peerStudentId: requestedStudentId },
+        ];
+      }
+    } else {
       filter.$or = [
         { sender: req.user.id },
         { receiver: req.user.id },
@@ -165,9 +184,6 @@ router.get('/task', verifyJWT, async (req, res) => {
 });
 
 // POST /api/messages/task
-// Admin body: { taskId, targetRole: 'client'|'student', text?, fileUrl?, fileName? }
-// Client/student body: { taskId, targetRole: 'admin', text?, fileUrl?, fileName? } on frontend,
-// but backend ignores targetRole for non-admin and always routes to admin.
 router.post('/task', verifyJWT, async (req, res) => {
   try {
     const { error, value } = messageSchema.validate(req.body, {
@@ -182,7 +198,7 @@ router.post('/task', verifyJWT, async (req, res) => {
       });
     }
 
-    const taskId = clean(value.taskId);
+    const taskId = normalizeId(value.taskId);
 
     if (!taskId) {
       return res.status(400).json({ message: 'taskId is required' });
@@ -202,42 +218,37 @@ router.post('/task', verifyJWT, async (req, res) => {
       });
     }
 
-    let receiverId = null;
+    const receiverResolution = await resolveReceiverForMessage(
+      task,
+      req.user,
+      value.targetRole
+    );
 
-    if (req.user.role === 'admin') {
-      const access = resolveAdminMediatedAccess(task, req.user, value.targetRole);
-      if (!access.allowed) {
-        return res.status(403).json({ message: access.reason });
-      }
-      receiverId = access.peerId;
-    } else if (req.user.role === 'client' || req.user.role === 'student') {
-      const access = resolveAdminMediatedAccess(task, req.user);
-      if (!access.allowed) {
-        return res.status(403).json({ message: access.reason });
-      }
-
-      const adminUser = await require('../models/User').findOne({ role: 'admin' }).select('_id');
-      if (!adminUser) {
-        return res.status(500).json({ message: 'No admin available for chat' });
-      }
-      receiverId = adminUser._id;
-    } else {
-      return res.status(403).json({ message: 'Unauthorized role' });
+    if (!receiverResolution.ok) {
+      return res.status(receiverResolution.status).json({
+        message: receiverResolution.message,
+      });
     }
 
     const trimmedText = clean(value.text);
     const trimmedFileUrl = clean(value.fileUrl);
     const trimmedFileName = clean(value.fileName);
 
-    const message = await Message.create({
+    const messagePayload = {
       task: task._id,
       sender: req.user.id,
-      receiver: receiverId,
-      student: task.student || null,
+      receiver: receiverResolution.receiverId,
       text: trimmedText || undefined,
       fileUrl: trimmedFileUrl || undefined,
       fileName: trimmedFileName || undefined,
-    });
+    };
+
+    if (task.student) {
+      messagePayload.student = task.student;
+      messagePayload.peerStudentId = task.student;
+    }
+
+    const message = await Message.create(messagePayload);
 
     await message.populate([
       { path: 'sender', select: 'name role' },
@@ -257,7 +268,7 @@ router.post('/task', verifyJWT, async (req, res) => {
             ? `Attachment: ${trimmedFileName}`
             : 'New message';
 
-        await sendNotification(receiverId, {
+        await sendNotification(receiverResolution.receiverId, {
           title: 'New message',
           body: notificationBody,
           data: {

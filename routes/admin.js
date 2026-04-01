@@ -35,7 +35,7 @@ const adminTaskFilterSchema = Joi.object({
   location: Joi.string().allow('', null),
   domain: Joi.string().allow('', null),
   status: Joi.string()
-    .valid('open', 'assigned', 'under_review', 'completed', 'declined')
+    .valid('open', 'pending', 'assigned', 'under_review', 'completed', 'declined')
     .allow('', null),
 });
 
@@ -186,7 +186,7 @@ router.get('/tasks/filters', verifyJWT, ensureAdmin, async (req, res) => {
 router.get('/tasks/:id/candidates', verifyJWT, ensureAdmin, async (req, res) => {
   try {
     const task = await Task.findById(req.params.id).select(
-      'requiredSkills status'
+      'requiredSkills skills domain status'
     );
 
     if (!task) {
@@ -198,8 +198,16 @@ router.get('/tasks/:id/candidates', verifyJWT, ensureAdmin, async (req, res) => 
       isApproved: true,
     };
 
-    if (Array.isArray(task.requiredSkills) && task.requiredSkills.length > 0) {
-      match.skills = { $in: task.requiredSkills };
+    const skillPool = Array.isArray(task.requiredSkills) && task.requiredSkills.length > 0
+      ? task.requiredSkills
+      : Array.isArray(task.skills) && task.skills.length > 0
+      ? task.skills
+      : [];
+
+    if (skillPool.length > 0) {
+      match.skills = { $in: skillPool };
+    } else if (task.domain) {
+      match.domain = task.domain;
     }
 
     const students = await User.aggregate([
@@ -233,6 +241,7 @@ router.get('/tasks/:id/candidates', verifyJWT, ensureAdmin, async (req, res) => 
           totalScoreCount: 1,
           averageScore: 1,
           wallet: 1,
+          domain: 1,
         },
       },
     ]);
@@ -261,19 +270,30 @@ router.post('/tasks/:id/assign', verifyJWT, ensureAdmin, async (req, res) => {
       });
     }
 
-    const task = await Task.findById(req.params.id);
+    const taskId = normalizeId(req.params.id);
+    const studentId = normalizeId(value.studentId);
+
+    if (!taskId) {
+      return res.status(400).json({ message: 'Task ID is required' });
+    }
+
+    if (!studentId) {
+      return res.status(400).json({ message: 'Student ID is required' });
+    }
+
+    const task = await Task.findById(taskId);
     if (!task) {
       return res.status(404).json({ message: 'Task not found' });
     }
 
-    if (task.status !== 'open') {
+    if (!['open', 'pending'].includes(task.status)) {
       return res.status(400).json({
-        message: 'Only open tasks can be assigned',
+        message: 'Only open or pending tasks can be assigned',
       });
     }
 
-    const student = await User.findById(value.studentId).select(
-      'name email role isApproved skills'
+    const student = await User.findById(studentId).select(
+      'name email role isApproved skills domain'
     );
 
     if (!student || student.role !== 'student') {
@@ -290,7 +310,10 @@ router.post('/tasks/:id/assign', verifyJWT, ensureAdmin, async (req, res) => {
     task.assignedByAdmin = req.user.id;
     task.assignedAt = new Date();
     task.status = 'assigned';
-    task.attemptCount = 0;
+
+    if ('attemptCount' in task && (task.attemptCount == null || Number.isNaN(Number(task.attemptCount)))) {
+      task.attemptCount = 0;
+    }
 
     await task.save();
 
@@ -693,11 +716,12 @@ router.get(
           $group: {
             _id: {
               month: { $month: '$createdAt' },
+              year: { $year: '$createdAt' },
             },
             count: { $sum: 1 },
           },
         },
-        { $sort: { '_id.month': 1 } },
+        { $sort: { '_id.year': 1, '_id.month': 1 } },
       ]);
 
       return res.json(stats);
