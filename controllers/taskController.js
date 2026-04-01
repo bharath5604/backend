@@ -2,6 +2,11 @@ const Task = require("../models/Task");
 const User = require("../models/User");
 const Payment = require("../models/Payment");
 
+const asNumber = (val) => {
+  const n = Number(val);
+  return Number.isFinite(n) ? n : 0;
+};
+
 /**
  * ===============================
  * CREATE TASK (Client only)
@@ -28,39 +33,49 @@ exports.createTask = async (req, res) => {
       attachmentNames,
     } = req.body;
 
-    if (!title || !description || !budget || !deadline) {
+    const cleanTitle = String(title || "").trim();
+    const cleanDescription = String(description || "").trim();
+    const cleanBudget = asNumber(budget);
+    const cleanDeadline = deadline ? new Date(deadline) : null;
+
+    if (!cleanTitle || !cleanDescription || !budget || !deadline) {
       return res.status(400).json({
         message: "Please fill required fields",
       });
     }
 
-    const task = new Task({
-      title,
-      description,
-      budget,
-      deadline,
-      location,
-      domain,
-      company,
-      requiredSkills,
-      attachments,
-      attachmentNames,
+    if (Number.isNaN(cleanDeadline?.getTime())) {
+      return res.status(400).json({
+        message: "Invalid deadline",
+      });
+    }
+
+    const task = await Task.create({
+      title: cleanTitle,
+      description: cleanDescription,
+      budget: cleanBudget,
+      deadline: cleanDeadline,
+      location: String(location || "").trim(),
+      domain: String(domain || "").trim(),
+      company: String(company || "").trim(),
+      requiredSkills: Array.isArray(requiredSkills)
+        ? requiredSkills.map((s) => String(s || "").trim()).filter(Boolean)
+        : [],
+      attachments: Array.isArray(attachments) ? attachments : [],
+      attachmentNames: Array.isArray(attachmentNames) ? attachmentNames : [],
       client: req.user.id,
       status: "open",
       attemptCount: 0,
-      // maxAttempts uses default = 3 from schema
     });
 
-    await task.save();
-
-    res.status(201).json({
+    return res.status(201).json({
       message: "Task created successfully",
       task,
     });
   } catch (err) {
     console.error("Create Task Error:", err);
 
-    res.status(500).json({
+    return res.status(500).json({
       message: "Failed to create task",
       error: err.message,
     });
@@ -81,32 +96,36 @@ exports.getAllTasks = async (req, res) => {
     const query = {};
 
     if (clientId) {
-      // For client profile: show all tasks of this client, not just open
       query.client = clientId;
     } else {
-      // Public feed: only open tasks
       query.status = "open";
     }
 
     if (domain) {
-      query.domain = domain;
+      query.domain = String(domain).trim();
     }
     if (minBudget) {
-      query.budget = { ...(query.budget || {}), $gte: Number(minBudget) };
+      query.budget = {
+        ...(query.budget || {}),
+        $gte: asNumber(minBudget),
+      };
     }
     if (maxBudget) {
-      query.budget = { ...(query.budget || {}), $lte: Number(maxBudget) };
+      query.budget = {
+        ...(query.budget || {}),
+        $lte: asNumber(maxBudget),
+      };
     }
 
     const tasks = await Task.find(query)
       .populate("client", "name email company")
       .sort({ createdAt: -1 });
 
-    res.json(tasks);
+    return res.json(tasks);
   } catch (err) {
     console.error("Get Tasks Error:", err);
 
-    res.status(500).json({
+    return res.status(500).json({
       message: "Failed to fetch tasks",
       error: err.message,
     });
@@ -120,7 +139,9 @@ exports.getAllTasks = async (req, res) => {
  */
 exports.getTaskById = async (req, res) => {
   try {
-    const task = await Task.findById(req.params.taskId)
+    const { taskId } = req.params;
+
+    const task = await Task.findById(taskId)
       .populate("client", "name email company")
       .populate("student", "name email");
 
@@ -130,11 +151,11 @@ exports.getTaskById = async (req, res) => {
       });
     }
 
-    res.json(task);
+    return res.json(task);
   } catch (err) {
     console.error("Get Task Error:", err);
 
-    res.status(500).json({
+    return res.status(500).json({
       message: "Failed to fetch task",
       error: err.message,
     });
@@ -150,14 +171,19 @@ exports.getTaskById = async (req, res) => {
 exports.assignTask = async (req, res) => {
   try {
     const { studentId } = req.body;
+    const { taskId } = req.params;
 
-    const task = await Task.findById(req.params.taskId);
+    if (!studentId) {
+      return res.status(400).json({ message: "studentId is required" });
+    }
+
+    const task = await Task.findById(taskId);
 
     if (!task) {
       return res.status(404).json({ message: "Task not found" });
     }
 
-    if (req.user.id !== task.client.toString()) {
+    if (!req.user || req.user.id !== task.client.toString()) {
       return res.status(403).json({
         message: "Only client can assign",
       });
@@ -165,19 +191,18 @@ exports.assignTask = async (req, res) => {
 
     task.student = studentId;
     task.status = "assigned";
-    // reset attempts whenever a task is (re)assigned
     task.attemptCount = 0;
 
     await task.save();
 
-    res.json({
+    return res.json({
       message: "Task assigned successfully",
       task,
     });
   } catch (err) {
-    console.error(err);
+    console.error("Assign Task Error:", err);
 
-    res.status(500).json({
+    return res.status(500).json({
       message: "Assign failed",
       error: err.message,
     });
@@ -192,8 +217,9 @@ exports.assignTask = async (req, res) => {
 exports.submitWork = async (req, res) => {
   try {
     const { fileUrl, notes } = req.body;
+    const { taskId } = req.params;
 
-    const task = await Task.findById(req.params.taskId);
+    const task = await Task.findById(taskId);
 
     if (!task) {
       return res.status(404).json({
@@ -207,7 +233,6 @@ exports.submitWork = async (req, res) => {
       });
     }
 
-    // Block submission if max attempts already reached or task closed
     if (
       task.attemptCount >= (task.maxAttempts || 3) ||
       task.status === "completed" ||
@@ -220,8 +245,8 @@ exports.submitWork = async (req, res) => {
 
     task.submission = {
       student: req.user.id,
-      fileUrl,
-      notes,
+      fileUrl: String(fileUrl || "").trim(),
+      notes: String(notes || "").trim(),
       approved: false,
       submittedAt: new Date(),
     };
@@ -230,14 +255,14 @@ exports.submitWork = async (req, res) => {
 
     await task.save();
 
-    res.json({
+    return res.json({
       message: "Work submitted",
       task,
     });
   } catch (err) {
-    console.error(err);
+    console.error("Submit Work Error:", err);
 
-    res.status(500).json({
+    return res.status(500).json({
       message: "Submission failed",
       error: err.message,
     });
@@ -251,7 +276,9 @@ exports.submitWork = async (req, res) => {
  */
 exports.approveWork = async (req, res) => {
   try {
-    const task = await Task.findById(req.params.taskId);
+    const { taskId } = req.params;
+
+    const task = await Task.findById(taskId);
 
     if (!task) {
       return res.status(404).json({
@@ -259,7 +286,7 @@ exports.approveWork = async (req, res) => {
       });
     }
 
-    if (req.user.id !== task.client.toString()) {
+    if (!req.user || req.user.id !== task.client.toString()) {
       return res.status(403).json({
         message: "Not authorized",
       });
@@ -271,34 +298,30 @@ exports.approveWork = async (req, res) => {
       });
     }
 
-    // Mark submission approved and close task
     task.submission.approved = true;
     task.status = "completed";
 
     await task.save();
 
-    /**
-     * PAY STUDENT (legacy wallet credit)
-     * You also have Payment model + admin release flow for actual payouts.
-     */
     const student = await User.findById(task.submission.student);
 
     if (student) {
-      student.wallet = (student.wallet || 0) + task.budget;
+      const budget = asNumber(task.budget);
+      student.wallet = (asNumber(student.wallet) || 0) + budget;
       student.tasksCompleted = (student.tasksCompleted || 0) + 1;
 
       await student.save();
     }
 
-    res.json({
+    return res.json({
       message: "Task approved",
       task,
       wallet: student?.wallet,
     });
   } catch (err) {
-    console.error(err);
+    console.error("Approve Work Error:", err);
 
-    res.status(500).json({
+    return res.status(500).json({
       message: "Approval failed",
       error: err.message,
     });
@@ -312,7 +335,9 @@ exports.approveWork = async (req, res) => {
  */
 exports.declineWork = async (req, res) => {
   try {
-    const task = await Task.findById(req.params.taskId);
+    const { taskId } = req.params;
+
+    const task = await Task.findById(taskId);
 
     if (!task) {
       return res.status(404).json({
@@ -320,7 +345,7 @@ exports.declineWork = async (req, res) => {
       });
     }
 
-    if (req.user.id !== task.client.toString()) {
+    if (!req.user || req.user.id !== task.client.toString()) {
       return res.status(403).json({
         message: "Not authorized",
       });
@@ -334,17 +359,12 @@ exports.declineWork = async (req, res) => {
 
     const maxAttempts = task.maxAttempts || 3;
 
-    // Increase attempt count
     task.attemptCount = (task.attemptCount || 0) + 1;
-
-    // Clear submission when declined so student can resubmit
     task.submission = null;
 
     if (task.attemptCount >= maxAttempts) {
-      // Hard decline: no more submissions or messages
       task.status = "declined";
 
-      // Cancel any non‑released payments for this task
       await Payment.updateMany(
         {
           task: task._id,
@@ -358,13 +378,12 @@ exports.declineWork = async (req, res) => {
         }
       );
     } else {
-      // Allow student to try again with same task
       task.status = "assigned";
     }
 
     await task.save();
 
-    res.json({
+    return res.json({
       message:
         task.status === "declined"
           ? "Task declined, no more attempts allowed"
@@ -372,9 +391,9 @@ exports.declineWork = async (req, res) => {
       task,
     });
   } catch (err) {
-    console.error(err);
+    console.error("Decline Work Error:", err);
 
-    res.status(500).json({
+    return res.status(500).json({
       message: "Decline failed",
       error: err.message,
     });
@@ -389,8 +408,9 @@ exports.declineWork = async (req, res) => {
 exports.rateStudent = async (req, res) => {
   try {
     const { rating, feedback } = req.body;
+    const { taskId } = req.params;
 
-    const task = await Task.findById(req.params.taskId);
+    const task = await Task.findById(taskId);
 
     if (!task) {
       return res.status(404).json({
@@ -398,7 +418,7 @@ exports.rateStudent = async (req, res) => {
       });
     }
 
-    if (req.user.id !== task.client.toString()) {
+    if (!req.user || req.user.id !== task.client.toString()) {
       return res.status(403).json({
         message: "Not authorized",
       });
@@ -409,14 +429,14 @@ exports.rateStudent = async (req, res) => {
 
     await task.save();
 
-    res.json({
+    return res.json({
       message: "Rating submitted",
       task,
     });
   } catch (err) {
-    console.error(err);
+    console.error("Rating Error:", err);
 
-    res.status(500).json({
+    return res.status(500).json({
       message: "Rating failed",
       error: err.message,
     });
@@ -436,11 +456,11 @@ exports.getStudentTasks = async (req, res) => {
       status: { $in: ["assigned", "under_review", "completed", "declined"] },
     }).sort({ createdAt: -1 });
 
-    res.json(tasks);
+    return res.json(tasks);
   } catch (err) {
-    console.error(err);
+    console.error("Get Student Tasks Error:", err);
 
-    res.status(500).json({
+    return res.status(500).json({
       message: "Failed",
       error: err.message,
     });
@@ -458,11 +478,11 @@ exports.getClientTasks = async (req, res) => {
       client: req.user.id,
     }).sort({ createdAt: -1 });
 
-    res.json(tasks);
+    return res.json(tasks);
   } catch (err) {
-    console.error(err);
+    console.error("Get Client Tasks Error:", err);
 
-    res.status(500).json({
+    return res.status(500).json({
       message: "Failed",
       error: err.message,
     });

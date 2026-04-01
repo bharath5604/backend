@@ -1,12 +1,12 @@
-const express = require('express');
+const express = require("express");
 const router = express.Router();
 
-const User = require('../models/User');
-const Task = require('../models/Task');
-const Payment = require('../models/Payment');
-const Bid = require('../models/Bid');
+const User = require("../models/User");
+const Task = require("../models/Task");
+const Payment = require("../models/Payment");
+const Bid = require("../models/Bid");
 
-const verifyJWT = require('../middleware/authMiddleware');
+const verifyJWT = require("../middleware/authMiddleware");
 
 /*
 =====================================
@@ -15,9 +15,9 @@ ADMIN CHECK
 */
 
 const ensureAdmin = (req, res, next) => {
-  if (!req.user || req.user.role !== 'admin') {
+  if (!req.user || req.user.role !== "admin") {
     return res.status(403).json({
-      message: 'Admin only',
+      message: "Admin only",
     });
   }
   next();
@@ -30,23 +30,23 @@ ADMIN USERS LIST
 =====================================
 */
 
-router.get('/users', verifyJWT, ensureAdmin, async (req, res) => {
+router.get("/users", verifyJWT, ensureAdmin, async (req, res) => {
   try {
     const { role, company, location, domain } = req.query;
 
     const filter = {};
-    if (role) filter.role = role;
-    if (company) filter.company = company;
-    if (location) filter.location = location;
-    if (domain) filter.domain = domain;
+    if (role) filter.role = String(role).trim();
+    if (company) filter.company = String(company).trim();
+    if (location) filter.location = String(location).trim();
+    if (domain) filter.domain = String(domain).trim();
 
-    const users = await User.find(filter).select('-password');
+    const users = await User.find(filter).select("-password");
 
-    res.json(users);
+    return res.json(users);
   } catch (err) {
-    console.error('Error in /api/admin/users', err);
-    res.status(500).json({
-      message: 'Error loading users',
+    console.error("Error in /api/admin/users", err);
+    return res.status(500).json({
+      message: "Error loading users",
       error: err.message,
     });
   }
@@ -60,7 +60,7 @@ PATCH /api/admin/users/:id/approve
 */
 
 router.patch(
-  '/users/:id/approve',
+  "/users/:id/approve",
   verifyJWT,
   ensureAdmin,
   async (req, res) => {
@@ -72,19 +72,19 @@ router.patch(
         id,
         { isApproved: !!isApproved },
         { new: true }
-      ).select('-password');
+      ).select("-password");
 
       if (!user) {
-        return res.status(404).json({ message: 'User not found' });
+        return res.status(404).json({ message: "User not found" });
       }
 
-      res.json({
-        message: 'Approval updated',
+      return res.json({
+        message: "Approval updated",
         user,
       });
     } catch (err) {
-      console.error('Error in PATCH /api/admin/users/:id/approve', err);
-      res.status(500).json({
+      console.error("Error in PATCH /api/admin/users/:id/approve", err);
+      return res.status(500).json({
         message: err.message,
       });
     }
@@ -98,24 +98,24 @@ ADMIN TASKS LIST
 =====================================
 */
 
-router.get('/tasks', verifyJWT, ensureAdmin, async (req, res) => {
+router.get("/tasks", verifyJWT, ensureAdmin, async (req, res) => {
   try {
     const { company, location, domain } = req.query;
 
     const filter = {};
-    if (company) filter.company = company;
-    if (location) filter.location = location;
-    if (domain) filter.domain = domain;
+    if (company) filter.company = String(company).trim();
+    if (location) filter.location = String(location).trim();
+    if (domain) filter.domain = String(domain).trim();
 
     const tasks = await Task.find(filter)
-      .populate('client', 'name email')
-      .populate('student', 'name email');
+      .populate("client", "name email")
+      .populate("student", "name email");
 
-    res.json(tasks);
+    return res.json(tasks);
   } catch (err) {
-    console.error('Error in /api/admin/tasks', err);
-    res.status(500).json({
-      message: 'Error loading tasks',
+    console.error("Error in /api/admin/tasks", err);
+    return res.status(500).json({
+      message: "Error loading tasks",
       error: err.message,
     });
   }
@@ -130,26 +130,26 @@ Return distinct lists for dropdowns: company, location, domain
 */
 
 router.get(
-  '/tasks/filters',
+  "/tasks/filters",
   verifyJWT,
   ensureAdmin,
   async (req, res) => {
     try {
       const [companies, locations, domains] = await Promise.all([
-        Task.distinct('company'),
-        Task.distinct('location'),
-        Task.distinct('domain'),
+        Task.distinct("company"),
+        Task.distinct("location"),
+        Task.distinct("domain"),
       ]);
 
-      res.json({
+      return res.json({
         companies: companies.filter(Boolean),
         locations: locations.filter(Boolean),
         domains: domains.filter(Boolean),
       });
     } catch (err) {
-      console.error('Error in /api/admin/tasks/filters', err);
-      res.status(500).json({
-        message: 'Error loading task filters',
+      console.error("Error in /api/admin/tasks/filters", err);
+      return res.status(500).json({
+        message: "Error loading task filters",
         error: err.message,
       });
     }
@@ -164,31 +164,30 @@ STUDENT DASHBOARD (DETAIL)
 */
 
 router.get(
-  '/students/:id/dashboard',
+  "/students/:id/dashboard",
   verifyJWT,
   ensureAdmin,
   async (req, res) => {
     try {
       const studentId = req.params.id;
 
-      const student = await User.findById(studentId).select('-password');
-      if (!student || student.role !== 'student') {
-        return res.status(404).json({ message: 'Student not found' });
+      const student = await User.findById(studentId).select("-password");
+      if (!student || student.role !== "student") {
+        return res.status(404).json({ message: "Student not found" });
       }
 
       const [totalTasks, completedTasks, totalBids, totalPayments] =
         await Promise.all([
           Task.countDocuments({ student: studentId }),
-          Task.countDocuments({ student: studentId, status: 'completed' }),
+          Task.countDocuments({ student: studentId, status: "completed" }),
           Bid.countDocuments({ student: studentId }),
-          // only payments actually released to student
           Payment.countDocuments({
             student: studentId,
-            status: 'completed',
+            status: "completed",
           }),
         ]);
 
-      res.json({
+      return res.json({
         student,
         totalTasks,
         completedTasks,
@@ -196,9 +195,9 @@ router.get(
         totalPayments,
       });
     } catch (err) {
-      console.error('Error in /api/admin/students/:id/dashboard', err);
-      res.status(500).json({
-        message: 'Error loading student dashboard',
+      console.error("Error in /api/admin/students/:id/dashboard", err);
+      return res.status(500).json({
+        message: "Error loading student dashboard",
         error: err.message,
       });
     }
@@ -209,13 +208,11 @@ router.get(
 =====================================
 OVERVIEW STATS
 /api/admin/stats/overview
-
-Client payments card uses totalClientProposed (sum of Task.budget)
 =====================================
 */
 
 router.get(
-  '/stats/overview',
+  "/stats/overview",
   verifyJWT,
   ensureAdmin,
   async (req, res) => {
@@ -232,38 +229,35 @@ router.get(
         clientProposedAgg,
       ] = await Promise.all([
         User.countDocuments(),
-        User.countDocuments({ role: 'student' }),
-        User.countDocuments({ role: 'client' }),
-        User.countDocuments({ role: 'admin' }),
+        User.countDocuments({ role: "student" }),
+        User.countDocuments({ role: "client" }),
+        User.countDocuments({ role: "admin" }),
         Task.countDocuments(),
         Bid.countDocuments({}),
-        // total payments (all netToStudent, regardless of status)
         Payment.aggregate([
           {
             $group: {
               _id: null,
-              totalAmount: { $sum: '$netToStudent' },
+              totalAmount: { $sum: "$netToStudent" },
             },
           },
         ]),
-        // completed payments = fully released to student
         Payment.aggregate([
           {
-            $match: { status: 'completed' },
+            $match: { status: "completed" },
           },
           {
             $group: {
               _id: null,
-              totalAmount: { $sum: '$netToStudent' },
+              totalAmount: { $sum: "$netToStudent" },
             },
           },
         ]),
-        // sum of client proposed task budgets
         Task.aggregate([
           {
             $group: {
               _id: null,
-              totalAmount: { $sum: '$budget' },
+              totalAmount: { $sum: "$budget" },
             },
           },
         ]),
@@ -276,7 +270,7 @@ router.get(
       const totalClientProposed =
         clientProposedAgg.length > 0 ? clientProposedAgg[0].totalAmount : 0;
 
-      res.json({
+      return res.json({
         totalUsers,
         totalStudents,
         totalClients,
@@ -288,8 +282,8 @@ router.get(
         totalClientProposed,
       });
     } catch (err) {
-      console.error('Error in /api/admin/stats/overview', err);
-      res.status(500).json({
+      console.error("Error in /api/admin/stats/overview", err);
+      return res.status(500).json({
         message: err.message,
       });
     }
@@ -300,43 +294,39 @@ router.get(
 =====================================
 PAYMENT QUOTE STATS
 /api/admin/stats/payments
-- totalAcceptedQuotes: sum of Bid.quote with status 'accepted'
-- totalCompletedQuotes: sum of Bid.quote where Payment.status 'completed'
-- totalPendingQuotes: difference
 =====================================
 */
 
 router.get(
-  '/stats/payments',
+  "/stats/payments",
   verifyJWT,
   ensureAdmin,
   async (req, res) => {
     try {
-      // Sum of accepted bid quotes where related payment is NOT cancelled
       const acceptedAgg = await Payment.aggregate([
         {
           $match: {
-            status: { $in: ['held', 'completed'] }, // ignore cancelled / created
+            status: { $in: ["held", "completed"] },
           },
         },
         {
           $lookup: {
-            from: 'bids',
-            localField: 'bid',
-            foreignField: '_id',
-            as: 'bid',
+            from: "bids",
+            localField: "bid",
+            foreignField: "_id",
+            as: "bid",
           },
         },
-        { $unwind: '$bid' },
+        { $unwind: "$bid" },
         {
           $match: {
-            'bid.status': 'accepted',
+            "bid.status": "accepted",
           },
         },
         {
           $group: {
             _id: null,
-            totalAcceptedQuotes: { $sum: '$bid.quote' },
+            totalAcceptedQuotes: { $sum: "$bid.quote" },
           },
         },
       ]);
@@ -344,23 +334,22 @@ router.get(
       const totalAcceptedQuotes =
         acceptedAgg.length > 0 ? acceptedAgg[0].totalAcceptedQuotes : 0;
 
-      // Sum of quotes for payments that are completed (released)
       const completedAgg = await Payment.aggregate([
-        { $match: { status: 'completed' } },
+        { $match: { status: "completed" } },
         {
           $lookup: {
-            from: 'bids',
-            localField: 'bid',
-            foreignField: '_id',
-            as: 'bid',
+            from: "bids",
+            localField: "bid",
+            foreignField: "_id",
+            as: "bid",
           },
         },
-        { $unwind: '$bid' },
-        { $match: { 'bid.status': 'accepted' } },
+        { $unwind: "$bid" },
+        { $match: { "bid.status": "accepted" } },
         {
           $group: {
             _id: null,
-            totalCompletedQuotes: { $sum: '$bid.quote' },
+            totalCompletedQuotes: { $sum: "$bid.quote" },
           },
         },
       ]);
@@ -370,21 +359,20 @@ router.get(
 
       const totalPendingQuotes = totalAcceptedQuotes - totalCompletedQuotes;
 
-      res.json({
+      return res.json({
         totalAcceptedQuotes,
         totalCompletedQuotes,
         totalPendingQuotes,
       });
     } catch (err) {
-      console.error('Error in /api/admin/stats/payments', err);
-      res.status(500).json({
-        message: 'Error computing payment stats',
+      console.error("Error in /api/admin/stats/payments", err);
+      return res.status(500).json({
+        message: "Error computing payment stats",
         error: err.message,
       });
     }
   }
 );
-
 
 /*
 =====================================
@@ -394,27 +382,24 @@ TASK STATS
 */
 
 router.get(
-  '/getTaskStats',
+  "/getTaskStats",
   verifyJWT,
   ensureAdmin,
   async (req, res) => {
     try {
       const total = await Task.countDocuments();
-
       const completed = await Task.countDocuments({
-        status: 'completed',
+        status: "completed",
       });
-
-      // pending = everything not completed (open + assigned + under_review + declined)
       const pending = total - completed;
 
-      res.json({
+      return res.json({
         total,
         completed,
         pending,
       });
     } catch (err) {
-      res.status(500).json({
+      return res.status(500).json({
         message: err.message,
       });
     }
@@ -428,7 +413,7 @@ DOMAIN STATS
 */
 
 router.get(
-  '/getDomainStats',
+  "/getDomainStats",
   verifyJWT,
   ensureAdmin,
   async (req, res) => {
@@ -436,11 +421,11 @@ router.get(
       const stats = await Task.aggregate([
         {
           $group: {
-            _id: '$domain',
+            _id: "$domain",
             total: { $sum: 1 },
             completed: {
               $sum: {
-                $cond: [{ $eq: ['$status', 'completed'] }, 1, 0],
+                $cond: [{ $eq: ["$status", "completed"] }, 1, 0],
               },
             },
           },
@@ -448,14 +433,14 @@ router.get(
       ]);
 
       const mapped = stats.map((s) => ({
-        domain: !s._id || s._id === 'general' ? 'Other' : s._id,
+        domain: !s._id || s._id === "general" ? "Other" : s._id,
         total: s.total,
         completed: s.completed,
       }));
 
-      res.json(mapped);
+      return res.json(mapped);
     } catch (err) {
-      res.status(500).json({
+      return res.status(500).json({
         message: err.message,
       });
     }
@@ -468,72 +453,59 @@ TOP STUDENTS
 =====================================
 */
 
-// TOP STUDENTS by TOTAL ACCEPTED QUOTE
 router.get(
-  '/getTopStudents',
+  "/getTopStudents",
   verifyJWT,
   ensureAdmin,
   async (req, res) => {
     try {
       const stats = await Payment.aggregate([
-        // only payments that are completed (released)
-        { $match: { status: 'completed' } },
-
-        // join bid to get the quote
+        { $match: { status: "completed" } },
         {
           $lookup: {
-            from: 'bids',
-            localField: 'bid',
-            foreignField: '_id',
-            as: 'bid',
+            from: "bids",
+            localField: "bid",
+            foreignField: "_id",
+            as: "bid",
           },
         },
-        { $unwind: '$bid' },
-
-        // only accepted bids (safety)
-        { $match: { 'bid.status': 'accepted' } },
-
-        // group by student and sum the bid.quote
+        { $unwind: "$bid" },
+        { $match: { "bid.status": "accepted" } },
         {
           $group: {
-            _id: '$student',
-            total: { $sum: '$bid.quote' }, // keep field name: total
+            _id: "$student",
+            total: { $sum: "$bid.quote" },
           },
         },
         { $sort: { total: -1 } },
         { $limit: 5 },
-
-        // lookup student info
         {
           $lookup: {
-            from: 'users',
-            localField: '_id',
-            foreignField: '_id',
-            as: 'studentDoc',
+            from: "users",
+            localField: "_id",
+            foreignField: "_id",
+            as: "studentDoc",
           },
         },
-        { $unwind: '$studentDoc' },
-
+        { $unwind: "$studentDoc" },
         {
           $project: {
             _id: 0,
-            studentId: '$_id',
-            name: '$studentDoc.name',
-            email: '$studentDoc.email',
-            total: 1, // still named total
+            studentId: "$_id",
+            name: "$studentDoc.name",
+            email: "$studentDoc.email",
+            total: 1,
           },
         },
       ]);
 
-      res.json(stats);
+      return res.json(stats);
     } catch (err) {
-      console.error('Error in /api/admin/getTopStudents', err);
-      res.status(500).json({ message: err.message });
+      console.error("Error in /api/admin/getTopStudents", err);
+      return res.status(500).json({ message: err.message });
     }
   }
 );
-
-
 
 /*
 =====================================
@@ -542,7 +514,7 @@ TIME SERIES
 */
 
 router.get(
-  '/getTimeSeriesStats',
+  "/getTimeSeriesStats",
   verifyJWT,
   ensureAdmin,
   async (req, res) => {
@@ -551,16 +523,17 @@ router.get(
         {
           $group: {
             _id: {
-              month: { $month: '$createdAt' },
+              month: { $month: "$createdAt" },
             },
             count: { $sum: 1 },
           },
         },
+        { $sort: { "_id.month": 1 } },
       ]);
 
-      res.json(stats);
+      return res.json(stats);
     } catch (err) {
-      res.status(500).json({
+      return res.status(500).json({
         message: err.message,
       });
     }
@@ -574,7 +547,7 @@ TASK FUNNEL
 */
 
 router.get(
-  '/getTaskFunnelStats',
+  "/getTaskFunnelStats",
   verifyJWT,
   ensureAdmin,
   async (req, res) => {
@@ -585,13 +558,13 @@ router.get(
           student: { $ne: null },
         }),
         completed: await Task.countDocuments({
-          status: 'completed',
+          status: "completed",
         }),
       };
 
-      res.json(stats);
+      return res.json(stats);
     } catch (err) {
-      res.status(500).json({
+      return res.status(500).json({
         message: err.message,
       });
     }
@@ -606,25 +579,25 @@ GET /api/admin/payments?status=created|held|completed|cancelled
 */
 
 router.get(
-  '/payments',
+  "/payments",
   verifyJWT,
   ensureAdmin,
   async (req, res) => {
     try {
       const { status } = req.query;
       const filter = {};
-      if (status) filter.status = status;
+      if (status) filter.status = String(status).trim();
 
       const payments = await Payment.find(filter)
-        .populate('student', 'name email')
-        .populate('client', 'name email')
-        .populate('task', 'title budget status')
-        .populate('bid', 'quote amount');
+        .populate("student", "name email")
+        .populate("client", "name email")
+        .populate("task", "title budget status")
+        .populate("bid", "quote amount");
 
-      res.json(payments);
+      return res.json(payments);
     } catch (err) {
-      console.error('Error in GET /api/admin/payments', err);
-      res.status(500).json({ message: err.message });
+      console.error("Error in GET /api/admin/payments", err);
+      return res.status(500).json({ message: err.message });
     }
   }
 );
@@ -638,7 +611,7 @@ body: { status, adminNote? }
 */
 
 router.patch(
-  '/payments/:id/status',
+  "/payments/:id/status",
   verifyJWT,
   ensureAdmin,
   async (req, res) => {
@@ -648,11 +621,11 @@ router.patch(
 
       const payment = await Payment.findById(id);
       if (!payment) {
-        return res.status(404).json({ message: 'Payment not found' });
+        return res.status(404).json({ message: "Payment not found" });
       }
 
       if (status) {
-        payment.status = status; // must be one of ['created','held','completed','cancelled']
+        payment.status = status;
       }
       if (adminNote) {
         payment.declineReason = adminNote;
@@ -660,13 +633,13 @@ router.patch(
 
       await payment.save();
 
-      res.json({
-        message: 'Payment status updated',
+      return res.json({
+        message: "Payment status updated",
         payment,
       });
     } catch (err) {
-      console.error('Error in PATCH /api/admin/payments/:id/status', err);
-      res.status(500).json({ message: err.message });
+      console.error("Error in PATCH /api/admin/payments/:id/status", err);
+      return res.status(500).json({ message: err.message });
     }
   }
 );
@@ -679,24 +652,24 @@ Show only payments approved by client (Payment.status = 'held')
 */
 
 router.get(
-  '/getPendingPayments',
+  "/getPendingPayments",
   verifyJWT,
   ensureAdmin,
   async (req, res) => {
     try {
       const payments = await Payment.find({
-        status: 'held', // set in /tasks/:id/approve
+        status: "held",
       })
         .populate(
-          'student',
-          'name email bankAccountHolderName bankName bankAccountNumber ifscCode'
+          "student",
+          "name email bankAccountHolderName bankName bankAccountNumber ifscCode"
         )
-        .populate('task', 'title budget status')
-        .populate('bid', 'quote amount');
+        .populate("task", "title budget status")
+        .populate("bid", "quote amount");
 
-      res.json(payments);
+      return res.json(payments);
     } catch (err) {
-      res.status(500).json({
+      return res.status(500).json({
         message: err.message,
       });
     }
@@ -706,46 +679,41 @@ router.get(
 /*
 =====================================
 RELEASE PAYMENT
-Uses netToStudent for wallet and earnings stats
 POST /api/admin/releasePayment/:id
 =====================================
 */
 
 router.post(
-  '/releasePayment/:id',
+  "/releasePayment/:id",
   verifyJWT,
   ensureAdmin,
   async (req, res) => {
     try {
-      console.log('POST /api/admin/releasePayment', req.params.id);
+      const { id } = req.params;
+      console.log("POST /api/admin/releasePayment", id);
 
-      const payment = await Payment.findById(req.params.id);
+      const payment = await Payment.findById(id);
 
       if (!payment) {
         return res.status(404).json({
-          message: 'Not found',
+          message: "Not found",
         });
       }
 
-      // Only allow releasing client-approved payments
-      if (payment.status !== 'held') {
+      if (payment.status !== "held") {
         return res.status(400).json({
-          message: 'Payment is not approved by client yet',
+          message: "Payment is not approved by client yet",
         });
       }
 
-      // final state: completed
-      payment.status = 'completed';
+      payment.status = "completed";
       await payment.save();
 
       const student = await User.findById(payment.student);
       if (student) {
         const amt = payment.netToStudent || payment.amount || 0;
 
-        // wallet balance
         student.wallet = (student.wallet || 0) + amt;
-
-        // earnings stats for profile overview
         student.pendingEarnings = Math.max(
           0,
           (student.pendingEarnings || 0) - amt
@@ -756,12 +724,12 @@ router.post(
         await student.save();
       }
 
-      res.json({
-        message: 'Payment released',
+      return res.json({
+        message: "Payment released",
       });
     } catch (err) {
-      console.error('Error in /api/admin/releasePayment/:id', err);
-      res.status(500).json({
+      console.error("Error in /api/admin/releasePayment/:id", err);
+      return res.status(500).json({
         message: err.message,
       });
     }
@@ -776,60 +744,60 @@ GET /api/admin/stats/growth
 */
 
 router.get(
-  '/stats/growth',
+  "/stats/growth",
   verifyJWT,
   ensureAdmin,
   async (req, res) => {
     try {
       const {
-        metric = 'tasks',
-        granularity = 'month',
+        metric = "tasks",
+        granularity = "month",
         from,
         to,
       } = req.query;
 
-      const startDate = from ? new Date(from) : new Date('2024-01-01');
+      const startDate = from ? new Date(from) : new Date("2024-01-01");
       const endDate = to ? new Date(to) : new Date();
 
       let model;
-      let match = {
+      const match = {
         createdAt: { $gte: startDate, $lte: endDate },
       };
 
       switch (metric) {
-        case 'users':
+        case "users":
           model = User;
           break;
-        case 'students':
+        case "students":
           model = User;
-          match.role = 'student';
+          match.role = "student";
           break;
-        case 'clients':
+        case "clients":
           model = User;
-          match.role = 'client';
+          match.role = "client";
           break;
-        case 'tasks':
+        case "tasks":
           model = Task;
           break;
-        case 'bids':
+        case "bids":
           model = Bid;
           break;
-        case 'successfulBids':
+        case "successfulBids":
           model = Bid;
-          match.status = 'accepted';
+          match.status = "accepted";
           break;
-        case 'completedPayments':
+        case "completedPayments":
           model = Payment;
-          match.status = 'completed';
+          match.status = "completed";
           break;
         default:
-          return res.status(400).json({ message: 'Invalid metric' });
+          return res.status(400).json({ message: "Invalid metric" });
       }
 
       const dateTrunc =
-        granularity === 'day'
-          ? { $dateTrunc: { date: '$createdAt', unit: 'day' } }
-          : { $dateTrunc: { date: '$createdAt', unit: 'month' } };
+        granularity === "day"
+          ? { $dateTrunc: { date: "$createdAt", unit: "day" } }
+          : { $dateTrunc: { date: "$createdAt", unit: "month" } };
 
       const pipeline = [
         { $match: match },
@@ -849,11 +817,11 @@ router.get(
         count: s.count,
       }));
 
-      res.json(mapped);
+      return res.json(mapped);
     } catch (err) {
-      console.error('Error in /api/admin/stats/growth', err);
-      res.status(500).json({
-        message: 'Error loading growth stats',
+      console.error("Error in /api/admin/stats/growth", err);
+      return res.status(500).json({
+        message: "Error loading growth stats",
         error: err.message,
       });
     }

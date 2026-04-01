@@ -1,11 +1,11 @@
-const User = require('../models/User');
-const bcrypt = require('bcryptjs');
-const jwt = require('jsonwebtoken');
+const User = require("../models/User");
+const bcrypt = require("bcryptjs");
+const jwt = require("jsonwebtoken");
 
 // JWT TOKEN FUNCTION
 function signToken(user) {
   if (!process.env.JWT_SECRET) {
-    throw new Error('JWT_SECRET is not configured');
+    throw new Error("JWT_SECRET is not configured");
   }
 
   return jwt.sign(
@@ -14,8 +14,27 @@ function signToken(user) {
       role: user.role,
     },
     process.env.JWT_SECRET,
-    { expiresIn: '7d' }
+    { expiresIn: "7d" }
   );
+}
+
+function normalizeEmail(email) {
+  return String(email || "").trim().toLowerCase();
+}
+
+function sanitizeString(value) {
+  return String(value || "").trim();
+}
+
+function sanitizeArray(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => String(item || "").trim())
+    .filter(Boolean);
+}
+
+function isValidRole(role) {
+  return ["student", "client", "admin"].includes(role);
 }
 
 ////////////////////////////////////////////////////////////
@@ -44,51 +63,77 @@ exports.signup = async (req, res) => {
       description,
     } = req.body;
 
-    console.log('SIGNUP BODY:', req.body);
+    const cleanName = sanitizeString(name);
+    const cleanEmail = normalizeEmail(email);
+    const cleanPassword = String(password || "");
+    const cleanRole = sanitizeString(role);
 
-    // CHECK EXISTING USER
-    const existing = await User.findOne({ email });
-    if (existing) {
+    if (!cleanName) {
       return res.status(400).json({
-        message: 'Email already registered',
+        message: "Name is required",
       });
     }
 
-    // HASH PASSWORD
-    const hashed = await bcrypt.hash(password, 10);
+    if (!cleanEmail) {
+      return res.status(400).json({
+        message: "Email is required",
+      });
+    }
 
-    // CREATE USER
-    const user = await User.create({
-      name,
-      email,
+    if (!cleanPassword || cleanPassword.length < 6) {
+      return res.status(400).json({
+        message: "Password must be at least 6 characters",
+      });
+    }
+
+    if (!isValidRole(cleanRole)) {
+      return res.status(400).json({
+        message: "Invalid role",
+      });
+    }
+
+    const existing = await User.findOne({ email: cleanEmail });
+    if (existing) {
+      return res.status(400).json({
+        message: "Email already registered",
+      });
+    }
+
+    const hashed = await bcrypt.hash(cleanPassword, 10);
+
+    const userPayload = {
+      name: cleanName,
+      email: cleanEmail,
       password: hashed,
-      role,
+      role: cleanRole,
 
       // student
-      skills: skills || [],
-      bankAccountHolderName: bankAccountHolderName || '',
-      bankName: bankName || '',
-      bankAccountNumber: bankAccountNumber || '',
-      ifscCode: ifscCode || '',
+      skills: sanitizeArray(skills),
+      bankAccountHolderName: sanitizeString(bankAccountHolderName),
+      bankName: sanitizeString(bankName),
+      bankAccountNumber: sanitizeString(bankAccountNumber),
+      ifscCode: sanitizeString(ifscCode),
 
       // client
-      company: company || '',
-      location: location || '',
-      domain: domain || '',
-      description: description || '',
-    });
+      company: sanitizeString(company),
+      location: sanitizeString(location),
+      domain: sanitizeString(domain),
+      description: sanitizeString(description),
+    };
 
-    // REMOVE PASSWORD
-    const safeUser = await User.findById(user._id).select('-password');
+    const user = await User.create(userPayload);
 
-    res.json({
-      message: 'Signup success',
+    const safeUser = await User.findById(user._id).select("-password");
+
+    return res.status(201).json({
+      message: "Signup success",
       user: safeUser,
     });
   } catch (err) {
-    console.log(err);
-    res.status(500).json({
-      message: 'Signup error',
+    console.error("Signup error:", err.message);
+
+    return res.status(500).json({
+      message: "Signup error",
       error: err.message,
     });
   }
@@ -100,35 +145,50 @@ exports.signup = async (req, res) => {
 
 exports.login = async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const cleanEmail = normalizeEmail(req.body.email);
+    const cleanPassword = String(req.body.password || "");
 
-    const user = await User.findOne({ email });
-
-    if (!user) {
-      return res.status(404).json({
-        message: 'User not found',
+    if (!cleanEmail) {
+      return res.status(400).json({
+        message: "Email is required",
       });
     }
 
-    const match = await bcrypt.compare(password, user.password);
+    if (!cleanPassword) {
+      return res.status(400).json({
+        message: "Password is required",
+      });
+    }
+
+    const user = await User.findOne({ email: cleanEmail });
+
+    if (!user) {
+      return res.status(404).json({
+        message: "User not found",
+      });
+    }
+
+    const match = await bcrypt.compare(cleanPassword, user.password);
 
     if (!match) {
       return res.status(401).json({
-        message: 'Invalid password',
+        message: "Invalid password",
       });
     }
 
     const token = signToken(user);
 
-    const safeUser = await User.findById(user._id).select('-password');
+    const safeUser = await User.findById(user._id).select("-password");
 
-    res.json({
+    return res.json({
       token,
       user: safeUser,
     });
   } catch (err) {
-    res.status(500).json({
-      message: 'Login error',
+    console.error("Login error:", err.message);
+
+    return res.status(500).json({
+      message: "Login error",
       error: err.message,
     });
   }

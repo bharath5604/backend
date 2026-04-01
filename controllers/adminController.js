@@ -8,15 +8,23 @@ const Payment = require("../models/Payment");
 
 exports.getOverviewStats = async (req, res) => {
   try {
-    res.json({
-      totalUsers: await User.countDocuments(),
-      totalStudents: await User.countDocuments({ role: "student" }),
-      totalTasks: await Task.countDocuments(),
-      totalPayments: await Payment.countDocuments(),
+    const [totalUsers, totalStudents, totalTasks, totalPayments] =
+      await Promise.all([
+        User.countDocuments(),
+        User.countDocuments({ role: "student" }),
+        Task.countDocuments(),
+        Payment.countDocuments(),
+      ]);
+
+    return res.json({
+      totalUsers,
+      totalStudents,
+      totalTasks,
+      totalPayments,
     });
   } catch (error) {
-    res.status(500).json({
-      message: error.message,
+    return res.status(500).json({
+      message: error.message || "Failed to load overview stats",
     });
   }
 };
@@ -27,14 +35,20 @@ exports.getOverviewStats = async (req, res) => {
 
 exports.getTaskStats = async (req, res) => {
   try {
-    res.json({
-      total: await Task.countDocuments(),
-      completed: await Task.countDocuments({ status: "completed" }),
-      pending: await Task.countDocuments({ status: "pending" }),
+    const [total, completed, pending] = await Promise.all([
+      Task.countDocuments(),
+      Task.countDocuments({ status: "completed" }),
+      Task.countDocuments({ status: "pending" }),
+    ]);
+
+    return res.json({
+      total,
+      completed,
+      pending,
     });
   } catch (error) {
-    res.status(500).json({
-      message: error.message,
+    return res.status(500).json({
+      message: error.message || "Failed to load task stats",
     });
   }
 };
@@ -47,12 +61,13 @@ exports.getCompletedTasks = async (req, res) => {
   try {
     const tasks = await Task.find({ status: "completed" })
       .populate("student", "name email")
-      .populate("client", "name email");
+      .populate("client", "name email")
+      .sort({ updatedAt: -1, createdAt: -1 });
 
-    res.json(tasks);
+    return res.json(tasks);
   } catch (error) {
-    res.status(500).json({
-      message: error.message,
+    return res.status(500).json({
+      message: error.message || "Failed to load completed tasks",
     });
   }
 };
@@ -63,16 +78,15 @@ exports.getCompletedTasks = async (req, res) => {
 
 exports.getPendingPayments = async (req, res) => {
   try {
-    const payments = await Payment.find({
-      status: "held",
-    })
-      .populate("student", "name email")
-      .populate("task", "title budget");
+    const payments = await Payment.find({ status: "held" })
+      .populate("student", "name email wallet pendingEarnings totalEarningsReleased")
+      .populate("task", "title budget")
+      .sort({ createdAt: -1 });
 
-    res.json(payments);
+    return res.json(payments);
   } catch (error) {
-    res.status(500).json({
-      message: error.message,
+    return res.status(500).json({
+      message: error.message || "Failed to load pending payments",
     });
   }
 };
@@ -83,9 +97,15 @@ exports.getPendingPayments = async (req, res) => {
 
 exports.payStudent = async (req, res) => {
   try {
-    const payment = await Payment.findOne({
-      task: req.params.taskId,
-    });
+    const { taskId } = req.params;
+
+    if (!taskId) {
+      return res.status(400).json({
+        message: "Task id is required",
+      });
+    }
+
+    const payment = await Payment.findOne({ task: taskId });
 
     if (!payment) {
       return res.status(404).json({
@@ -93,45 +113,62 @@ exports.payStudent = async (req, res) => {
       });
     }
 
-    // mark payment as released
-    payment.status = "released";
-    await payment.save();
+    if (payment.status === "released") {
+      return res.status(400).json({
+        message: "Payment already released",
+      });
+    }
 
-    // find student
     const student = await User.findById(payment.student);
+
     if (!student) {
       return res.status(404).json({
         message: "Student not found",
       });
     }
 
-    // use netToStudent if present, else amount
+    const rawNetToStudent = Number(payment.netToStudent);
+    const rawAmount = Number(payment.amount);
+
     const amount =
-      typeof payment.netToStudent === "number" && !Number.isNaN(payment.netToStudent)
-        ? payment.netToStudent
-        : payment.amount || 0;
+      Number.isFinite(rawNetToStudent) && rawNetToStudent > 0
+        ? rawNetToStudent
+        : Number.isFinite(rawAmount) && rawAmount > 0
+        ? rawAmount
+        : 0;
 
-    // update wallet balance
-    student.wallet = (student.wallet || 0) + amount;
+    if (amount <= 0) {
+      return res.status(400).json({
+        message: "Invalid payment amount",
+      });
+    }
 
-    // move from pendingEarnings -> totalEarningsReleased
-    const currentPending = student.pendingEarnings || 0;
-    const currentReleased = student.totalEarningsReleased || 0;
+    payment.status = "released";
+    payment.releasedAt = new Date();
+    await payment.save();
 
+    const currentWallet = Number(student.wallet) || 0;
+    const currentPending = Number(student.pendingEarnings) || 0;
+    const currentReleased = Number(student.totalEarningsReleased) || 0;
+
+    student.wallet = currentWallet + amount;
     student.pendingEarnings = Math.max(0, currentPending - amount);
     student.totalEarningsReleased = currentReleased + amount;
 
     await student.save();
 
-    res.json({
+    return res.json({
       message: "Payment released successfully",
+      paymentId: payment._id,
+      taskId,
+      amountReleased: amount,
       wallet: student.wallet,
       pendingEarnings: student.pendingEarnings,
       totalEarningsReleased: student.totalEarningsReleased,
     });
   } catch (error) {
-    res.status(500).json({
-      message: error.message,
+    return res.status(500).json({
+      message: error.message || "Failed to release payment",
     });
   }
 };
