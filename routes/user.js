@@ -2,11 +2,11 @@
 const express = require('express');
 const router = express.Router();
 const mongoose = require('mongoose');
+const Joi = require('joi');
+
 const User = require('../models/User');
 const Payment = require('../models/Payment');
-const Bid = require('../models/Bid');
 const verifyJWT = require('../middleware/authMiddleware');
-const Joi = require('joi');
 
 // Joi schemas
 const updateMeSchema = Joi.object({
@@ -28,68 +28,47 @@ const updateMeSchema = Joi.object({
   ifscCode: Joi.string().max(50).allow('', null),
 });
 
-// GET /api/users/me
+// ---------- Shared helpers ----------
+
+async function sumNetToStudentByStatuses(studentId, statuses) {
+  const result = await Payment.aggregate([
+    {
+      $match: {
+        student: new mongoose.Types.ObjectId(studentId),
+        status: { $in: statuses },
+      },
+    },
+    {
+      $group: {
+        _id: null,
+        total: {
+          $sum: { $ifNull: ['$netToStudent', 0] },
+        },
+      },
+    },
+  ]);
+
+  return result.length > 0 ? result[0].total : 0;
+}
+
+// ---------- GET /api/users/me ----------
+
 router.get('/me', verifyJWT, async (req, res) => {
   try {
+    if (!mongoose.Types.ObjectId.isValid(req.user.id)) {
+      return res.status(400).json({ message: 'Invalid user id' });
+    }
+
     const user = await User.findById(req.user.id).select('-password');
     if (!user) return res.status(404).json({ message: 'User not found' });
 
-    // If student, also compute pending/earned/accepted payments (money-based)
     if (user.role === 'student') {
-      const [pendingAgg, earnedAgg, acceptedAgg] = await Promise.all([
-        // Pending (held) amount
-        Payment.aggregate([
-          {
-            $match: {
-              student: user._id,
-              status: 'held', // waiting for admin release
-            },
-          },
-          {
-            $group: {
-              _id: null,
-              total: { $sum: '$netToStudent' },
-            },
-          },
-        ]),
-        // Earned (completed) amount
-        Payment.aggregate([
-          {
-            $match: {
-              student: user._id,
-              status: 'completed', // released by admin
-            },
-          },
-          {
-            $group: {
-              _id: null,
-              total: { $sum: '$netToStudent' },
-            },
-          },
-        ]),
-        // Accepted quotes (money-side) = all payments (held + completed)
-        Payment.aggregate([
-          {
-            $match: {
-              student: user._id,
-              status: { $in: ['held', 'completed'] },
-            },
-          },
-          {
-            $group: {
-              _id: null,
-              total: { $sum: '$netToStudent' },
-            },
-          },
-        ]),
-      ]);
-
-      const pendingPayments =
-        pendingAgg.length > 0 ? pendingAgg[0].total : 0;
-      const earnedPayments =
-        earnedAgg.length > 0 ? earnedAgg[0].total : 0;
-      const acceptedQuoteTotal =
-        acceptedAgg.length > 0 ? acceptedAgg[0].total : 0;
+      const [pendingPayments, earnedPayments, acceptedQuoteTotal] =
+        await Promise.all([
+          sumNetToStudentByStatuses(user._id, ['held']),
+          sumNetToStudentByStatuses(user._id, ['released']),
+          sumNetToStudentByStatuses(user._id, ['held', 'released']),
+        ]);
 
       const userObj = user.toObject();
       userObj.pendingPayments = pendingPayments;
@@ -99,10 +78,9 @@ router.get('/me', verifyJWT, async (req, res) => {
       return res.json(userObj);
     }
 
-    // Non-students: return as before
-    res.json(user);
+    return res.json(user);
   } catch (err) {
-    res
+    return res
       .status(500)
       .json({ message: 'Error fetching profile', error: err.message });
   }
@@ -110,100 +88,87 @@ router.get('/me', verifyJWT, async (req, res) => {
 
 /*
 =====================================
-QUOTE-BASED PAYMENT STATS FOR STUDENT
+PAYMENT-ONLY STATS FOR STUDENT
 GET /api/users/me/payment-stats
-- totalAcceptedQuotes   => sum of Bid.quote (status 'accepted') for this student
-- totalReceivedQuotes   => sum of Bid.quote where Payment.status 'completed'
-- totalPendingQuotes    => accepted - received
+
+- totalAcceptedAmount  => sum netToStudent where status in ['held','released']
+- totalReceivedAmount  => sum netToStudent where status = 'released'
+- totalPendingAmount   => accepted - received
 =====================================
 */
 router.get('/me/payment-stats', verifyJWT, async (req, res) => {
   try {
     const userId = req.user.id;
+
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({ message: 'Invalid user id' });
+    }
+
     const studentId = new mongoose.Types.ObjectId(userId);
 
-    // 1) Sum of this student's accepted bid quotes where payment is NOT cancelled
-    const acceptedAgg = await Payment.aggregate([
-      {
-        $match: {
-          student: studentId,
-          status: { $in: ['held', 'completed'] }, // ignore cancelled / created
+    const [acceptedAgg, receivedAgg] = await Promise.all([
+      Payment.aggregate([
+        {
+          $match: {
+            student: studentId,
+            status: { $in: ['held', 'released'] },
+          },
         },
-      },
-      {
-        $lookup: {
-          from: 'bids',
-          localField: 'bid',
-          foreignField: '_id',
-          as: 'bid',
+        {
+          $group: {
+            _id: null,
+            totalAcceptedAmount: {
+              $sum: { $ifNull: ['$netToStudent', 0] },
+            },
+          },
         },
-      },
-      { $unwind: '$bid' },
-      {
-        $match: {
-          'bid.student': studentId,
-          'bid.status': 'accepted',
+      ]),
+      Payment.aggregate([
+        {
+          $match: {
+            student: studentId,
+            status: 'released',
+          },
         },
-      },
-      {
-        $group: {
-          _id: null,
-          totalAcceptedQuotes: { $sum: '$bid.quote' },
+        {
+          $group: {
+            _id: null,
+            totalReceivedAmount: {
+              $sum: { $ifNull: ['$netToStudent', 0] },
+            },
+          },
         },
-      },
+      ]),
     ]);
 
-    const totalAcceptedQuotes =
-      acceptedAgg.length > 0 ? acceptedAgg[0].totalAcceptedQuotes : 0;
+    const totalAcceptedAmount =
+      acceptedAgg.length > 0 ? acceptedAgg[0].totalAcceptedAmount : 0;
+    const totalReceivedAmount =
+      receivedAgg.length > 0 ? receivedAgg[0].totalReceivedAmount : 0;
+    const totalPendingAmount = totalAcceptedAmount - totalReceivedAmount;
 
-    // 2) Sum of quotes for payments that are completed (received) for this student
-    const receivedAgg = await Payment.aggregate([
-      { $match: { student: studentId, status: 'completed' } },
-      {
-        $lookup: {
-          from: 'bids',
-          localField: 'bid',
-          foreignField: '_id',
-          as: 'bid',
-        },
-      },
-      { $unwind: '$bid' },
-      { $match: { 'bid.status': 'accepted' } },
-      {
-        $group: {
-          _id: null,
-          totalReceivedQuotes: { $sum: '$bid.quote' },
-        },
-      },
-    ]);
-
-    const totalReceivedQuotes =
-      receivedAgg.length > 0 ? receivedAgg[0].totalReceivedQuotes : 0;
-
-    const totalPendingQuotes = totalAcceptedQuotes - totalReceivedQuotes;
-
-    res.json({
-      totalAcceptedQuotes,
-      totalPendingQuotes,
-      totalReceivedQuotes,
+    return res.json({
+      totalAcceptedAmount,
+      totalPendingAmount,
+      totalReceivedAmount,
     });
   } catch (err) {
     console.error('Error in GET /api/users/me/payment-stats', err);
-    res.status(500).json({
+    return res.status(500).json({
       message: 'Error computing student payment stats',
       error: err.message,
     });
   }
 });
 
+// ---------- internal helper to apply validated updates ----------
 
-
-// internal helper to apply validated updates
 async function applyProfileUpdate(req, res) {
   const { error, value } = updateMeSchema.validate(req.body, {
     abortEarly: false,
     stripUnknown: true,
   });
+
   if (error) {
     return res.status(400).json({
       message: 'Validation error',
@@ -213,7 +178,6 @@ async function applyProfileUpdate(req, res) {
 
   const updates = { ...value };
 
-  // If not client, ignore client-only fields
   if (req.user.role !== 'client') {
     delete updates.company;
     delete updates.location;
@@ -229,9 +193,9 @@ async function applyProfileUpdate(req, res) {
 
     if (!user) return res.status(404).json({ message: 'User not found' });
 
-    res.json({ message: 'Profile updated', user });
+    return res.json({ message: 'Profile updated', user });
   } catch (err) {
-    res
+    return res
       .status(400)
       .json({ message: 'Error updating profile', error: err.message });
   }
@@ -242,73 +206,94 @@ router.put('/me', verifyJWT, async (req, res) => {
   await applyProfileUpdate(req, res);
 });
 
-// Optional: keep PATCH for backward compatibility
+// PATCH /api/users/me (backward compatibility)
 router.patch('/me', verifyJWT, async (req, res) => {
   await applyProfileUpdate(req, res);
 });
 
-// GET /api/students/:id/public-profile
+// ---------- GET /api/students/:id/public-profile ----------
+
 router.get('/students/:id/public-profile', async (req, res) => {
   try {
-    const student = await User.findById(req.params.id).select(
+    const { id } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: 'Invalid student id' });
+    }
+
+    const student = await User.findById(id).select(
       'name role bio skills portfolioUrl totalScore totalScoreCount feedbackScores'
     );
+
     if (!student || student.role !== 'student') {
       return res.status(404).json({ message: 'Student not found' });
     }
 
-    // compute per-domain averages
-    const domains = (student.feedbackScores || []).map((d) => ({
-      domain: d.domain,
-      averageScore: d.count > 0 ? d.totalScore / d.count : 0,
-      count: d.count,
-    }));
-    const totalAverageScore =
-      student.totalScoreCount > 0
-        ? student.totalScore / student.totalScoreCount
-        : 0;
+    const domains = (student.feedbackScores || []).map((d) => {
+      const totalScore = Number(d.totalScore || 0);
+      const count = Number(d.count || 0);
 
-    res.json({
+      return {
+        domain: d.domain || '',
+        averageScore: count > 0 ? totalScore / count : 0,
+        count,
+      };
+    });
+
+    const totalScore = Number(student.totalScore || 0);
+    const totalScoreCount = Number(student.totalScoreCount || 0);
+    const totalAverageScore =
+      totalScoreCount > 0 ? totalScore / totalScoreCount : 0;
+
+    return res.json({
       id: student._id,
-      name: student.name,
+      name: student.name || '',
       role: student.role,
-      bio: student.bio,
-      skills: student.skills,
-      portfolioUrl: student.portfolioUrl,
-      totalScore: student.totalScore,
-      totalScoreCount: student.totalScoreCount,
+      bio: student.bio || '',
+      skills: Array.isArray(student.skills) ? student.skills : [],
+      portfolioUrl: student.portfolioUrl || '',
+      totalScore,
+      totalScoreCount,
       totalAverageScore,
       domains,
     });
   } catch (err) {
-    res.status(500).json({
+    return res.status(500).json({
       message: 'Error fetching public profile',
       error: err.message,
     });
   }
 });
 
-// GET /api/clients/:id/public-profile
+// ---------- GET /api/clients/:id/public-profile ----------
+
 router.get('/clients/:id/public-profile', async (req, res) => {
   try {
-    const client = await User.findById(req.params.id).select(
+    const { id } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: 'Invalid client id' });
+    }
+
+    const client = await User.findById(id).select(
       'name role company location domain description'
     );
+
     if (!client || client.role !== 'client') {
       return res.status(404).json({ message: 'Client not found' });
     }
 
-    res.json({
+    return res.json({
       id: client._id,
-      name: client.name,
+      name: client.name || '',
       role: client.role,
-      company: client.company,
-      location: client.location,
-      domain: client.domain,
-      description: client.description,
+      company: client.company || '',
+      location: client.location || '',
+      domain: client.domain || '',
+      description: client.description || '',
     });
   } catch (err) {
-    res.status(500).json({
+    return res.status(500).json({
       message: 'Error fetching public profile',
       error: err.message,
     });

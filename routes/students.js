@@ -1,15 +1,46 @@
 // routes/students.js
 const express = require('express');
 const router = express.Router();
+const mongoose = require('mongoose');
+
 const User = require('../models/User');
 const Payment = require('../models/Payment');
 const verifyJWT = require('../middleware/authMiddleware');
+
+async function sumNetToStudentByStatuses(studentId, statuses) {
+  const result = await Payment.aggregate([
+    {
+      $match: {
+        student: new mongoose.Types.ObjectId(studentId),
+        status: { $in: statuses },
+      },
+    },
+    {
+      $group: {
+        _id: null,
+        total: {
+          $sum: {
+            $ifNull: ['$netToStudent', 0],
+          },
+        },
+      },
+    },
+  ]);
+
+  return result.length > 0 ? result[0].total : 0;
+}
 
 // GET /api/students/:id/public-profile
 // Returns profile + ratings + payment stats based on Payment.netToStudent
 router.get('/:id/public-profile', verifyJWT, async (req, res) => {
   try {
-    const student = await User.findById(req.params.id).select(
+    const { id } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: 'Invalid student id' });
+    }
+
+    const student = await User.findById(id).select(
       'name email bio skills portfolioUrl totalScore totalScoreCount feedbackScores role'
     );
 
@@ -17,94 +48,46 @@ router.get('/:id/public-profile', verifyJWT, async (req, res) => {
       return res.status(404).json({ message: 'Student not found' });
     }
 
-    // Per-domain feedback stats
-    const domains = (student.feedbackScores || []).map((d) => ({
-      domain: d.domain,
-      averageScore: d.count > 0 ? d.totalScore / d.count : 0,
-      count: d.count,
-    }));
+    const domains = (student.feedbackScores || []).map((d) => {
+      const totalScore = Number(d.totalScore || 0);
+      const count = Number(d.count || 0);
 
-    // Overall average rating
+      return {
+        domain: d.domain || '',
+        averageScore: count > 0 ? totalScore / count : 0,
+        count,
+      };
+    });
+
+    const totalScore = Number(student.totalScore || 0);
+    const totalScoreCount = Number(student.totalScoreCount || 0);
     const totalAverage =
-      (student.totalScoreCount || 0) > 0
-        ? (student.totalScore || 0) / student.totalScoreCount
-        : 0;
+      totalScoreCount > 0 ? totalScore / totalScoreCount : 0;
 
-    // Payment aggregates for this student (all in terms of netToStudent, i.e., student bid amount)
-    const [pendingAgg, earnedAgg, acceptedAgg] = await Promise.all([
-      // Pending (held) amount: admin has not yet released
-      Payment.aggregate([
-        {
-          $match: {
-            student: student._id,
-            status: 'held',
-          },
-        },
-        {
-          $group: {
-            _id: null,
-            total: { $sum: '$netToStudent' },
-          },
-        },
-      ]),
-      // Earned (released) amount: already released by admin
-      Payment.aggregate([
-        {
-          $match: {
-            student: student._id,
-            status: 'released',
-          },
-        },
-        {
-          $group: {
-            _id: null,
-            total: { $sum: '$netToStudent' },
-          },
-        },
-      ]),
-      // Accepted quotes = all bids that got a Payment record
-      // (both held + released)
-      Payment.aggregate([
-        {
-          $match: {
-            student: student._id,
-            status: { $in: ['held', 'released'] },
-          },
-        },
-        {
-          $group: {
-            _id: null,
-            total: { $sum: '$netToStudent' },
-          },
-        },
-      ]),
-    ]);
+    const [pendingPayments, earnedPayments, acceptedQuoteTotal] =
+      await Promise.all([
+        sumNetToStudentByStatuses(id, ['held']),
+        sumNetToStudentByStatuses(id, ['released']),
+        sumNetToStudentByStatuses(id, ['held', 'released']),
+      ]);
 
-    const pendingPayments =
-      pendingAgg.length > 0 ? pendingAgg[0].total : 0;
-    const earnedPayments =
-      earnedAgg.length > 0 ? earnedAgg[0].total : 0;
-    const acceptedQuoteTotal =
-      acceptedAgg.length > 0 ? acceptedAgg[0].total : 0;
-
-    res.json({
+    return res.json({
       id: student._id,
-      name: student.name,
-      email: student.email,
+      name: student.name || '',
+      email: student.email || '',
       bio: student.bio || '',
-      skills: student.skills || [],
+      skills: Array.isArray(student.skills) ? student.skills : [],
       portfolioUrl: student.portfolioUrl || '',
-      totalScore: student.totalScore || 0,
-      totalScoreCount: student.totalScoreCount || 0,
+      totalScore,
+      totalScoreCount,
       totalAverageScore: totalAverage,
       domains,
-      // sums of student-side amounts (their bid, not client proposal)
-      pendingPayments,      // sum netToStudent where status = 'held'
-      earnedPayments,       // sum netToStudent where status = 'released'
-      acceptedQuoteTotal,   // sum netToStudent where status in ['held','released']
+      pendingPayments,
+      earnedPayments,
+      acceptedQuoteTotal,
     });
   } catch (err) {
-    res.status(500).json({
+    return res.status(500).json({
       message: 'Error fetching student profile',
       error: err.message,
     });

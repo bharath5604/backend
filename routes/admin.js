@@ -5,7 +5,6 @@ const Joi = require('joi');
 const User = require('../models/User');
 const Task = require('../models/Task');
 const Payment = require('../models/Payment');
-const Bid = require('../models/Bid');
 const Message = require('../models/Message');
 
 const verifyJWT = require('../middleware/authMiddleware');
@@ -447,11 +446,10 @@ router.get(
         return res.status(404).json({ message: 'Student not found' });
       }
 
-      const [totalTasks, completedTasks, totalBids, totalPayments] =
+      const [totalTasks, completedTasks, totalPayments] =
         await Promise.all([
           Task.countDocuments({ student: studentId }),
           Task.countDocuments({ student: studentId, status: 'completed' }),
-          Bid.countDocuments({ student: studentId }),
           Payment.countDocuments({
             student: studentId,
             status: 'completed',
@@ -462,7 +460,6 @@ router.get(
         student,
         totalTasks,
         completedTasks,
-        totalBids,
         totalPayments,
       });
     } catch (err) {
@@ -487,7 +484,6 @@ router.get(
         totalClients,
         totalAdmins,
         totalTasks,
-        totalBids,
         paymentsAgg,
         completedAgg,
         clientProposedAgg,
@@ -497,7 +493,6 @@ router.get(
         User.countDocuments({ role: 'client' }),
         User.countDocuments({ role: 'admin' }),
         Task.countDocuments(),
-        Bid.countDocuments({}),
         Payment.aggregate([
           {
             $group: {
@@ -540,7 +535,6 @@ router.get(
         totalClients,
         totalAdmins,
         totalTasks,
-        totalBids,
         totalPayments,
         completedPayments,
         totalClientProposed,
@@ -560,66 +554,34 @@ router.get(
   ensureAdmin,
   async (req, res) => {
     try {
-      const acceptedAgg = await Payment.aggregate([
-        {
-          $match: {
-            status: { $in: ['held', 'completed'] },
-          },
-        },
-        {
-          $lookup: {
-            from: 'bids',
-            localField: 'bid',
-            foreignField: '_id',
-            as: 'bid',
-          },
-        },
-        { $unwind: '$bid' },
-        {
-          $match: {
-            'bid.status': 'accepted',
-          },
-        },
-        {
-          $group: {
-            _id: null,
-            totalAcceptedQuotes: { $sum: '$bid.quote' },
-          },
-        },
-      ]);
-
-      const totalAcceptedQuotes =
-        acceptedAgg.length > 0 ? acceptedAgg[0].totalAcceptedQuotes : 0;
-
       const completedAgg = await Payment.aggregate([
         { $match: { status: 'completed' } },
         {
-          $lookup: {
-            from: 'bids',
-            localField: 'bid',
-            foreignField: '_id',
-            as: 'bid',
-          },
-        },
-        { $unwind: '$bid' },
-        { $match: { 'bid.status': 'accepted' } },
-        {
           $group: {
             _id: null,
-            totalCompletedQuotes: { $sum: '$bid.quote' },
+            totalCompletedAmount: { $sum: '$netToStudent' },
           },
         },
       ]);
 
-      const totalCompletedQuotes =
-        completedAgg.length > 0 ? completedAgg[0].totalCompletedQuotes : 0;
+      const heldAgg = await Payment.aggregate([
+        { $match: { status: 'held' } },
+        {
+          $group: {
+            _id: null,
+            totalHeldAmount: { $sum: '$netToStudent' },
+          },
+        },
+      ]);
 
-      const totalPendingQuotes = totalAcceptedQuotes - totalCompletedQuotes;
+      const totalCompletedAmount =
+        completedAgg.length > 0 ? completedAgg[0].totalCompletedAmount : 0;
+      const totalHeldAmount =
+        heldAgg.length > 0 ? heldAgg[0].totalHeldAmount : 0;
 
       return res.json({
-        totalAcceptedQuotes,
-        totalCompletedQuotes,
-        totalPendingQuotes,
+        totalCompletedAmount,
+        totalHeldAmount,
       });
     } catch (err) {
       console.error('Error in /api/admin/stats/payments', err);
@@ -686,19 +648,9 @@ router.get('/getTopStudents', verifyJWT, ensureAdmin, async (req, res) => {
     const stats = await Payment.aggregate([
       { $match: { status: 'completed' } },
       {
-        $lookup: {
-          from: 'bids',
-          localField: 'bid',
-          foreignField: '_id',
-          as: 'bid',
-        },
-      },
-      { $unwind: '$bid' },
-      { $match: { 'bid.status': 'accepted' } },
-      {
         $group: {
           _id: '$student',
-          total: { $sum: '$bid.quote' },
+          total: { $sum: '$netToStudent' },
         },
       },
       { $sort: { total: -1 } },
@@ -791,8 +743,7 @@ router.get('/payments', verifyJWT, ensureAdmin, async (req, res) => {
     const payments = await Payment.find(filter)
       .populate('student', 'name email')
       .populate('client', 'name email')
-      .populate('task', 'title budget status')
-      .populate('bid', 'quote amount');
+      .populate('task', 'title budget status');
 
     return res.json(payments);
   } catch (err) {
@@ -853,8 +804,7 @@ router.get('/getPendingPayments', verifyJWT, ensureAdmin, async (req, res) => {
         'student',
         'name email bankAccountHolderName bankName bankAccountNumber ifscCode'
       )
-      .populate('task', 'title budget status')
-      .populate('bid', 'quote amount');
+      .populate('task', 'title budget status');
 
     return res.json(payments);
   } catch (err) {
@@ -950,13 +900,6 @@ router.get(
           break;
         case 'tasks':
           model = Task;
-          break;
-        case 'bids':
-          model = Bid;
-          break;
-        case 'successfulBids':
-          model = Bid;
-          match.status = 'accepted';
           break;
         case 'completedPayments':
           model = Payment;
