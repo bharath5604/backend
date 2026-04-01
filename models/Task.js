@@ -1,4 +1,4 @@
-const mongoose = require("mongoose");
+const mongoose = require('mongoose');
 const { Schema } = mongoose;
 
 /**
@@ -7,7 +7,7 @@ const { Schema } = mongoose;
 function normalizeStringArray(value) {
   if (!Array.isArray(value)) return [];
   return value
-    .map((item) => String(item || "").trim())
+    .map((item) => String(item || '').trim())
     .filter(Boolean);
 }
 
@@ -18,21 +18,22 @@ const submissionSchema = new Schema(
   {
     student: {
       type: Schema.Types.ObjectId,
-      ref: "User",
-      required: [true, "Submission student is required"],
+      ref: 'User',
+      required: [true, 'Submission student is required'],
     },
 
     fileUrl: {
       type: String,
-      required: [true, "Submission file URL is required"],
+      required: [true, 'Submission file URL is required'],
       trim: true,
+      maxlength: [2000, 'Submission file URL cannot exceed 2000 characters'],
     },
 
     notes: {
       type: String,
-      default: "",
+      default: '',
       trim: true,
-      maxlength: [2000, "Submission notes cannot exceed 2000 characters"],
+      maxlength: [2000, 'Submission notes cannot exceed 2000 characters'],
     },
 
     approved: {
@@ -58,18 +59,18 @@ const taskSchema = new Schema(
      */
     title: {
       type: String,
-      required: [true, "Task title is required"],
+      required: [true, 'Task title is required'],
       trim: true,
-      minlength: [3, "Task title must be at least 3 characters"],
-      maxlength: [150, "Task title cannot exceed 150 characters"],
+      minlength: [3, 'Task title must be at least 3 characters'],
+      maxlength: [150, 'Task title cannot exceed 150 characters'],
     },
 
     description: {
       type: String,
-      required: [true, "Task description is required"],
+      required: [true, 'Task description is required'],
       trim: true,
-      minlength: [10, "Task description must be at least 10 characters"],
-      maxlength: [5000, "Task description cannot exceed 5000 characters"],
+      minlength: [10, 'Task description must be at least 10 characters'],
+      maxlength: [5000, 'Task description cannot exceed 5000 characters'],
     },
 
     /**
@@ -77,9 +78,24 @@ const taskSchema = new Schema(
      */
     client: {
       type: Schema.Types.ObjectId,
-      ref: "User",
-      required: [true, "Client is required"],
+      ref: 'User',
+      required: [true, 'Client is required'],
       index: true,
+    },
+
+    /**
+     * Admin assignment info
+     */
+    assignedByAdmin: {
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+      index: true,
+    },
+
+    assignedAt: {
+      type: Date,
+      default: null,
     },
 
     /**
@@ -96,24 +112,24 @@ const taskSchema = new Schema(
      */
     budget: {
       type: Number,
-      required: [true, "Budget is required"],
-      min: [0, "Budget cannot be negative"],
+      required: [true, 'Budget is required'],
+      min: [0, 'Budget cannot be negative'],
       validate: {
         validator(value) {
           return Number.isFinite(value);
         },
-        message: "Budget must be a valid number",
+        message: 'Budget must be a valid number',
       },
     },
 
     deadline: {
       type: Date,
-      required: [true, "Deadline is required"],
+      required: [true, 'Deadline is required'],
       validate: {
         validator(value) {
           return value instanceof Date && !Number.isNaN(value.getTime());
         },
-        message: "Deadline must be a valid date",
+        message: 'Deadline must be a valid date',
       },
     },
 
@@ -123,38 +139,38 @@ const taskSchema = new Schema(
     location: {
       type: String,
       trim: true,
-      default: "",
-      maxlength: [120, "Location cannot exceed 120 characters"],
+      default: '',
+      maxlength: [120, 'Location cannot exceed 120 characters'],
     },
 
     domain: {
       type: String,
       trim: true,
-      default: "",
-      maxlength: [120, "Domain cannot exceed 120 characters"],
+      default: '',
+      maxlength: [120, 'Domain cannot exceed 120 characters'],
       index: true,
     },
 
     company: {
       type: String,
       trim: true,
-      default: "",
-      maxlength: [150, "Company cannot exceed 150 characters"],
+      default: '',
+      maxlength: [150, 'Company cannot exceed 150 characters'],
     },
 
     /**
      * Task Status
      *
      * open         - posted, no student assigned yet
-     * assigned     - student accepted / bid accepted
-     * under_review - student submitted; client reviewing
+     * assigned     - admin assigned a student
+     * under_review - student submitted; client/admin reviewing
      * completed    - approved & paid
      * declined     - hard-declined after max attempts
      */
     status: {
       type: String,
-      enum: ["open", "assigned", "under_review", "completed", "declined"],
-      default: "open",
+      enum: ['open', 'assigned', 'under_review', 'completed', 'declined'],
+      default: 'open',
       index: true,
     },
 
@@ -163,27 +179,25 @@ const taskSchema = new Schema(
      */
     student: {
       type: Schema.Types.ObjectId,
-      ref: "User",
+      ref: 'User',
       default: null,
       index: true,
     },
 
     /**
      * Submission attempts
-     * - attemptCount: how many times client has declined this student's submission
-     * - maxAttempts: maximum allowed declines / resubmits (business rule = 3)
      */
     attemptCount: {
       type: Number,
       default: 0,
-      min: [0, "Attempt count cannot be negative"],
+      min: [0, 'Attempt count cannot be negative'],
     },
 
     maxAttempts: {
       type: Number,
       default: 3,
-      min: [1, "Max attempts must be at least 1"],
-      max: [10, "Max attempts cannot exceed 10"],
+      min: [1, 'Max attempts must be at least 1'],
+      max: [10, 'Max attempts cannot exceed 10'],
     },
 
     /**
@@ -219,22 +233,34 @@ const taskSchema = new Schema(
     rating: {
       type: Number,
       default: 0,
-      min: [0, "Rating cannot be below 0"],
-      max: [5, "Rating cannot be above 5"],
+      min: [0, 'Rating cannot be below 0'],
+      max: [5, 'Rating cannot be above 5'],
     },
 
     feedback: {
       type: String,
-      default: "",
+      default: '',
       trim: true,
-      maxlength: [2000, "Feedback cannot exceed 2000 characters"],
+      maxlength: [2000, 'Feedback cannot exceed 2000 characters'],
     },
 
+    // Normalized to 1-5 to match your current feedback route
     score: {
       type: Number,
       default: 0,
-      min: [0, "Score cannot be below 0"],
-      max: [100, "Score cannot be above 100"],
+      min: [0, 'Score cannot be below 0'],
+      max: [5, 'Score cannot be above 5'],
+    },
+
+    /**
+     * Communication policy
+     * Stored explicitly so backend/UI can enforce that
+     * client-student direct chat is disabled for every task.
+     */
+    chatMode: {
+      type: String,
+      enum: ['admin_only'],
+      default: 'admin_only',
     },
   },
   {
@@ -253,26 +279,77 @@ taskSchema.index({ student: 1, createdAt: -1 });
 taskSchema.index({ status: 1, createdAt: -1 });
 taskSchema.index({ client: 1, status: 1, createdAt: -1 });
 taskSchema.index({ domain: 1, status: 1, createdAt: -1 });
+taskSchema.index({ assignedByAdmin: 1, createdAt: -1 });
+taskSchema.index({ student: 1, status: 1, createdAt: -1 });
 
 /**
  * Pre-validation cleanup
  */
-taskSchema.pre("validate", function (next) {
-  this.title = String(this.title || "").trim();
-  this.description = String(this.description || "").trim();
-  this.location = String(this.location || "").trim();
-  this.domain = String(this.domain || "").trim();
-  this.company = String(this.company || "").trim();
-  this.feedback = String(this.feedback || "").trim();
+taskSchema.pre('validate', function (next) {
+  this.title = String(this.title || '').trim();
+  this.description = String(this.description || '').trim();
+  this.location = String(this.location || '').trim();
+  this.domain = String(this.domain || '').trim();
+  this.company = String(this.company || '').trim();
+  this.feedback = String(this.feedback || '').trim();
 
   if (this.submission?.notes != null) {
-    this.submission.notes = String(this.submission.notes || "").trim();
+    this.submission.notes = String(this.submission.notes || '').trim();
   }
 
   next();
 });
 
 /**
- * Export Model
+ * Business-rule validation
  */
-module.exports = mongoose.model("Task", taskSchema);
+taskSchema.pre('validate', function (next) {
+  if (this.status === 'open') {
+    this.student = null;
+    this.assignedByAdmin = null;
+    this.assignedAt = null;
+  }
+
+  if (
+    ['assigned', 'under_review', 'completed', 'declined'].includes(this.status) &&
+    !this.student
+  ) {
+    return next(
+      new Error('Assigned student is required when task is not open')
+    );
+  }
+
+  if (
+    ['assigned', 'under_review', 'completed', 'declined'].includes(this.status) &&
+    !this.assignedByAdmin
+  ) {
+    return next(
+      new Error('assignedByAdmin is required once a student is assigned')
+    );
+  }
+
+  if (this.submission && this.student) {
+    const submissionStudentId = this.submission.student?.toString();
+    const assignedStudentId = this.student?.toString();
+
+    if (
+      submissionStudentId &&
+      assignedStudentId &&
+      submissionStudentId !== assignedStudentId
+    ) {
+      return next(
+        new Error('Submission student must match assigned student')
+      );
+    }
+  }
+
+  if (this.attemptCount > this.maxAttempts) {
+    return next(
+      new Error('Attempt count cannot exceed max attempts')
+    );
+  }
+
+  next();
+});
+
+module.exports = mongoose.model('Task', taskSchema);
