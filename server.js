@@ -1,85 +1,140 @@
-const express = require("express");
-const connectDB = require("./config/db");
-const cors = require("cors");
-require("dotenv").config();
+const express = require('express');
+const cors = require('cors');
+require('dotenv').config();
+
+const connectDB = require('./config/db');
 
 const app = express();
 
-// =========================
-// MIDDLEWARE
-// =========================
+/*
+=====================================
+SAFE ROUTE LOADER
+=====================================
+*/
+function loadRoute(modulePath, label) {
+  const loaded = require(modulePath);
 
+  const candidate =
+    loaded &&
+    typeof loaded === 'object' &&
+    loaded.default &&
+    typeof loaded.default === 'function'
+      ? loaded.default
+      : loaded;
+
+  if (typeof candidate !== 'function') {
+    const receivedType = candidate === null ? 'null' : typeof candidate;
+    throw new TypeError(
+      `Route "${label}" from "${modulePath}" is not a middleware function. Received: ${receivedType}`
+    );
+  }
+
+  return candidate;
+}
+
+/*
+=====================================
+MIDDLEWARE
+=====================================
+*/
 app.use(cors());
 
 app.use(
   express.json({
-    limit: "10mb",
+    limit: '10mb',
   })
 );
 
 app.use(
   express.urlencoded({
     extended: true,
+    limit: '10mb',
   })
 );
 
-// =========================
-/* HEALTH CHECK */
-// =========================
-
-app.get("/", (req, res) => {
-  res.send("SkillBid API Running ✅");
+/*
+=====================================
+HEALTH CHECK
+=====================================
+*/
+app.get('/', (req, res) => {
+  res.status(200).send('SkillBid API Running ✅');
 });
 
-// =========================
-// ROUTES
-// =========================
+/*
+=====================================
+ROUTES
+=====================================
+*/
+const statsRoutes = loadRoute('./routes/stats', 'statsRoutes');
+const authRoutes = loadRoute('./routes/auth', 'authRoutes');
+const userRoutes = loadRoute('./routes/user', 'userRoutes');
+const taskRoutes = loadRoute('./routes/tasks', 'taskRoutes');
+const paymentRoutes = loadRoute('./routes/payments', 'paymentRoutes');
+const messageRoutes = loadRoute('./routes/messages', 'messageRoutes');
+const skillRoutes = loadRoute('./routes/skills', 'skillRoutes');
+const adminRoutes = loadRoute('./routes/admin', 'adminRoutes');
 
-// Public stats route for landing page (matches StatsService baseUrl)
-app.use("/api/stats", require("./routes/stats"));
+app.use('/api/stats', statsRoutes);
+app.use('/api/auth', authRoutes);
+app.use('/api/users', userRoutes);
+app.use('/api/tasks', taskRoutes);
+app.use('/api/payments', paymentRoutes);
+app.use('/api/messages', messageRoutes);
+app.use('/api/skills', skillRoutes);
+app.use('/api/admin', adminRoutes);
 
-app.use("/api/auth", require("./routes/auth"));
-app.use("/api/users", require("./routes/user"));
-app.use("/api/tasks", require("./routes/tasks"));
-app.use("/api/bids", require("./routes/bids"));
-app.use("/api/payments", require("./routes/payments"));
-app.use("/api/messages", require("./routes/messages")); // ✅ restore messages feature
+/*
+=====================================
+404 HANDLER
+=====================================
+*/
+app.use((req, res) => {
+  res.status(404).json({
+    message: 'Route not found',
+    path: req.originalUrl,
+  });
+});
 
-// NEW: global skills list (for signup, task creation, filters)
-app.use("/api/skills", require("./routes/skills"));
-
-// NEW: client→student task requests (inline in student workspace)
-app.use("/api/task-requests", require("./routes/taskrequests"));
-
-// ✅ ADMIN ROUTES
-app.use("/api/admin", require("./routes/admin"));
-
-// =========================
-/* GLOBAL ERROR HANDLER */
-// =========================
-
+/*
+=====================================
+GLOBAL ERROR HANDLER
+=====================================
+*/
 app.use((err, req, res, next) => {
-  console.error("GLOBAL ERROR HANDLER:", err);
+  console.error('GLOBAL ERROR HANDLER:', err);
+
   if (res.headersSent) {
     return next(err);
   }
-  res
-    .status(500)
-    .json({ message: "Server error", error: err.message || String(err) });
+
+  res.status(err.status || 500).json({
+    message: err.message || 'Server error',
+    error:
+      process.env.NODE_ENV === 'production'
+        ? 'Internal server error'
+        : err.stack || String(err),
+  });
 });
 
-// =========================
-// DATABASE
-// =========================
+/*
+=====================================
+DATABASE + SERVER
+=====================================
+*/
+const PORT = Number(process.env.PORT) || 10000;
 
-connectDB();
+async function startServer() {
+  try {
+    await connectDB();
 
-// =========================
-/* SERVER */
-// =========================
+    app.listen(PORT, '0.0.0.0', () => {
+      console.log(`Server running on port ${PORT}`);
+    });
+  } catch (err) {
+    console.error('Failed to start server:', err);
+    process.exit(1);
+  }
+}
 
-const PORT = process.env.PORT || 5000;
-
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
+startServer();
