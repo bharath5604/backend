@@ -2,24 +2,29 @@ const jwt = require('jsonwebtoken');
 
 module.exports = (req, res, next) => {
   try {
-    // Expect header: Authorization: Bearer <token>
     const authHeader = req.headers.authorization;
-    const token = authHeader?.split(' ')[1];
 
-    if (!token) {
-      return res.status(401).json({
-        message: 'No token',
-      });
+    if (!authHeader) {
+      return res.status(401).json({ message: 'Authorization header missing' });
+    }
+
+    const [scheme, token] = authHeader.split(' ');
+
+    if (scheme !== 'Bearer' || !token) {
+      return res.status(401).json({ message: 'Invalid authorization format' });
+    }
+
+    if (!process.env.JWT_SECRET) {
+      console.error('authMiddleware error: JWT_SECRET is not set');
+      return res.status(500).json({ message: 'Server configuration error' });
     }
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-
     req.user = decoded;
-    next();
+
+    return next();
   } catch (error) {
     console.error('authMiddleware error:', error.message);
-    res.status(401).json({
-      message: 'Invalid token',
-    });
+    return res.status(401).json({ message: 'Invalid or expired token' });
   }
 };
