@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-// const TaskRequest = require('../models/TaskRequest'); // REMOVED
+
 const Task = require('../models/Task');
 const User = require('../models/User');
 const Payment = require('../models/Payment');
@@ -23,7 +23,6 @@ const createTaskSchema = Joi.object({
   domain: Joi.string().max(200).allow('', null),
   requiredSkills: Joi.array().items(Joi.string().max(100)).default([]),
   company: Joi.string().max(200).allow('', null),
-
   attachments: Joi.array().items(Joi.string().uri().max(2000)).default([]),
   attachmentNames: Joi.array().items(Joi.string().max(255)).default([]),
 });
@@ -42,7 +41,10 @@ const submissionSchema = Joi.object({
   notes: Joi.string().max(2000).allow('', null),
 });
 
-// POST /api/tasks/create -> create new task (client)
+/**
+ * POST /api/tasks/create
+ * Client creates a task. Task stays in "open" until admin assigns a student.
+ */
 router.post('/create', verifyJWT, async (req, res) => {
   try {
     if (req.user.role !== 'client') {
@@ -92,9 +94,10 @@ router.post('/create', verifyJWT, async (req, res) => {
       domain: domain || client.domain,
       company: company || client.company,
       requiredSkills: requiredSkills || [],
-      status: 'open', // admin will later assign a student
+      status: 'open', // admin will assign later
       attachments: attachments || [],
       attachmentNames: attachmentNames || [],
+      attemptCount: 0,
     });
 
     return res.json(task);
@@ -107,7 +110,10 @@ router.post('/create', verifyJWT, async (req, res) => {
   }
 });
 
-// GET /api/tasks (student feed + filters)
+/**
+ * GET /api/tasks
+ * Student feed + filters; only "open" tasks.
+ */
 router.get('/', verifyJWT, async (req, res) => {
   try {
     const location = cleanStr(req.query.location);
@@ -146,7 +152,10 @@ router.get('/', verifyJWT, async (req, res) => {
   }
 });
 
-// GET /api/tasks/search
+/**
+ * GET /api/tasks/search
+ * Open tasks search, filtered by domain and budget.
+ */
 router.get('/search', verifyJWT, async (req, res) => {
   try {
     const domain = cleanStr(req.query.domain);
@@ -175,7 +184,10 @@ router.get('/search', verifyJWT, async (req, res) => {
   }
 });
 
-// GET /api/tasks/recommended (latest 5 based on student skills)
+/**
+ * GET /api/tasks/recommended
+ * Latest 5 open tasks that match student skills.
+ */
 router.get('/recommended', verifyJWT, async (req, res) => {
   try {
     if (req.user.role !== 'student') {
@@ -207,7 +219,10 @@ router.get('/recommended', verifyJWT, async (req, res) => {
   }
 });
 
-// GET /api/tasks/assigned (student workspace)
+/**
+ * GET /api/tasks/assigned
+ * Student’s workspace – tasks assigned to them (any active/completed state).
+ */
 router.get('/assigned', verifyJWT, async (req, res) => {
   try {
     if (req.user.role !== 'student') {
@@ -233,7 +248,10 @@ router.get('/assigned', verifyJWT, async (req, res) => {
   }
 });
 
-// GET /api/tasks/mine (client’s tasks)
+/**
+ * GET /api/tasks/mine
+ * Client’s own tasks (any status).
+ */
 router.get('/mine', verifyJWT, async (req, res) => {
   try {
     if (req.user.role !== 'client') {
@@ -256,11 +274,12 @@ router.get('/mine', verifyJWT, async (req, res) => {
   }
 });
 
-// GET /api/tasks/:id/candidates
-// Candidate students based on skills, sorted by rating & tasksCompleted
+/**
+ * GET /api/tasks/:id/candidates
+ * Admin-only: candidate students based on skills, sorted by rating & tasksCompleted.
+ */
 router.get('/:id/candidates', verifyJWT, async (req, res) => {
   try {
-    // In your new flow this should be ADMIN-only.
     if (req.user.role !== 'admin') {
       return res
         .status(403)
@@ -325,7 +344,77 @@ router.get('/:id/candidates', verifyJWT, async (req, res) => {
   }
 });
 
-// POST /api/tasks/:id/submit (student submits work)
+/**
+ * POST /api/tasks/:id/assign
+ * Admin assigns a student to a task.
+ */
+const assignSchema = Joi.object({
+  studentId: Joi.string().required(),
+});
+
+router.post('/:id/assign', verifyJWT, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res
+        .status(403)
+        .json({ message: 'Only admins can assign tasks' });
+    }
+
+    const { error, value } = assignSchema.validate(req.body, {
+      abortEarly: false,
+      stripUnknown: true,
+    });
+    if (error) {
+      return res.status(400).json({
+        message: 'Validation error',
+        details: error.details.map((d) => d.message),
+      });
+    }
+
+    const task = await Task.findById(req.params.id);
+    if (!task) return res.status(404).json({ message: 'Task not found' });
+
+    if (task.status !== 'open') {
+      return res
+        .status(400)
+        .json({ message: 'Task is not in an assignable state' });
+    }
+
+    const student = await User.findById(value.studentId).select('role');
+    if (!student || student.role !== 'student') {
+      return res.status(400).json({ message: 'Invalid studentId' });
+    }
+
+    task.student = student._id;
+    task.status = 'assigned';
+    task.attemptCount = task.attemptCount || 0;
+    await task.save();
+
+    // Notify student of assignment
+    await sendNotification(student._id, {
+      title: 'New task assigned',
+      body: `You have been assigned to "${task.title}".`,
+      data: {
+        type: 'task_assigned',
+        taskId: task._id.toString(),
+      },
+    });
+
+    return res.json({ message: 'Task assigned', task });
+  } catch (err) {
+    console.error('Error in POST /api/tasks/:id/assign:', err);
+    return res.status(500).json({
+      message: 'Error assigning task',
+      error: err.message,
+    });
+  }
+});
+
+/**
+ * POST /api/tasks/:id/submit
+ * Student submits work for an assigned task.
+ * Moves task to "under_review" and notifies admin (reviewer).
+ */
 router.post('/:id/submit', verifyJWT, async (req, res) => {
   try {
     if (req.user.role !== 'student') {
@@ -353,7 +442,6 @@ router.post('/:id/submit', verifyJWT, async (req, res) => {
       return res.status(404).json({ message: 'Task not found' });
     }
 
-    // Only assigned student should submit
     if (!task.student || task.student.toString() !== req.user.id) {
       return res
         .status(403)
@@ -386,7 +474,7 @@ router.post('/:id/submit', verifyJWT, async (req, res) => {
     task.status = 'under_review';
     await task.save();
 
-    // In your flow, this should notify ADMIN (reviewer), not client directly.
+    // Notify ADMIN reviewer(s). You might adapt this to a specific admin user list.
     await sendNotification(task.client, {
       title: 'New submission received',
       body: `A submission was made for "${task.title}".`,
@@ -406,10 +494,18 @@ router.post('/:id/submit', verifyJWT, async (req, res) => {
   }
 });
 
-// POST /api/tasks/:id/approve
-// Currently still client-based; you likely want admin to approve then forward to client.
+/**
+ * POST /api/tasks/:id/approve
+ * Admin approves the submission, marks task completed, and holds payment.
+ */
 router.post('/:id/approve', verifyJWT, async (req, res) => {
   try {
+    if (req.user.role !== 'admin') {
+      return res
+        .status(403)
+        .json({ message: 'Only admins can approve submissions' });
+    }
+
     const task = await Task.findById(req.params.id).populate(
       'submission.student',
       'name'
@@ -417,11 +513,6 @@ router.post('/:id/approve', verifyJWT, async (req, res) => {
 
     if (!task) {
       return res.status(404).json({ message: 'Task not found' });
-    }
-    if (task.client.toString() !== req.user.id) {
-      return res
-        .status(403)
-        .json({ message: 'Not allowed to approve this task' });
     }
     if (!task.submission || !task.submission.fileUrl) {
       return res.status(400).json({ message: 'No submission to approve' });
@@ -459,6 +550,16 @@ router.post('/:id/approve', verifyJWT, async (req, res) => {
       }
     }
 
+    // Notify client that task has been completed
+    await sendNotification(task.client, {
+      title: 'Task completed',
+      body: `The task "${task.title}" has been approved.`,
+      data: {
+        type: 'task_completed',
+        taskId: task._id.toString(),
+      },
+    });
+
     return res.json({ message: 'Task approved', task });
   } catch (err) {
     console.error('Error in POST /api/tasks/:id/approve:', err);
@@ -468,20 +569,24 @@ router.post('/:id/approve', verifyJWT, async (req, res) => {
   }
 });
 
-// POST /api/tasks/:id/decline (3-attempts + payments aware)
+/**
+ * POST /api/tasks/:id/decline
+ * Admin declines a submission, respects max attempts, and updates payments.
+ */
 router.post('/:id/decline', verifyJWT, async (req, res) => {
   try {
+    if (req.user.role !== 'admin') {
+      return res
+        .status(403)
+        .json({ message: 'Only admins can decline submissions' });
+    }
+
     const reason = cleanStr(req.body.reason);
 
     const task = await Task.findById(req.params.id);
 
     if (!task) {
       return res.status(404).json({ message: 'Task not found' });
-    }
-    if (task.client.toString() !== req.user.id) {
-      return res
-        .status(403)
-        .json({ message: 'Not allowed to decline this task' });
     }
     if (!task.submission || !task.submission.student) {
       return res
@@ -510,7 +615,7 @@ router.post('/:id/decline', verifyJWT, async (req, res) => {
             status: 'cancelled',
             declineReason:
               reason ||
-              'Declined by client after maximum allowed attempts',
+              'Declined by reviewer after maximum allowed attempts',
           },
         }
       );
@@ -554,7 +659,10 @@ router.post('/:id/decline', verifyJWT, async (req, res) => {
   }
 });
 
-// POST /api/tasks/:id/rate
+/**
+ * POST /api/tasks/:id/rate
+ * Client gives a numeric rating to the task (does not change state).
+ */
 router.post('/:id/rate', verifyJWT, async (req, res) => {
   try {
     const { error, value } = rateSchema.validate(req.body, {
@@ -591,7 +699,10 @@ router.post('/:id/rate', verifyJWT, async (req, res) => {
   }
 });
 
-// POST /api/tasks/:id/feedback
+/**
+ * POST /api/tasks/:id/feedback
+ * Client gives detailed feedback; this affects student aggregates.
+ */
 router.post('/:id/feedback', verifyJWT, async (req, res) => {
   try {
     const { error, value } = feedbackSchema.validate(req.body, {
@@ -747,7 +858,10 @@ router.post('/:id/feedback', verifyJWT, async (req, res) => {
   }
 });
 
-// DELETE /api/tasks/:id -> delete task (client only)
+/**
+ * DELETE /api/tasks/:id
+ * Client deletes their own task; also removes related payments.
+ */
 router.delete('/:id', verifyJWT, async (req, res) => {
   try {
     if (req.user.role !== 'client') {
