@@ -94,7 +94,7 @@ router.post('/create', verifyJWT, async (req, res) => {
       domain: domain || client.domain,
       company: company || client.company,
       requiredSkills: requiredSkills || [],
-      status: 'open', // admin will assign later
+      status: 'open',
       attachments: attachments || [],
       attachmentNames: attachmentNames || [],
       attemptCount: 0,
@@ -390,7 +390,6 @@ router.post('/:id/assign', verifyJWT, async (req, res) => {
     task.attemptCount = task.attemptCount || 0;
     await task.save();
 
-    // Notify student of assignment
     await sendNotification(student._id, {
       title: 'New task assigned',
       body: `You have been assigned to "${task.title}".`,
@@ -413,7 +412,7 @@ router.post('/:id/assign', verifyJWT, async (req, res) => {
 /**
  * POST /api/tasks/:id/submit
  * Student submits work for an assigned task.
- * Moves task to "under_review" and notifies admin (reviewer).
+ * Moves task to "under_review" and notifies client.
  */
 router.post('/:id/submit', verifyJWT, async (req, res) => {
   try {
@@ -474,7 +473,6 @@ router.post('/:id/submit', verifyJWT, async (req, res) => {
     task.status = 'under_review';
     await task.save();
 
-    // Notify ADMIN reviewer(s). You might adapt this to a specific admin user list.
     await sendNotification(task.client, {
       title: 'New submission received',
       body: `A submission was made for "${task.title}".`,
@@ -550,7 +548,6 @@ router.post('/:id/approve', verifyJWT, async (req, res) => {
       }
     }
 
-    // Notify client that task has been completed
     await sendNotification(task.client, {
       title: 'Task completed',
       body: `The task "${task.title}" has been approved.`,
