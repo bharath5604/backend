@@ -31,6 +31,29 @@ const messageSchema = Joi.object({
     'any.custom': 'Message must have either text or a file attachment',
   });
 
+const adminStudentMessageSchema = Joi.object({
+  taskId: Joi.string().required(),
+  studentId: Joi.string().required(),
+  text: Joi.string().min(1).max(2000).allow('', null),
+  fileUrl: Joi.string().uri().max(2000).allow('', null),
+  fileName: Joi.string().max(255).allow('', null),
+})
+  .custom((value, helpers) => {
+    const hasText =
+      typeof value.text === 'string' && value.text.trim().length > 0;
+    const hasFileUrl =
+      typeof value.fileUrl === 'string' && value.fileUrl.trim().length > 0;
+
+    if (!hasText && !hasFileUrl) {
+      return helpers.error('any.custom');
+    }
+
+    return value;
+  }, 'text or file validation')
+  .messages({
+    'any.custom': 'Message must have either text or a file attachment',
+  });
+
 function clean(value) {
   return typeof value === 'string' ? value.trim() : '';
 }
@@ -282,6 +305,190 @@ router.post('/task', verifyJWT, async (req, res) => {
     })();
   } catch (err) {
     console.error('Error sending message:', err);
+    return res.status(500).json({
+      message: 'Error sending message',
+      error: err.message,
+    });
+  }
+});
+
+/**
+ * ADMIN–STUDENT SPECIFIC THREAD ENDPOINTS
+ * These are used by TaskChatScreen when peerStudentId is provided.
+ */
+
+// GET /api/messages/admin-student?taskId=...&studentId=...
+router.get('/admin-student', verifyJWT, async (req, res) => {
+  try {
+    const taskId = normalizeId(req.query.taskId);
+    const studentId = normalizeId(req.query.studentId);
+
+    if (!taskId || !studentId) {
+      return res.status(400).json({
+        message: 'taskId and studentId are required',
+      });
+    }
+
+    const task = await Task.findById(taskId).select(
+      'client student title status attemptCount maxAttempts'
+    );
+
+    if (!task) {
+      return res.status(404).json({ message: 'Task not found' });
+    }
+
+    if (isTaskChatClosed(task)) {
+      return res.status(403).json({
+        message: 'Chat is closed for this task',
+      });
+    }
+
+    // Only admins and that specific student can access this thread
+    const userId = req.user.id.toString();
+    const role = req.user.role;
+
+    if (role !== 'admin' && !(role === 'student' && userId === studentId)) {
+      return res.status(403).json({
+        message: 'You are not allowed to view this conversation',
+      });
+    }
+
+    const filter = {
+      task: task._id,
+      $or: [
+        { student: studentId },
+        { peerStudentId: studentId },
+      ],
+    };
+
+    const messages = await Message.find(filter)
+      .sort({ createdAt: 1 })
+      .populate('sender', 'name role')
+      .populate('receiver', 'name role');
+
+    return res.json(messages);
+  } catch (err) {
+    console.error('Error fetching admin-student messages:', err);
+    return res.status(500).json({
+      message: 'Error fetching messages',
+      error: err.message,
+    });
+  }
+});
+
+// POST /api/messages/admin-student
+router.post('/admin-student', verifyJWT, async (req, res) => {
+  try {
+    const { error, value } = adminStudentMessageSchema.validate(req.body, {
+      abortEarly: false,
+      stripUnknown: true,
+    });
+
+    if (error) {
+      return res.status(400).json({
+        message: 'Validation error',
+        details: error.details.map((d) => d.message),
+      });
+    }
+
+    const taskId = normalizeId(value.taskId);
+    const studentId = normalizeId(value.studentId);
+
+    if (!taskId || !studentId) {
+      return res.status(400).json({
+        message: 'taskId and studentId are required',
+      });
+    }
+
+    const task = await Task.findById(taskId).select(
+      'client student title status attemptCount maxAttempts'
+    );
+
+    if (!task) {
+      return res.status(404).json({ message: 'Task not found' });
+    }
+
+    if (isTaskChatClosed(task)) {
+      return res.status(403).json({
+        message: 'Chat is closed for this task',
+      });
+    }
+
+    const userId = req.user.id.toString();
+    const role = req.user.role;
+
+    // Only admin or that specific student can send in this thread
+    if (role !== 'admin' && !(role === 'student' && userId === studentId)) {
+      return res.status(403).json({
+        message: 'You are not allowed to send messages in this conversation',
+      });
+    }
+
+    // Determine receiver: if admin sending → student, if student sending → any admin
+    let receiverId;
+
+    if (role === 'admin') {
+      receiverId = studentId;
+    } else {
+      const adminUser = await User.findOne({ role: 'admin' }).select('_id');
+      if (!adminUser) {
+        return res
+          .status(500)
+          .json({ message: 'No admin available for chat' });
+      }
+      receiverId = adminUser._id.toString();
+    }
+
+    const trimmedText = clean(value.text);
+    const trimmedFileUrl = clean(value.fileUrl);
+    const trimmedFileName = clean(value.fileName);
+
+    const messagePayload = {
+      task: task._id,
+      sender: req.user.id,
+      receiver: receiverId,
+      text: trimmedText || undefined,
+      fileUrl: trimmedFileUrl || undefined,
+      fileName: trimmedFileName || undefined,
+      student: studentId,
+      peerStudentId: studentId,
+    };
+
+    const message = await Message.create(messagePayload);
+
+    await message.populate([
+      { path: 'sender', select: 'name role' },
+      { path: 'receiver', select: 'name role' },
+    ]);
+
+    res.status(201).json(message);
+
+    (async () => {
+      try {
+        const notificationBody =
+          trimmedText && trimmedText.length > 0
+            ? trimmedText.length > 50
+              ? `${trimmedText.substring(0, 47)}...`
+              : trimmedText
+            : trimmedFileName
+            ? `Attachment: ${trimmedFileName}`
+            : 'New message';
+
+        await sendNotification(receiverId, {
+          title: 'New message',
+          body: notificationBody,
+          data: {
+            type: 'chat_message',
+            taskId: task._id.toString(),
+            studentId,
+          },
+        });
+      } catch (notifyErr) {
+        console.error('FCM sendNotification error (admin-student):', notifyErr);
+      }
+    })();
+  } catch (err) {
+    console.error('Error sending admin-student message:', err);
     return res.status(500).json({
       message: 'Error sending message',
       error: err.message,

@@ -68,6 +68,7 @@ exports.createTask = async (req, res) => {
       client: req.user.id,
       status: 'open',
       attemptCount: 0,
+      // student, assignedByAdmin, assignedAt will remain null for open
     });
 
     return res.status(201).json({
@@ -165,6 +166,7 @@ exports.getTaskById = async (req, res) => {
 /**
  * ===============================
  * ASSIGN TASK TO STUDENT
+ * (client assigns, but schema requires assignedByAdmin)
  * ===============================
  */
 exports.assignTask = async (req, res) => {
@@ -182,15 +184,26 @@ exports.assignTask = async (req, res) => {
       return res.status(404).json({ message: 'Task not found' });
     }
 
+    // Only client who owns the task can assign
     if (!req.user || req.user.id !== task.client.toString()) {
       return res.status(403).json({
         message: 'Only client can assign',
       });
     }
 
+    if (task.status !== 'open' && task.status !== 'assigned') {
+      return res.status(400).json({
+        message: 'Task cannot be assigned in its current status',
+      });
+    }
+
     task.student = studentId;
     task.status = 'assigned';
     task.attemptCount = 0;
+
+    // For now, treat the client as the "assigner" to satisfy schema
+    task.assignedByAdmin = req.user.id;
+    task.assignedAt = task.assignedAt || new Date();
 
     await task.save();
 
@@ -252,6 +265,15 @@ exports.submitWork = async (req, res) => {
 
     task.status = 'under_review';
 
+    // Ensure schema constraints: for non-open status, both must exist
+    if (!task.assignedByAdmin) {
+      // Fallback: keep previous value if existed, else set to client as assigner
+      task.assignedByAdmin = task.assignedByAdmin || task.client;
+    }
+    if (!task.assignedAt) {
+      task.assignedAt = new Date();
+    }
+
     await task.save();
 
     return res.json({
@@ -299,6 +321,17 @@ exports.approveWork = async (req, res) => {
 
     task.submission.approved = true;
     task.status = 'completed';
+
+    // Ensure constraints for non-open status
+    if (!task.student) {
+      task.student = task.submission.student;
+    }
+    if (!task.assignedByAdmin) {
+      task.assignedByAdmin = task.assignedByAdmin || task.client;
+    }
+    if (!task.assignedAt) {
+      task.assignedAt = new Date();
+    }
 
     await task.save();
 
@@ -378,6 +411,20 @@ exports.declineWork = async (req, res) => {
       );
     } else {
       task.status = 'assigned';
+    }
+
+    // Ensure constraints for non-open status
+    if (['assigned', 'under_review', 'completed', 'declined'].includes(task.status)) {
+      if (!task.student) {
+        // In this flow, student must exist; if not, we keep it as-is to trigger schema error
+        task.student = task.student;
+      }
+      if (!task.assignedByAdmin) {
+        task.assignedByAdmin = task.assignedByAdmin || task.client;
+      }
+      if (!task.assignedAt) {
+        task.assignedAt = new Date();
+      }
     }
 
     await task.save();

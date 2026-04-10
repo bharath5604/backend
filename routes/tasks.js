@@ -388,6 +388,11 @@ router.post('/:id/assign', verifyJWT, async (req, res) => {
     task.student = student._id;
     task.status = 'assigned';
     task.attemptCount = task.attemptCount || 0;
+
+    // Ensure model constraints (non-open => student + assignedByAdmin)
+    task.assignedByAdmin = req.user.id;
+    task.assignedAt = new Date();
+
     await task.save();
 
     await sendNotification(student._id, {
@@ -471,6 +476,16 @@ router.post('/:id/submit', verifyJWT, async (req, res) => {
       submittedAt: new Date(),
     };
     task.status = 'under_review';
+
+    // Ensure non-open state has assignedByAdmin/assignedAt
+    if (!task.assignedByAdmin) {
+      // Fallback: if admin wasn’t set, use client as assigner
+      task.assignedByAdmin = task.client;
+    }
+    if (!task.assignedAt) {
+      task.assignedAt = new Date();
+    }
+
     await task.save();
 
     await sendNotification(task.client, {
@@ -518,6 +533,18 @@ router.post('/:id/approve', verifyJWT, async (req, res) => {
 
     task.submission.approved = true;
     task.status = 'completed';
+
+    // Satisfy model constraints for non-open status
+    if (!task.student && task.submission.student) {
+      task.student = task.submission.student;
+    }
+    if (!task.assignedByAdmin) {
+      task.assignedByAdmin = req.user.id;
+    }
+    if (!task.assignedAt) {
+      task.assignedAt = new Date();
+    }
+
     await task.save();
 
     if (task.submission.student) {
@@ -618,6 +645,19 @@ router.post('/:id/decline', verifyJWT, async (req, res) => {
       );
     } else {
       task.status = 'assigned';
+    }
+
+    // Enforce model rule for non-open statuses
+    if (['assigned', 'under_review', 'completed', 'declined'].includes(task.status)) {
+      if (!task.student) {
+        task.student = declinedStudent;
+      }
+      if (!task.assignedByAdmin) {
+        task.assignedByAdmin = req.user.id;
+      }
+      if (!task.assignedAt) {
+        task.assignedAt = new Date();
+      }
     }
 
     await task.save();

@@ -61,14 +61,13 @@ router.get('/:id/public-profile', verifyJWT, async (req, res) => {
 
     const totalScore = Number(student.totalScore || 0);
     const totalScoreCount = Number(student.totalScoreCount || 0);
-    const totalAverage =
-      totalScoreCount > 0 ? totalScore / totalScoreCount : 0;
+    const totalAverage = totalScoreCount > 0 ? totalScore / totalScoreCount : 0;
 
     const [pendingPayments, earnedPayments, acceptedQuoteTotal] =
       await Promise.all([
         sumNetToStudentByStatuses(id, ['held']),
-        sumNetToStudentByStatuses(id, ['released']),
-        sumNetToStudentByStatuses(id, ['held', 'released']),
+        sumNetToStudentByStatuses(id, ['completed']),
+        sumNetToStudentByStatuses(id, ['held', 'completed']),
       ]);
 
     return res.json({

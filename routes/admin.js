@@ -1,3 +1,4 @@
+// backend/routes/admin.js
 const express = require('express');
 const router = express.Router();
 const Joi = require('joi');
@@ -35,7 +36,7 @@ const adminTaskFilterSchema = Joi.object({
   location: Joi.string().allow('', null),
   domain: Joi.string().allow('', null),
   status: Joi.string()
-    .valid('open', 'pending', 'assigned', 'under_review', 'completed', 'declined')
+    .valid('open', 'assigned', 'under_review', 'completed', 'declined')
     .allow('', null),
 });
 
@@ -198,11 +199,12 @@ router.get('/tasks/:id/candidates', verifyJWT, ensureAdmin, async (req, res) => 
       isApproved: true,
     };
 
-    const skillPool = Array.isArray(task.requiredSkills) && task.requiredSkills.length > 0
-      ? task.requiredSkills
-      : Array.isArray(task.skills) && task.skills.length > 0
-      ? task.skills
-      : [];
+    const skillPool =
+      Array.isArray(task.requiredSkills) && task.requiredSkills.length > 0
+        ? task.requiredSkills
+        : Array.isArray(task.skills) && task.skills.length > 0
+        ? task.skills
+        : [];
 
     if (skillPool.length > 0) {
       match.skills = { $in: skillPool };
@@ -286,9 +288,9 @@ router.post('/tasks/:id/assign', verifyJWT, ensureAdmin, async (req, res) => {
       return res.status(404).json({ message: 'Task not found' });
     }
 
-    if (!['open', 'pending'].includes(task.status)) {
+    if (task.status !== 'open') {
       return res.status(400).json({
-        message: 'Only open or pending tasks can be assigned',
+        message: 'Only open tasks can be assigned',
       });
     }
 
@@ -311,7 +313,10 @@ router.post('/tasks/:id/assign', verifyJWT, ensureAdmin, async (req, res) => {
     task.assignedAt = new Date();
     task.status = 'assigned';
 
-    if ('attemptCount' in task && (task.attemptCount == null || Number.isNaN(Number(task.attemptCount)))) {
+    if (
+      'attemptCount' in task &&
+      (task.attemptCount == null || Number.isNaN(Number(task.attemptCount)))
+    ) {
       task.attemptCount = 0;
     }
 
@@ -360,10 +365,7 @@ router.get(
       const filter = { task: taskId };
 
       if (studentId) {
-        filter.$or = [
-          { student: studentId },
-          { peerStudentId: studentId },
-        ];
+        filter.$or = [{ student: studentId }, { peerStudentId: studentId }];
       }
 
       const messages = await Message.find(filter)
@@ -469,15 +471,14 @@ router.get(
         return res.status(404).json({ message: 'Student not found' });
       }
 
-      const [totalTasks, completedTasks, totalPayments] =
-        await Promise.all([
-          Task.countDocuments({ student: studentId }),
-          Task.countDocuments({ student: studentId, status: 'completed' }),
-          Payment.countDocuments({
-            student: studentId,
-            status: 'completed',
-          }),
-        ]);
+      const [totalTasks, completedTasks, totalPayments] = await Promise.all([
+        Task.countDocuments({ student: studentId }),
+        Task.countDocuments({ student: studentId, status: 'completed' }),
+        Payment.countDocuments({
+          student: studentId,
+          status: 'completed',
+        }),
+      ]);
 
       return res.json({
         student,

@@ -5,12 +5,27 @@ const User = require('../models/User');
 const Task = require('../models/Task');
 const verifyJWT = require('../middleware/authMiddleware');
 
+function clean(value) {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function normalizeId(value) {
+  return clean(value);
+}
+
 // GET /api/clients/:id/public-profile
 router.get('/:id/public-profile', verifyJWT, async (req, res) => {
   try {
-    const client = await User.findById(req.params.id).select(
+    const clientId = normalizeId(req.params.id);
+
+    if (!clientId) {
+      return res.status(400).json({ message: 'Client ID is required' });
+    }
+
+    const client = await User.findById(clientId).select(
       'name email company location domain description role'
     );
+
     if (!client || client.role !== 'client') {
       return res.status(404).json({ message: 'Client not found' });
     }
@@ -20,20 +35,31 @@ router.get('/:id/public-profile', verifyJWT, async (req, res) => {
       .limit(10)
       .select('title status rating domain createdAt');
 
-    res.json({
+    const recentTasks = tasks.map((task) => ({
+      id: task._id,
+      title: clean(task.title),
+      status: clean(task.status),
+      rating: task.rating ?? null,
+      domain: clean(task.domain),
+      createdAt: task.createdAt,
+    }));
+
+    return res.json({
       id: client._id,
-      name: client.name,
-      email: client.email,
-      company: client.company || '',
-      location: client.location || '',
-      domain: client.domain || '',
-      description: client.description || '',
-      recentTasks: tasks,
+      name: clean(client.name),
+      email: clean(client.email),
+      company: clean(client.company),
+      location: clean(client.location),
+      domain: clean(client.domain),
+      description: clean(client.description),
+      recentTasks,
     });
   } catch (err) {
-    res
-      .status(500)
-      .json({ message: 'Error fetching client profile', error: err.message });
+    console.error('Error in GET /api/clients/:id/public-profile', err);
+    return res.status(500).json({
+      message: 'Error fetching client profile',
+      error: err.message,
+    });
   }
 });
 

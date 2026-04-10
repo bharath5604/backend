@@ -4,21 +4,44 @@ const router = express.Router();
 const User = require('../models/User');
 const Task = require('../models/Task');
 
+function toSafeNumber(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string') {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  return 0;
+}
+
 // GET /api/stats -> high-level platform stats for landing page
 router.get('/', async (req, res) => {
   try {
-    const [studentCount, clientCount, taskCount] = await Promise.all([
+    const [
+      studentCount,
+      clientCount,
+      totalProjectCount,
+      completedProjectCount,
+      assignedProjectCount,
+      openProjectCount,
+    ] = await Promise.all([
       User.countDocuments({ role: 'student' }),
       User.countDocuments({ role: 'client' }),
       Task.countDocuments({}),
+      Task.countDocuments({ status: 'completed' }),
+      Task.countDocuments({ status: 'assigned' }),
+      Task.countDocuments({ status: 'open' }),
     ]);
 
     return res.json({
-      students: studentCount,
-      clients: clientCount,
-      projects: taskCount,
+      students: toSafeNumber(studentCount),
+      clients: toSafeNumber(clientCount),
+      projects: toSafeNumber(totalProjectCount),
+      completedProjects: toSafeNumber(completedProjectCount),
+      assignedProjects: toSafeNumber(assignedProjectCount),
+      openProjects: toSafeNumber(openProjectCount),
     });
   } catch (err) {
+    console.error('Error in GET /api/stats', err);
     return res.status(500).json({
       message: 'Error loading stats',
       error: err.message,

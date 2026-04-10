@@ -65,9 +65,12 @@ router.get('/me', verifyJWT, async (req, res) => {
     if (user.role === 'student') {
       const [pendingPayments, earnedPayments, acceptedQuoteTotal] =
         await Promise.all([
+          // payments approved by client, waiting for admin release
           sumNetToStudentByStatuses(user._id, ['held']),
-          sumNetToStudentByStatuses(user._id, ['released']),
-          sumNetToStudentByStatuses(user._id, ['held', 'released']),
+          // payments fully released to wallet
+          sumNetToStudentByStatuses(user._id, ['completed']),
+          // all accepted for this student (pending + completed)
+          sumNetToStudentByStatuses(user._id, ['held', 'completed']),
         ]);
 
       const userObj = user.toObject();
@@ -91,8 +94,8 @@ router.get('/me', verifyJWT, async (req, res) => {
 PAYMENT-ONLY STATS FOR STUDENT
 GET /api/users/me/payment-stats
 
-- totalAcceptedAmount  => sum netToStudent where status in ['held','released']
-- totalReceivedAmount  => sum netToStudent where status = 'released'
+- totalAcceptedAmount  => sum netToStudent where status in ['held','completed']
+- totalReceivedAmount  => sum netToStudent where status = 'completed'
 - totalPendingAmount   => accepted - received
 =====================================
 */
@@ -111,7 +114,7 @@ router.get('/me/payment-stats', verifyJWT, async (req, res) => {
         {
           $match: {
             student: studentId,
-            status: { $in: ['held', 'released'] },
+            status: { $in: ['held', 'completed'] },
           },
         },
         {
@@ -127,7 +130,7 @@ router.get('/me/payment-stats', verifyJWT, async (req, res) => {
         {
           $match: {
             student: studentId,
-            status: 'released',
+            status: 'completed',
           },
         },
         {

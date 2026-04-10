@@ -37,7 +37,12 @@ function loadRoute(modulePath, label) {
 MIDDLEWARE
 =====================================
 */
-app.use(cors());
+app.use(
+  cors({
+    origin: true,
+    credentials: true,
+  })
+);
 
 app.use(
   express.json({
@@ -59,6 +64,13 @@ HEALTH CHECK
 */
 app.get('/', (req, res) => {
   res.status(200).send('SkillBid API Running ✅');
+});
+
+app.get('/health', (req, res) => {
+  res.status(200).json({
+    ok: true,
+    message: 'SkillBid API is healthy',
+  });
 });
 
 /*
@@ -93,6 +105,7 @@ app.use((req, res) => {
   res.status(404).json({
     message: 'Route not found',
     path: req.originalUrl,
+    method: req.method,
   });
 });
 
@@ -123,13 +136,18 @@ DATABASE + SERVER
 =====================================
 */
 const PORT = Number(process.env.PORT) || 10000;
+let server = null;
 
 async function startServer() {
   try {
     await connectDB();
 
-    app.listen(PORT, '0.0.0.0', () => {
+    server = app.listen(PORT, '0.0.0.0', () => {
       console.log(`Server running on port ${PORT}`);
+    });
+
+    server.on('error', (err) => {
+      console.error('HTTP server error:', err);
     });
   } catch (err) {
     console.error('Failed to start server:', err);
@@ -138,3 +156,5 @@ async function startServer() {
 }
 
 startServer();
+
+module.exports = app;
