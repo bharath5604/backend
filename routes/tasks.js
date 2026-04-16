@@ -18,7 +18,8 @@ const createTaskSchema = Joi.object({
   title: Joi.string().min(3).max(200).required(),
   description: Joi.string().min(10).max(2000).required(),
   budget: Joi.number().positive().max(1_000_000).required(),
-  deadline: Joi.date().required(),// e.g. ISO date or human readable
+  // Must be a real date to match Task.deadline: Date
+  deadline: Joi.date().required(), // e.g. ISO date or human readable that Date() can parse
   location: Joi.string().max(200).allow('', null),
   domain: Joi.string().max(200).allow('', null),
   requiredSkills: Joi.array().items(Joi.string().max(100)).default([]),
@@ -88,23 +89,28 @@ router.post('/create', verifyJWT, async (req, res) => {
       return res.status(404).json({ message: 'Client not found' });
     }
 
-    // Convert deadline string to Date if you want a real date in DB.
-    // If you actually want to store a raw string, change Task model accordingly.
+    // Joi.date() already converted this to a Date, but we defensively re-check.
     let deadlineDate = null;
     if (deadline) {
       const d = new Date(deadline);
-      deadlineDate = Number.isNaN(d.getTime()) ? null : d;
+      if (Number.isNaN(d.getTime())) {
+        return res.status(400).json({
+          message: 'Invalid deadline format. Please provide a valid date.',
+        });
+      }
+      deadlineDate = d;
     }
 
     const task = await Task.create({
       title,
       description,
       budget,
-      deadline: deadlineDate || deadline, // compatible with either Date or String field
+      // Task schema expects a Date and has its own validator
+      deadline: deadlineDate,
       client: req.user.id,
-      location: location || client.location,
-      domain: domain || client.domain,
-      company: company || client.company,
+      location: location || client.location || '',
+      domain: domain || client.domain || '',
+      company: company || client.company || '',
       requiredSkills: requiredSkills || [],
       status: 'open',
       attachments: attachments || [],
