@@ -18,7 +18,7 @@ const createTaskSchema = Joi.object({
   title: Joi.string().min(3).max(200).required(),
   description: Joi.string().min(10).max(2000).required(),
   budget: Joi.number().positive().max(1_000_000).required(),
-  deadline: Joi.string().max(50).required(), // e.g. ISO date or human readable
+  deadline: Joi.date().required(),// e.g. ISO date or human readable
   location: Joi.string().max(200).allow('', null),
   domain: Joi.string().max(200).allow('', null),
   requiredSkills: Joi.array().items(Joi.string().max(100)).default([]),
