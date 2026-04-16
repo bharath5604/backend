@@ -12,24 +12,30 @@ SAFE ROUTE LOADER
 =====================================
 */
 function loadRoute(modulePath, label) {
-  const loaded = require(modulePath);
+  try {
+    const loaded = require(modulePath);
 
-  const candidate =
-    loaded &&
-    typeof loaded === 'object' &&
-    loaded.default &&
-    typeof loaded.default === 'function'
-      ? loaded.default
-      : loaded;
+    const candidate =
+      loaded &&
+      typeof loaded === 'object' &&
+      loaded.default &&
+      typeof loaded.default === 'function'
+        ? loaded.default
+        : loaded;
 
-  if (typeof candidate !== 'function') {
-    const receivedType = candidate === null ? 'null' : typeof candidate;
-    throw new TypeError(
-      `Route "${label}" from "${modulePath}" is not a middleware function. Received: ${receivedType}`
-    );
+    if (typeof candidate !== 'function') {
+      const receivedType = candidate === null ? 'null' : typeof candidate;
+      throw new TypeError(
+        `Route "${label}" from "${modulePath}" is not a middleware function. Received: ${receivedType}`
+      );
+    }
+
+    console.log(`Loaded route: ${label}`);
+    return candidate;
+  } catch (err) {
+    console.error(`Failed to load route "${label}" from "${modulePath}":`, err);
+    throw err;
   }
-
-  return candidate;
 }
 
 /*
@@ -70,6 +76,7 @@ app.get('/health', (req, res) => {
   res.status(200).json({
     ok: true,
     message: 'SkillBid API is healthy',
+    environment: process.env.NODE_ENV || 'development',
   });
 });
 
@@ -103,6 +110,7 @@ app.use('/api/admin', adminRoutes);
 */
 app.use((req, res) => {
   res.status(404).json({
+    success: false,
     message: 'Route not found',
     path: req.originalUrl,
     method: req.method,
@@ -122,6 +130,7 @@ app.use((err, req, res, next) => {
   }
 
   res.status(err.status || 500).json({
+    success: false,
     message: err.message || 'Server error',
     error:
       process.env.NODE_ENV === 'production'
@@ -154,6 +163,35 @@ async function startServer() {
     process.exit(1);
   }
 }
+
+async function shutdown(signal) {
+  console.log(`${signal} received. Shutting down gracefully...`);
+
+  if (server) {
+    server.close(() => {
+      console.log('HTTP server closed');
+      process.exit(0);
+    });
+
+    setTimeout(() => {
+      console.error('Forced shutdown after timeout');
+      process.exit(1);
+    }, 10000);
+  } else {
+    process.exit(0);
+  }
+}
+
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+
+process.on('uncaughtException', (err) => {
+  console.error('UNCAUGHT EXCEPTION:', err);
+});
+
+process.on('unhandledRejection', (reason) => {
+  console.error('UNHANDLED REJECTION:', reason);
+});
 
 startServer();
 
