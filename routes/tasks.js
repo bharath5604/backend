@@ -18,7 +18,7 @@ const createTaskSchema = Joi.object({
   title: Joi.string().min(3).max(200).required(),
   description: Joi.string().min(10).max(2000).required(),
   budget: Joi.number().positive().max(1_000_000).required(),
-  deadline: Joi.string().max(50).required(),
+  deadline: Joi.string().max(50).required(), // e.g. ISO date or human readable
   location: Joi.string().max(200).allow('', null),
   domain: Joi.string().max(200).allow('', null),
   requiredSkills: Joi.array().items(Joi.string().max(100)).default([]),
@@ -39,6 +39,10 @@ const feedbackSchema = Joi.object({
 const submissionSchema = Joi.object({
   fileUrl: Joi.string().uri().max(2000).required(),
   notes: Joi.string().max(2000).allow('', null),
+});
+
+const assignSchema = Joi.object({
+  studentId: Joi.string().required(),
 });
 
 /**
@@ -84,11 +88,19 @@ router.post('/create', verifyJWT, async (req, res) => {
       return res.status(404).json({ message: 'Client not found' });
     }
 
+    // Convert deadline string to Date if you want a real date in DB.
+    // If you actually want to store a raw string, change Task model accordingly.
+    let deadlineDate = null;
+    if (deadline) {
+      const d = new Date(deadline);
+      deadlineDate = Number.isNaN(d.getTime()) ? null : d;
+    }
+
     const task = await Task.create({
       title,
       description,
       budget,
-      deadline,
+      deadline: deadlineDate || deadline, // compatible with either Date or String field
       client: req.user.id,
       location: location || client.location,
       domain: domain || client.domain,
@@ -348,10 +360,6 @@ router.get('/:id/candidates', verifyJWT, async (req, res) => {
  * POST /api/tasks/:id/assign
  * Admin assigns a student to a task.
  */
-const assignSchema = Joi.object({
-  studentId: Joi.string().required(),
-});
-
 router.post('/:id/assign', verifyJWT, async (req, res) => {
   try {
     if (req.user.role !== 'admin') {
@@ -389,7 +397,6 @@ router.post('/:id/assign', verifyJWT, async (req, res) => {
     task.status = 'assigned';
     task.attemptCount = task.attemptCount || 0;
 
-    // Ensure model constraints (non-open => student + assignedByAdmin)
     task.assignedByAdmin = req.user.id;
     task.assignedAt = new Date();
 
@@ -477,9 +484,7 @@ router.post('/:id/submit', verifyJWT, async (req, res) => {
     };
     task.status = 'under_review';
 
-    // Ensure non-open state has assignedByAdmin/assignedAt
     if (!task.assignedByAdmin) {
-      // Fallback: if admin wasn’t set, use client as assigner
       task.assignedByAdmin = task.client;
     }
     if (!task.assignedAt) {
@@ -534,7 +539,6 @@ router.post('/:id/approve', verifyJWT, async (req, res) => {
     task.submission.approved = true;
     task.status = 'completed';
 
-    // Satisfy model constraints for non-open status
     if (!task.student && task.submission.student) {
       task.student = task.submission.student;
     }
@@ -647,7 +651,6 @@ router.post('/:id/decline', verifyJWT, async (req, res) => {
       task.status = 'assigned';
     }
 
-    // Enforce model rule for non-open statuses
     if (['assigned', 'under_review', 'completed', 'declined'].includes(task.status)) {
       if (!task.student) {
         task.student = declinedStudent;
