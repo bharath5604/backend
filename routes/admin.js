@@ -438,6 +438,11 @@ router.post(
       if (!text && !fileUrl) {
         return res.status(400).json({
           message: 'Message text or file is required',
+          received: {
+            text: value.text ?? null,
+            fileUrl: value.fileUrl ?? null,
+            fileName: value.fileName ?? null,
+          },
         });
       }
 
@@ -484,6 +489,8 @@ router.post(
     try {
       const taskId = normalizeId(req.params.id);
 
+      console.log('Admin client chat payload:', req.body);
+
       const { error, value } = adminMessageSchema.validate(req.body, {
         abortEarly: false,
         stripUnknown: true,
@@ -521,6 +528,11 @@ router.post(
       if (!text && !fileUrl) {
         return res.status(400).json({
           message: 'Message text or file is required',
+          received: {
+            text: value.text ?? null,
+            fileUrl: value.fileUrl ?? null,
+            fileName: value.fileName ?? null,
+          },
         });
       }
 
@@ -530,7 +542,7 @@ router.post(
         text,
         fileUrl: fileUrl || undefined,
         fileName: fileName || undefined,
-        client: task.client, // explicitly mark client target
+        client: task.client,
       };
 
       if (studentId) {
@@ -568,6 +580,8 @@ router.post(
     try {
       const taskId = normalizeId(req.params.id);
 
+      console.log('Admin student chat payload:', req.body);
+
       const { error, value } = adminMessageSchema.validate(req.body, {
         abortEarly: false,
         stripUnknown: true,
@@ -593,10 +607,14 @@ router.post(
         return res.status(404).json({ message: 'Task not found' });
       }
 
-      const studentId = normalizeId(value.studentId) || (task.student && task.student.toString());
+      const studentId =
+        normalizeId(value.studentId) ||
+        (task.student && task.student.toString());
 
       if (!studentId) {
-        return res.status(400).json({ message: 'Student ID is required for student chat' });
+        return res.status(400).json({
+          message: 'Student ID is required for student chat',
+        });
       }
 
       const text = clean(value.text);
@@ -606,6 +624,11 @@ router.post(
       if (!text && !fileUrl) {
         return res.status(400).json({
           message: 'Message text or file is required',
+          received: {
+            text: value.text ?? null,
+            fileUrl: value.fileUrl ?? null,
+            fileName: value.fileName ?? null,
+          },
         });
       }
 
