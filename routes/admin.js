@@ -58,6 +58,9 @@ const adminMessageSchema = Joi.object({
   studentId: Joi.string().allow('', null),
 });
 
+/**
+ * ADMIN USERS
+ */
 router.get('/users', verifyJWT, ensureAdmin, async (req, res) => {
   try {
     const role = clean(req.query.role);
@@ -126,6 +129,9 @@ router.patch(
   }
 );
 
+/**
+ * ADMIN TASKS
+ */
 router.get('/tasks', verifyJWT, ensureAdmin, async (req, res) => {
   try {
     const { error, value } = adminTaskFilterSchema.validate(req.query, {
@@ -184,79 +190,84 @@ router.get('/tasks/filters', verifyJWT, ensureAdmin, async (req, res) => {
   }
 });
 
-router.get('/tasks/:id/candidates', verifyJWT, ensureAdmin, async (req, res) => {
-  try {
-    const task = await Task.findById(req.params.id).select(
-      'requiredSkills skills domain status'
-    );
+router.get(
+  '/tasks/:id/candidates',
+  verifyJWT,
+  ensureAdmin,
+  async (req, res) => {
+    try {
+      const task = await Task.findById(req.params.id).select(
+        'requiredSkills skills domain status'
+      );
 
-    if (!task) {
-      return res.status(404).json({ message: 'Task not found' });
-    }
+      if (!task) {
+        return res.status(404).json({ message: 'Task not found' });
+      }
 
-    const match = {
-      role: 'student',
-      isApproved: true,
-    };
+      const match = {
+        role: 'student',
+        isApproved: true,
+      };
 
-    const skillPool =
-      Array.isArray(task.requiredSkills) && task.requiredSkills.length > 0
-        ? task.requiredSkills
-        : Array.isArray(task.skills) && task.skills.length > 0
-        ? task.skills
-        : [];
+      const skillPool =
+        Array.isArray(task.requiredSkills) && task.requiredSkills.length > 0
+          ? task.requiredSkills
+          : Array.isArray(task.skills) && task.skills.length > 0
+          ? task.skills
+          : [];
 
-    if (skillPool.length > 0) {
-      match.skills = { $in: skillPool };
-    } else if (task.domain) {
-      match.domain = task.domain;
-    }
+      if (skillPool.length > 0) {
+        match.skills = { $in: skillPool };
+      } else if (task.domain) {
+        match.domain = task.domain;
+      }
 
-    const students = await User.aggregate([
-      { $match: match },
-      {
-        $addFields: {
-          averageScore: {
-            $cond: [
-              { $gt: ['$totalScoreCount', 0] },
-              { $divide: ['$totalScore', '$totalScoreCount'] },
-              0,
-            ],
+      const students = await User.aggregate([
+        { $match: match },
+        {
+          $addFields: {
+            averageScore: {
+              $cond: [
+                { $gt: ['$totalScoreCount', 0] },
+                { $divide: ['$totalScore', '$totalScoreCount'] },
+                0,
+              ],
+            },
           },
         },
-      },
-      {
-        $sort: {
-          averageScore: -1,
-          tasksCompleted: -1,
-          createdAt: -1,
+        {
+          $sort: {
+            averageScore: -1,
+            tasksCompleted: -1,
+            createdAt: -1,
+          },
         },
-      },
-      { $limit: 50 },
-      {
-        $project: {
-          name: 1,
-          email: 1,
-          skills: 1,
-          tasksCompleted: 1,
-          totalScore: 1,
-          totalScoreCount: 1,
-          averageScore: 1,
-          wallet: 1,
-          domain: 1,
+        { $limit: 50 },
+        {
+          $project: {
+            name: 1,
+            email: 1,
+            skills: 1,
+            tasksCompleted: 1,
+            totalScore: 1,
+            totalScoreCount: 1,
+            averageScore: 1,
+            wallet: 1,
+            domain: 1,
+          },
         },
-      },
-    ]);
+      ]);
 
-    return res.json(students);
-  } catch (err) {
-    console.error('Error in GET /api/admin/tasks/:id/candidates', err);
-    return res.status(500).json({
-      message: 'Error loading candidates',
-      error: err.message,
-    });
+      return res.json(students);
+    } catch (err) {
+      console.error('Error in GET /api/admin/tasks/:id/candidates', err);
+      return res.status(500).json({
+        message: 'Error loading candidates',
+        error: err.message,
+      });
+    }
   }
-});
+);
 
 router.post('/tasks/:id/assign', verifyJWT, ensureAdmin, async (req, res) => {
   try {
@@ -340,6 +351,9 @@ router.post('/tasks/:id/assign', verifyJWT, ensureAdmin, async (req, res) => {
   }
 });
 
+/**
+ * ADMIN MESSAGES
+ */
 router.get(
   '/tasks/:id/messages',
   verifyJWT,
@@ -458,6 +472,174 @@ router.post(
   }
 );
 
+/**
+ * NEW: Admin → Client chat endpoint
+ * POST /api/admin/tasks/:id/chat/client
+ */
+router.post(
+  '/tasks/:id/chat/client',
+  verifyJWT,
+  ensureAdmin,
+  async (req, res) => {
+    try {
+      const taskId = normalizeId(req.params.id);
+
+      const { error, value } = adminMessageSchema.validate(req.body, {
+        abortEarly: false,
+        stripUnknown: true,
+      });
+
+      if (error) {
+        return res.status(400).json({
+          message: 'Validation error',
+          details: error.details.map((d) => d.message),
+        });
+      }
+
+      if (!taskId) {
+        return res.status(400).json({ message: 'Task ID is required' });
+      }
+
+      const task = await Task.findById(taskId).populate(
+        'client student',
+        '_id name email role'
+      );
+
+      if (!task) {
+        return res.status(404).json({ message: 'Task not found' });
+      }
+
+      if (!task.client) {
+        return res.status(400).json({ message: 'Task has no client' });
+      }
+
+      const text = clean(value.text);
+      const fileUrl = clean(value.fileUrl);
+      const fileName = clean(value.fileName);
+      const studentId = normalizeId(value.studentId);
+
+      if (!text && !fileUrl) {
+        return res.status(400).json({
+          message: 'Message text or file is required',
+        });
+      }
+
+      const payload = {
+        task: taskId,
+        sender: req.user.id,
+        text,
+        fileUrl: fileUrl || undefined,
+        fileName: fileName || undefined,
+        client: task.client, // explicitly mark client target
+      };
+
+      if (studentId) {
+        payload.student = studentId;
+        payload.peerStudentId = studentId;
+      }
+
+      const message = await Message.create(payload);
+
+      const populated = await Message.findById(message._id).populate(
+        'sender',
+        'name email role'
+      );
+
+      return res.status(201).json(populated);
+    } catch (err) {
+      console.error('Error in POST /api/admin/tasks/:id/chat/client', err);
+      return res.status(500).json({
+        message: 'Error sending client chat message',
+        error: err.message,
+      });
+    }
+  }
+);
+
+/**
+ * OPTIONAL: Admin → Student chat endpoint
+ * POST /api/admin/tasks/:id/chat/student
+ */
+router.post(
+  '/tasks/:id/chat/student',
+  verifyJWT,
+  ensureAdmin,
+  async (req, res) => {
+    try {
+      const taskId = normalizeId(req.params.id);
+
+      const { error, value } = adminMessageSchema.validate(req.body, {
+        abortEarly: false,
+        stripUnknown: true,
+      });
+
+      if (error) {
+        return res.status(400).json({
+          message: 'Validation error',
+          details: error.details.map((d) => d.message),
+        });
+      }
+
+      if (!taskId) {
+        return res.status(400).json({ message: 'Task ID is required' });
+      }
+
+      const task = await Task.findById(taskId).populate(
+        'client student',
+        '_id name email role'
+      );
+
+      if (!task) {
+        return res.status(404).json({ message: 'Task not found' });
+      }
+
+      const studentId = normalizeId(value.studentId) || (task.student && task.student.toString());
+
+      if (!studentId) {
+        return res.status(400).json({ message: 'Student ID is required for student chat' });
+      }
+
+      const text = clean(value.text);
+      const fileUrl = clean(value.fileUrl);
+      const fileName = clean(value.fileName);
+
+      if (!text && !fileUrl) {
+        return res.status(400).json({
+          message: 'Message text or file is required',
+        });
+      }
+
+      const payload = {
+        task: taskId,
+        sender: req.user.id,
+        text,
+        fileUrl: fileUrl || undefined,
+        fileName: fileName || undefined,
+        student: studentId,
+        peerStudentId: studentId,
+      };
+
+      const message = await Message.create(payload);
+
+      const populated = await Message.findById(message._id).populate(
+        'sender',
+        'name email role'
+      );
+
+      return res.status(201).json(populated);
+    } catch (err) {
+      console.error('Error in POST /api/admin/tasks/:id/chat/student', err);
+      return res.status(500).json({
+        message: 'Error sending student chat message',
+        error: err.message,
+      });
+    }
+  }
+);
+
+/**
+ * ADMIN STUDENT DASHBOARD
+ */
 router.get(
   '/students/:id/dashboard',
   verifyJWT,
@@ -496,6 +678,9 @@ router.get(
   }
 );
 
+/**
+ * ADMIN STATS & PAYMENTS
+ */
 router.get(
   '/stats/overview',
   verifyJWT,
@@ -759,6 +944,9 @@ router.get(
   }
 );
 
+/**
+ * ADMIN PAYMENTS
+ */
 router.get('/payments', verifyJWT, ensureAdmin, async (req, res) => {
   try {
     const status = clean(req.query.status);
