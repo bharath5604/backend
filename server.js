@@ -93,6 +93,7 @@ const paymentRoutes = loadRoute('./routes/payments', 'paymentRoutes');
 const messageRoutes = loadRoute('./routes/messages', 'messageRoutes');
 const skillRoutes = loadRoute('./routes/skills', 'skillRoutes');
 const adminRoutes = loadRoute('./routes/admin', 'adminRoutes');
+const studentsRoutes = loadRoute('./routes/students', 'studentsRoutes');
 
 app.use('/api/stats', statsRoutes);
 app.use('/api/auth', authRoutes);
@@ -102,6 +103,7 @@ app.use('/api/payments', paymentRoutes);
 app.use('/api/messages', messageRoutes);
 app.use('/api/skills', skillRoutes);
 app.use('/api/admin', adminRoutes);
+app.use('/api/students', studentsRoutes);
 
 /*
 =====================================
