@@ -244,7 +244,6 @@ const taskSchema = new Schema(
       maxlength: [2000, 'Feedback cannot exceed 2000 characters'],
     },
 
-    // Normalized to 1-5 to match your current feedback route
     score: {
       type: Number,
       default: 0,
@@ -285,7 +284,7 @@ taskSchema.index({ student: 1, status: 1, createdAt: -1 });
 /**
  * Pre-validation cleanup
  */
-taskSchema.pre('validate', function (next) {
+taskSchema.pre('validate', function () {
   this.title = String(this.title || '').trim();
   this.description = String(this.description || '').trim();
   this.location = String(this.location || '').trim();
@@ -296,14 +295,12 @@ taskSchema.pre('validate', function (next) {
   if (this.submission?.notes != null) {
     this.submission.notes = String(this.submission.notes || '').trim();
   }
-
-  next();
 });
 
 /**
  * Business-rule validation
  */
-taskSchema.pre('validate', function (next) {
+taskSchema.pre('validate', function () {
   if (this.status === 'open') {
     this.student = null;
     this.assignedByAdmin = null;
@@ -314,18 +311,14 @@ taskSchema.pre('validate', function (next) {
     ['assigned', 'under_review', 'completed', 'declined'].includes(this.status) &&
     !this.student
   ) {
-    return next(
-      new Error('Assigned student is required when task is not open')
-    );
+    throw new Error('Assigned student is required when task is not open');
   }
 
   if (
     ['assigned', 'under_review', 'completed', 'declined'].includes(this.status) &&
     !this.assignedByAdmin
   ) {
-    return next(
-      new Error('assignedByAdmin is required once a student is assigned')
-    );
+    throw new Error('assignedByAdmin is required once a student is assigned');
   }
 
   if (this.submission && this.student) {
@@ -337,19 +330,13 @@ taskSchema.pre('validate', function (next) {
       assignedStudentId &&
       submissionStudentId !== assignedStudentId
     ) {
-      return next(
-        new Error('Submission student must match assigned student')
-      );
+      throw new Error('Submission student must match assigned student');
     }
   }
 
   if (this.attemptCount > this.maxAttempts) {
-    return next(
-      new Error('Attempt count cannot exceed max attempts')
-    );
+    throw new Error('Attempt count cannot exceed max attempts');
   }
-
-  next();
 });
 
 module.exports = mongoose.model('Task', taskSchema);
