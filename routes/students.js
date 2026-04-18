@@ -93,4 +93,52 @@ router.get('/:id/public-profile', verifyJWT, async (req, res) => {
   }
 });
 
+// GET /api/students/:id/feedback-summary
+router.get('/:id/feedback-summary', verifyJWT, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: 'Invalid student id' });
+    }
+
+    const student = await User.findById(id).select(
+      'totalScore totalScoreCount feedbackScores role'
+    );
+
+    if (!student || student.role !== 'student') {
+      return res.status(404).json({ message: 'Student not found' });
+    }
+
+    const totalScore = Number(student.totalScore || 0);
+    const totalScoreCount = Number(student.totalScoreCount || 0);
+    const averageScore = totalScoreCount > 0 ? totalScore / totalScoreCount : 0;
+
+    const domains = Array.isArray(student.feedbackScores)
+      ? student.feedbackScores.map((d) => {
+          const score = Number(d.totalScore || 0);
+          const count = Number(d.count || 0);
+          return {
+            domain: d.domain || '',
+            totalScore: score,
+            count,
+            averageScore: count > 0 ? score / count : 0,
+          };
+        })
+      : [];
+
+    return res.json({
+      studentId: student._id,
+      totalScore,
+      totalScoreCount,
+      averageScore,
+      domains,
+    });
+  } catch (err) {
+    return res.status(500).json({
+      message: 'Error fetching feedback summary',
+      error: err.message,
+    });
+  }
+});
 module.exports = router;
