@@ -520,6 +520,17 @@ router.post(
         return res.status(400).json({ message: 'Task has no client' });
       }
 
+      // Ensure we always use plain ObjectId string for client
+      const clientId =
+        (task.client && task.client._id && task.client._id.toString()) ||
+        (task.client && task.client.toString());
+
+      if (!clientId) {
+        return res.status(500).json({
+          message: 'Could not resolve client id for task',
+        });
+      }
+
       const text = clean(value.text);
       const fileUrl = clean(value.fileUrl);
       const fileName = clean(value.fileName);
@@ -542,7 +553,7 @@ router.post(
         text,
         fileUrl: fileUrl || undefined,
         fileName: fileName || undefined,
-        client: task.client,
+        client: clientId,
       };
 
       if (studentId) {
@@ -569,7 +580,7 @@ router.post(
 );
 
 /**
- * OPTIONAL: Admin → Student chat endpoint
+ * Admin → Student chat endpoint
  * POST /api/admin/tasks/:id/chat/student
  */
 router.post(
@@ -607,11 +618,15 @@ router.post(
         return res.status(404).json({ message: 'Task not found' });
       }
 
-      const studentId =
+      // Prefer explicit studentId from payload; else fall back to task.student's _id
+      const resolvedStudentId =
         normalizeId(value.studentId) ||
+        (task.student &&
+          task.student._id &&
+          task.student._id.toString()) ||
         (task.student && task.student.toString());
 
-      if (!studentId) {
+      if (!resolvedStudentId) {
         return res.status(400).json({
           message: 'Student ID is required for student chat',
         });
@@ -638,8 +653,8 @@ router.post(
         text,
         fileUrl: fileUrl || undefined,
         fileName: fileName || undefined,
-        student: studentId,
-        peerStudentId: studentId,
+        student: resolvedStudentId,
+        peerStudentId: resolvedStudentId,
       };
 
       const message = await Message.create(payload);
