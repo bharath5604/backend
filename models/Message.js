@@ -1,4 +1,4 @@
-//backend/models/Message.js
+// backend/models/Message.js
 const mongoose = require('mongoose');
 
 const messageSchema = new mongoose.Schema(
@@ -24,7 +24,6 @@ const messageSchema = new mongoose.Schema(
       index: true,
     },
 
-    // Assigned student context for this task, not a direct client-student thread
     student: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
@@ -56,20 +55,14 @@ const messageSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-messageSchema.pre('validate', function (next) {
+messageSchema.path('text').validate(function () {
   const hasText =
     typeof this.text === 'string' && this.text.trim().length > 0;
   const hasFileUrl =
     typeof this.fileUrl === 'string' && this.fileUrl.trim().length > 0;
 
-  if (!hasText && !hasFileUrl) {
-    return next(
-      new Error('Message must have either text or a file attachment')
-    );
-  }
-
-  next();
-});
+  return hasText || hasFileUrl;
+}, 'Message must have either text or a file attachment');
 
 messageSchema.index({ task: 1, createdAt: 1 });
 messageSchema.index({ task: 1, student: 1, createdAt: 1 });
