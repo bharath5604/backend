@@ -6,7 +6,7 @@ const Joi = require('joi');
 
 const User = require('../models/User');
 const Task = require('../models/Task');
-const Payment = require('../models/Payment');
+const Payment = require('../models/Payment']);
 const Message = require('../models/Message');
 
 const verifyJWT = require('../middleware/authMiddleware');
@@ -378,7 +378,7 @@ router.post('/tasks/:id/assign', verifyJWT, ensureAdmin, async (req, res) => {
 });
 
 /**
- * ADMIN MESSAGES
+ * ADMIN MESSAGES (generic)
  */
 router.get(
   '/tasks/:id/messages',
@@ -418,6 +418,125 @@ router.get(
       console.error('Error in GET /api/admin/tasks/:id/messages', err);
       return res.status(500).json({
         message: 'Error loading task messages',
+        error: err.message,
+      });
+    }
+  }
+);
+
+/**
+ * GET Admin <-> Client chat messages for a task
+ * GET /api/admin/tasks/:id/chat/client/messages
+ */
+router.get(
+  '/tasks/:id/chat/client/messages',
+  verifyJWT,
+  ensureAdmin,
+  async (req, res) => {
+    try {
+      const taskId = normalizeId(req.params.id);
+
+      if (!taskId) {
+        return res.status(400).json({ message: 'Task ID is required' });
+      }
+
+      const task = await Task.findById(taskId).populate(
+        'client student',
+        '_id name email role'
+      );
+
+      if (!task) {
+        return res.status(404).json({ message: 'Task not found' });
+      }
+
+      if (!task.client) {
+        return res.status(400).json({ message: 'Task has no client' });
+      }
+
+      const clientId = toObjectIdString(task.client);
+      const adminId = toObjectIdString(req.user.id);
+
+      const messages = await Message.find({
+        task: taskId,
+        $or: [
+          { sender: adminId, receiver: clientId },
+          { sender: clientId, receiver: adminId },
+        ],
+      })
+        .populate('sender', 'name email role')
+        .populate('receiver', 'name email role')
+        .sort({ createdAt: 1 });
+
+      return res.json(messages);
+    } catch (err) {
+      console.error(
+        'Error in GET /api/admin/tasks/:id/chat/client/messages',
+        err
+      );
+      return res.status(500).json({
+        message: 'Error loading client chat messages',
+        error: err.message,
+      });
+    }
+  }
+);
+
+/**
+ * GET Admin <-> Student chat messages for a task
+ * GET /api/admin/tasks/:id/chat/student/messages
+ */
+router.get(
+  '/tasks/:id/chat/student/messages',
+  verifyJWT,
+  ensureAdmin,
+  async (req, res) => {
+    try {
+      const taskId = normalizeId(req.params.id);
+      const requestedStudentId = normalizeId(req.query.studentId);
+
+      if (!taskId) {
+        return res.status(400).json({ message: 'Task ID is required' });
+      }
+
+      const task = await Task.findById(taskId).populate(
+        'client student',
+        '_id name email role'
+      );
+
+      if (!task) {
+        return res.status(404).json({ message: 'Task not found' });
+      }
+
+      const studentId =
+        requestedStudentId || toObjectIdString(task.student);
+
+      if (!studentId) {
+        return res.status(400).json({
+          message: 'Student ID is required for student chat',
+        });
+      }
+
+      const adminId = toObjectIdString(req.user.id);
+
+      const messages = await Message.find({
+        task: taskId,
+        $or: [
+          { sender: adminId, receiver: studentId },
+          { sender: studentId, receiver: adminId },
+        ],
+      })
+        .populate('sender', 'name email role')
+        .populate('receiver', 'name email role')
+        .sort({ createdAt: 1 });
+
+      return res.json(messages);
+    } catch (err) {
+      console.error(
+        'Error in GET /api/admin/tasks/:id/chat/student/messages',
+        err
+      );
+      return res.status(500).json({
+        message: 'Error loading student chat messages',
         error: err.message,
       });
     }
