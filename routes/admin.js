@@ -6,7 +6,7 @@ const Joi = require('joi');
 
 const User = require('../models/User');
 const Task = require('../models/Task');
-const Payment = require('../models/Payment']);
+const Payment = require('../models/Payment');
 const Message = require('../models/Message');
 
 const verifyJWT = require('../middleware/authMiddleware');
