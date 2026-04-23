@@ -1,5 +1,6 @@
 // backend/routes/admin.js
 const express = require('express');
+const mongoose = require('mongoose');
 const router = express.Router();
 const Joi = require('joi');
 
@@ -16,6 +17,31 @@ function clean(value) {
 
 function normalizeId(value) {
   return clean(value);
+}
+
+function toObjectIdString(value) {
+  if (!value) return '';
+
+  if (typeof value === 'string') {
+    return value.trim();
+  }
+
+  if (value instanceof mongoose.Types.ObjectId) {
+    return value.toString();
+  }
+
+  if (typeof value === 'object' && value._id) {
+    if (value._id instanceof mongoose.Types.ObjectId) {
+      return value._id.toString();
+    }
+    return String(value._id).trim();
+  }
+
+  return String(value).trim();
+}
+
+function isValidObjectId(value) {
+  return mongoose.Types.ObjectId.isValid(value);
 }
 
 const ensureAdmin = (req, res, next) => {
@@ -379,11 +405,12 @@ router.get(
       const filter = { task: taskId };
 
       if (studentId) {
-        filter.$or = [{ student: studentId }, { peerStudentId: studentId }];
+        filter.student = studentId;
       }
 
       const messages = await Message.find(filter)
         .populate('sender', 'name email role')
+        .populate('receiver', 'name email role')
         .sort({ createdAt: 1 });
 
       return res.json(messages);
@@ -446,25 +473,34 @@ router.post(
         });
       }
 
+      let receiverId = '';
+      if (studentId) {
+        receiverId = studentId;
+      } else if (task.student) {
+        receiverId = toObjectIdString(task.student);
+      }
+
+      if (!receiverId || !isValidObjectId(receiverId)) {
+        return res.status(400).json({
+          message: 'Valid receiver student ID is required',
+        });
+      }
+
       const payload = {
         task: taskId,
         sender: req.user.id,
+        receiver: receiverId,
+        student: receiverId,
         text,
         fileUrl: fileUrl || undefined,
         fileName: fileName || undefined,
       };
 
-      if (studentId) {
-        payload.student = studentId;
-        payload.peerStudentId = studentId;
-      }
-
       const message = await Message.create(payload);
 
-      const populated = await Message.findById(message._id).populate(
-        'sender',
-        'name email role'
-      );
+      const populated = await Message.findById(message._id)
+        .populate('sender', 'name email role')
+        .populate('receiver', 'name email role');
 
       return res.status(201).json(populated);
     } catch (err) {
@@ -520,14 +556,10 @@ router.post(
         return res.status(400).json({ message: 'Task has no client' });
       }
 
-      // Ensure we always use plain ObjectId string for client
-      const clientId =
-        (task.client && task.client._id && task.client._id.toString()) ||
-        (task.client && task.client.toString());
-
-      if (!clientId) {
-        return res.status(500).json({
-          message: 'Could not resolve client id for task',
+      const clientId = toObjectIdString(task.client);
+      if (!clientId || !isValidObjectId(clientId)) {
+        return res.status(400).json({
+          message: 'Valid client receiver ID could not be resolved',
         });
       }
 
@@ -547,26 +579,31 @@ router.post(
         });
       }
 
+      let studentContext = null;
+      if (studentId) {
+        studentContext = studentId;
+      } else if (task.student) {
+        const resolvedStudentId = toObjectIdString(task.student);
+        if (resolvedStudentId && isValidObjectId(resolvedStudentId)) {
+          studentContext = resolvedStudentId;
+        }
+      }
+
       const payload = {
         task: taskId,
         sender: req.user.id,
+        receiver: clientId,
+        student: studentContext || undefined,
         text,
         fileUrl: fileUrl || undefined,
         fileName: fileName || undefined,
-        client: clientId,
       };
-
-      if (studentId) {
-        payload.student = studentId;
-        payload.peerStudentId = studentId;
-      }
 
       const message = await Message.create(payload);
 
-      const populated = await Message.findById(message._id).populate(
-        'sender',
-        'name email role'
-      );
+      const populated = await Message.findById(message._id)
+        .populate('sender', 'name email role')
+        .populate('receiver', 'name email role');
 
       return res.status(201).json(populated);
     } catch (err) {
@@ -618,15 +655,10 @@ router.post(
         return res.status(404).json({ message: 'Task not found' });
       }
 
-      // Prefer explicit studentId from payload; else fall back to task.student's _id
-      const resolvedStudentId =
-        normalizeId(value.studentId) ||
-        (task.student &&
-          task.student._id &&
-          task.student._id.toString()) ||
-        (task.student && task.student.toString());
+      const studentId =
+        normalizeId(value.studentId) || toObjectIdString(task.student);
 
-      if (!resolvedStudentId) {
+      if (!studentId || !isValidObjectId(studentId)) {
         return res.status(400).json({
           message: 'Student ID is required for student chat',
         });
@@ -650,19 +682,18 @@ router.post(
       const payload = {
         task: taskId,
         sender: req.user.id,
+        receiver: studentId,
+        student: studentId,
         text,
         fileUrl: fileUrl || undefined,
         fileName: fileName || undefined,
-        student: resolvedStudentId,
-        peerStudentId: resolvedStudentId,
       };
 
       const message = await Message.create(payload);
 
-      const populated = await Message.findById(message._id).populate(
-        'sender',
-        'name email role'
-      );
+      const populated = await Message.findById(message._id)
+        .populate('sender', 'name email role')
+        .populate('receiver', 'name email role');
 
       return res.status(201).json(populated);
     } catch (err) {
