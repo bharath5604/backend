@@ -95,7 +95,9 @@ const messageRoutes = loadRoute('./routes/messages', 'messageRoutes');
 const skillRoutes = loadRoute('./routes/skills', 'skillRoutes');
 const adminRoutes = loadRoute('./routes/admin', 'adminRoutes');
 const studentsRoutes = loadRoute('./routes/students', 'studentsRoutes');
+const notificationsRoutes = loadRoute('./routes/notifications', 'notificationsRoutes');
 
+app.use('/api/notifications', notificationsRoutes);
 app.use('/api/stats', statsRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);

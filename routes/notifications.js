@@ -1,5 +1,6 @@
-//backend/routes/notifications.js
+// backend/routes/notifications.js
 const express = require('express');
+const mongoose = require('mongoose');
 const router = express.Router();
 const Joi = require('joi');
 
@@ -9,6 +10,16 @@ const verifyJWT = require('../middleware/authMiddleware');
 
 function clean(value) {
   return typeof value === 'string' ? value.trim() : '';
+}
+
+function getUserId(req) {
+  return (
+    req.user?.id ||
+    req.user?._id ||
+    req.user?.userId ||
+    req.user?.sub ||
+    ''
+  ).toString().trim();
 }
 
 const registerTokenSchema = Joi.object({
@@ -25,15 +36,24 @@ const markReadSchema = Joi.object({
 
 router.get('/', verifyJWT, async (req, res) => {
   try {
+    const userId = getUserId(req);
+
+    if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(401).json({
+        message: 'Valid authenticated user not found',
+      });
+    }
+
     const since = clean(req.query.since);
-    const unreadOnly = String(req.query.unreadOnly || '').toLowerCase() === 'true';
+    const unreadOnly =
+      String(req.query.unreadOnly || '').toLowerCase() === 'true';
     const limitRaw = Number(req.query.limit);
     const limit =
       Number.isFinite(limitRaw) && limitRaw > 0
         ? Math.min(Math.floor(limitRaw), 100)
         : 50;
 
-    const filter = { user: req.user.id };
+    const filter = { user: userId };
 
     if (since) {
       const date = new Date(since);
@@ -51,7 +71,7 @@ router.get('/', verifyJWT, async (req, res) => {
       .limit(limit);
 
     const unreadCount = await Notification.countDocuments({
-      user: req.user.id,
+      user: userId,
       isRead: false,
     });
 
@@ -70,8 +90,16 @@ router.get('/', verifyJWT, async (req, res) => {
 
 router.get('/unread-count', verifyJWT, async (req, res) => {
   try {
+    const userId = getUserId(req);
+
+    if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(401).json({
+        message: 'Valid authenticated user not found',
+      });
+    }
+
     const unreadCount = await Notification.countDocuments({
-      user: req.user.id,
+      user: userId,
       isRead: false,
     });
 
@@ -87,6 +115,14 @@ router.get('/unread-count', verifyJWT, async (req, res) => {
 
 router.post('/read', verifyJWT, async (req, res) => {
   try {
+    const userId = getUserId(req);
+
+    if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(401).json({
+        message: 'Valid authenticated user not found',
+      });
+    }
+
     const { error, value } = markReadSchema.validate(req.body, {
       abortEarly: false,
       stripUnknown: true,
@@ -107,13 +143,21 @@ router.post('/read', verifyJWT, async (req, res) => {
       });
     }
 
+    const validIds = ids.filter((id) => mongoose.Types.ObjectId.isValid(id));
+
+    if (validIds.length === 0) {
+      return res.status(400).json({
+        message: 'No valid notification IDs provided',
+      });
+    }
+
     const result = await Notification.updateMany(
-      { _id: { $in: ids }, user: req.user.id },
+      { _id: { $in: validIds }, user: userId },
       { $set: { isRead: true } }
     );
 
     const unreadCount = await Notification.countDocuments({
-      user: req.user.id,
+      user: userId,
       isRead: false,
     });
 
@@ -134,8 +178,16 @@ router.post('/read', verifyJWT, async (req, res) => {
 
 router.post('/read-all', verifyJWT, async (req, res) => {
   try {
+    const userId = getUserId(req);
+
+    if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(401).json({
+        message: 'Valid authenticated user not found',
+      });
+    }
+
     const result = await Notification.updateMany(
-      { user: req.user.id, isRead: false },
+      { user: userId, isRead: false },
       { $set: { isRead: true } }
     );
 
@@ -156,6 +208,14 @@ router.post('/read-all', verifyJWT, async (req, res) => {
 
 router.post('/register-token', verifyJWT, async (req, res) => {
   try {
+    const userId = getUserId(req);
+
+    if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(401).json({
+        message: 'Valid authenticated user not found',
+      });
+    }
+
     const { error, value } = registerTokenSchema.validate(req.body, {
       abortEarly: false,
       stripUnknown: true,
@@ -170,10 +230,21 @@ router.post('/register-token', verifyJWT, async (req, res) => {
 
     const token = clean(value.token);
 
-    await User.findByIdAndUpdate(req.user.id, { fcmToken: token });
+    const user = await User.findByIdAndUpdate(
+      userId,
+      { $set: { fcmToken: token } },
+      { new: true }
+    ).select('_id fcmToken');
+
+    if (!user) {
+      return res.status(404).json({
+        message: 'User not found',
+      });
+    }
 
     return res.json({
       message: 'Token registered',
+      fcmToken: user.fcmToken,
     });
   } catch (err) {
     console.error('Error in POST /api/notifications/register-token', err);
@@ -186,6 +257,14 @@ router.post('/register-token', verifyJWT, async (req, res) => {
 
 router.post('/unregister-token', verifyJWT, async (req, res) => {
   try {
+    const userId = getUserId(req);
+
+    if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(401).json({
+        message: 'Valid authenticated user not found',
+      });
+    }
+
     const { error, value } = unregisterTokenSchema.validate(req.body, {
       abortEarly: false,
       stripUnknown: true,
@@ -199,7 +278,7 @@ router.post('/unregister-token', verifyJWT, async (req, res) => {
     }
 
     const token = clean(value.token);
-    const user = await User.findById(req.user.id).select('fcmToken');
+    const user = await User.findById(userId).select('fcmToken');
 
     if (!user) {
       return res.status(404).json({
