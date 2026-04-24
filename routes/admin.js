@@ -46,7 +46,9 @@ function isValidObjectId(value) {
 
 const ensureAdmin = (req, res, next) => {
   if (!req.user || req.user.role !== 'admin') {
-    return res.status(403).json({ message: 'Admin only' });
+    return res.status(403).json({
+      message: 'Admin only',
+    });
   }
   next();
 };
@@ -83,7 +85,7 @@ const adminMessageSchema = Joi.object({
 });
 
 /**
- * 1. ADMIN USERS
+ * ADMIN USERS
  */
 router.get('/users', verifyJWT, ensureAdmin, async (req, res) => {
   try {
@@ -99,6 +101,7 @@ router.get('/users', verifyJWT, ensureAdmin, async (req, res) => {
     if (domain) filter.domain = domain;
 
     const users = await User.find(filter).select('-password');
+
     return res.json(users);
   } catch (err) {
     console.error('Error in /api/admin/users', err);
@@ -153,7 +156,7 @@ router.patch(
 );
 
 /**
- * 2. ADMIN TASKS
+ * ADMIN TASKS
  */
 router.get('/tasks', verifyJWT, ensureAdmin, async (req, res) => {
   try {
@@ -375,7 +378,7 @@ router.post('/tasks/:id/assign', verifyJWT, ensureAdmin, async (req, res) => {
 });
 
 /**
- * 3. ADMIN MESSAGES (generic list)
+ * ADMIN MESSAGES (generic)
  */
 router.get(
   '/tasks/:id/messages',
@@ -400,6 +403,7 @@ router.get(
       }
 
       const filter = { task: taskId };
+
       if (studentId) {
         filter.student = studentId;
       }
@@ -421,9 +425,8 @@ router.get(
 );
 
 /**
- * 4. ADMIN <-> CLIENT CHAT
+ * GET Admin <-> Client chat messages for a task
  * GET /api/admin/tasks/:id/chat/client/messages
- * POST /api/admin/tasks/:id/chat/client/messages
  */
 router.get(
   '/tasks/:id/chat/client/messages',
@@ -478,6 +481,161 @@ router.get(
   }
 );
 
+/**
+ * GET Admin <-> Student chat messages for a task
+ * GET /api/admin/tasks/:id/chat/student/messages
+ */
+router.get(
+  '/tasks/:id/chat/student/messages',
+  verifyJWT,
+  ensureAdmin,
+  async (req, res) => {
+    try {
+      const taskId = normalizeId(req.params.id);
+      const requestedStudentId = normalizeId(req.query.studentId);
+
+      if (!taskId) {
+        return res.status(400).json({ message: 'Task ID is required' });
+      }
+
+      const task = await Task.findById(taskId).populate(
+        'client student',
+        '_id name email role'
+      );
+
+      if (!task) {
+        return res.status(404).json({ message: 'Task not found' });
+      }
+
+      const studentId =
+        requestedStudentId || toObjectIdString(task.student);
+
+      if (!studentId) {
+        return res.status(400).json({
+          message: 'Student ID is required for student chat',
+        });
+      }
+
+      const adminId = toObjectIdString(req.user.id);
+
+      const messages = await Message.find({
+        task: taskId,
+        $or: [
+          { sender: adminId, receiver: studentId },
+          { sender: studentId, receiver: adminId },
+        ],
+      })
+        .populate('sender', 'name email role')
+        .populate('receiver', 'name email role')
+        .sort({ createdAt: 1 });
+
+      return res.json(messages);
+    } catch (err) {
+      console.error(
+        'Error in GET /api/admin/tasks/:id/chat/student/messages',
+        err
+      );
+      return res.status(500).json({
+        message: 'Error loading student chat messages',
+        error: err.message,
+      });
+    }
+  }
+);
+
+router.post(
+  '/tasks/:id/messages',
+  verifyJWT,
+  ensureAdmin,
+  async (req, res) => {
+    try {
+      const taskId = normalizeId(req.params.id);
+
+      const { error, value } = adminMessageSchema.validate(req.body, {
+        abortEarly: false,
+        stripUnknown: true,
+      });
+
+      if (error) {
+        return res.status(400).json({
+          message: 'Validation error',
+          details: error.details.map((d) => d.message),
+        });
+      }
+
+      if (!taskId) {
+        return res.status(400).json({ message: 'Task ID is required' });
+      }
+
+      const task = await Task.findById(taskId).populate(
+        'client student',
+        '_id name email role'
+      );
+
+      if (!task) {
+        return res.status(404).json({ message: 'Task not found' });
+      }
+
+      const text = clean(value.text);
+      const fileUrl = clean(value.fileUrl);
+      const fileName = clean(value.fileName);
+      const studentId = normalizeId(value.studentId);
+
+      if (!text && !fileUrl) {
+        return res.status(400).json({
+          message: 'Message text or file is required',
+          received: {
+            text: value.text ?? null,
+            fileUrl: value.fileUrl ?? null,
+            fileName: value.fileName ?? null,
+          },
+        });
+      }
+
+      let receiverId = '';
+      if (studentId) {
+        receiverId = studentId;
+      } else if (task.student) {
+        receiverId = toObjectIdString(task.student);
+      }
+
+      if (!receiverId || !isValidObjectId(receiverId)) {
+        return res.status(400).json({
+          message: 'Valid receiver student ID is required',
+        });
+      }
+
+      const payload = {
+        task: taskId,
+        sender: req.user.id,
+        receiver: receiverId,
+        student: receiverId,
+        text,
+        fileUrl: fileUrl || undefined,
+        fileName: fileName || undefined,
+      };
+
+      const message = await Message.create(payload);
+
+      const populated = await Message.findById(message._id)
+        .populate('sender', 'name email role')
+        .populate('receiver', 'name email role');
+
+      return res.status(201).json(populated);
+    } catch (err) {
+      console.error('Error in POST /api/admin/tasks/:id/messages', err);
+      return res.status(500).json({
+        message: 'Error sending message',
+        error: err.message,
+      });
+    }
+  }
+);
+
+/**
+ * Admin → Client chat endpoint
+ * POST /api/admin/tasks/:id/chat/client/messages
+ */
 router.post(
   '/tasks/:id/chat/client/messages',
   verifyJWT,
@@ -485,6 +643,8 @@ router.post(
   async (req, res) => {
     try {
       const taskId = normalizeId(req.params.id);
+
+      console.log('Admin client chat payload:', req.body);
 
       const { error, value } = adminMessageSchema.validate(req.body, {
         abortEarly: false,
@@ -548,7 +708,7 @@ router.post(
         }
       }
 
-      const message = await Message.create({
+      const payload = {
         task: taskId,
         sender: req.user.id,
         receiver: clientId,
@@ -556,7 +716,9 @@ router.post(
         text,
         fileUrl: fileUrl || undefined,
         fileName: fileName || undefined,
-      });
+      };
+
+      const message = await Message.create(payload);
 
       const populated = await Message.findById(message._id)
         .populate('sender', 'name email role')
@@ -577,68 +739,9 @@ router.post(
 );
 
 /**
- * 5. ADMIN <-> STUDENT CHAT
- * GET /api/admin/tasks/:id/chat/student/messages
+ * Admin → Student chat endpoint
  * POST /api/admin/tasks/:id/chat/student
  */
-router.get(
-  '/tasks/:id/chat/student/messages',
-  verifyJWT,
-  ensureAdmin,
-  async (req, res) => {
-    try {
-      const taskId = normalizeId(req.params.id);
-      const requestedStudentId = normalizeId(req.query.studentId);
-
-      if (!taskId) {
-        return res.status(400).json({ message: 'Task ID is required' });
-      }
-
-      const task = await Task.findById(taskId).populate(
-        'client student',
-        '_id name email role'
-      );
-
-      if (!task) {
-        return res.status(404).json({ message: 'Task not found' });
-      }
-
-      const studentId =
-        requestedStudentId || toObjectIdString(task.student);
-
-      if (!studentId) {
-        return res.status(400).json({
-          message: 'Student ID is required for student chat',
-        });
-      }
-
-      const adminId = toObjectIdString(req.user.id);
-
-      const messages = await Message.find({
-        task: taskId,
-        $or: [
-          { sender: adminId, receiver: studentId },
-          { sender: studentId, receiver: adminId },
-        ],
-      })
-        .populate('sender', 'name email role')
-        .populate('receiver', 'name email role')
-        .sort({ createdAt: 1 });
-
-      return res.json(messages);
-    } catch (err) {
-      console.error(
-        'Error in GET /api/admin/tasks/:id/chat/student/messages',
-        err
-      );
-      return res.status(500).json({
-        message: 'Error loading student chat messages',
-        error: err.message,
-      });
-    }
-  }
-);
-
 router.post(
   '/tasks/:id/chat/student',
   verifyJWT,
@@ -698,7 +801,7 @@ router.post(
         });
       }
 
-      const message = await Message.create({
+      const payload = {
         task: taskId,
         sender: req.user.id,
         receiver: studentId,
@@ -706,7 +809,9 @@ router.post(
         text,
         fileUrl: fileUrl || undefined,
         fileName: fileName || undefined,
-      });
+      };
+
+      const message = await Message.create(payload);
 
       const populated = await Message.findById(message._id)
         .populate('sender', 'name email role')
@@ -724,7 +829,7 @@ router.post(
 );
 
 /**
- * 6. ADMIN STUDENT DASHBOARD
+ * ADMIN STUDENT DASHBOARD
  */
 router.get(
   '/students/:id/dashboard',
@@ -765,7 +870,7 @@ router.get(
 );
 
 /**
- * 7. ADMIN STATS & PAYMENTS
+ * ADMIN STATS & PAYMENTS
  */
 router.get(
   '/stats/overview',
@@ -1031,7 +1136,7 @@ router.get(
 );
 
 /**
- * 8. ADMIN PAYMENTS
+ * ADMIN PAYMENTS
  */
 router.get('/payments', verifyJWT, ensureAdmin, async (req, res) => {
   try {
@@ -1164,9 +1269,6 @@ router.post(
   }
 );
 
-/**
- * 9. ADMIN GROWTH STATS
- */
 router.get(
   '/stats/growth',
   verifyJWT,
