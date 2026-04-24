@@ -84,6 +84,10 @@ const adminMessageSchema = Joi.object({
   studentId: Joi.string().allow('', null),
 });
 
+// =========================================================
+// USERS
+// =========================================================
+
 router.get('/users', verifyJWT, ensureAdmin, async (req, res) => {
   try {
     const role = clean(req.query.role);
@@ -150,6 +154,10 @@ router.patch(
     }
   }
 );
+
+// =========================================================
+/* TASKS */
+// =========================================================
 
 router.get('/tasks', verifyJWT, ensureAdmin, async (req, res) => {
   try {
@@ -361,7 +369,7 @@ router.post(
 );
 
 // =========================================================
-// ADMIN MESSAGES
+// ADMIN MESSAGES (ALL CHAT ROUTES — LEFT UNCHANGED)
 // =========================================================
 
 router.get('/tasks/:id/messages', verifyJWT, ensureAdmin, async (req, res) => {
@@ -639,7 +647,8 @@ router.post(
         return res.status(404).json({ message: 'Task not found' });
       }
 
-      const studentId = normalizeId(value.studentId) || toObjectIdString(task.student);
+      const studentId =
+        normalizeId(value.studentId) || toObjectIdString(task.student);
 
       if (!studentId || !isValidObjectId(studentId)) {
         return res.status(400).json({
@@ -764,5 +773,509 @@ router.post('/tasks/:id/messages', verifyJWT, ensureAdmin, async (req, res) => {
   }
 });
 
-// remaining dashboard / stats / payments routes stay same
+// =========================================================
+// DASHBOARD / STATS / PAYMENTS (ADDED TO MATCH AdminService)
+// =========================================================
+
+// Overview stats: /api/admin/stats/overview
+router.get('/stats/overview', verifyJWT, ensureAdmin, async (req, res) => {
+  try {
+    const [
+      totalUsers,
+      totalClients,
+      totalStudents,
+      totalTasks,
+      openTasks,
+      assignedTasks,
+      underReviewTasks,
+      completedTasks,
+      declinedTasks,
+      totalPayments,
+      pendingPayments,
+      completedPayments,
+    ] = await Promise.all([
+      User.countDocuments({}),
+      User.countDocuments({ role: 'client' }),
+      User.countDocuments({ role: 'student' }),
+      Task.countDocuments({}),
+      Task.countDocuments({ status: 'open' }),
+      Task.countDocuments({ status: 'assigned' }),
+      Task.countDocuments({ status: 'under_review' }),
+      Task.countDocuments({ status: 'completed' }),
+      Task.countDocuments({ status: 'declined' }),
+      Payment.countDocuments({}),
+      Payment.countDocuments({ status: { $in: ['created', 'held'] } }),
+      Payment.countDocuments({ status: 'completed' }),
+    ]);
+
+    const [totalPayoutAmount, completedPayoutAmount, heldPayoutAmount] =
+      await Promise.all([
+        Payment.aggregate([
+          { $group: { _id: null, total: { $sum: '$amount' } } },
+        ]),
+        Payment.aggregate([
+          { $match: { status: 'completed' } },
+          { $group: { _id: null, total: { $sum: '$amount' } } },
+        ]),
+        Payment.aggregate([
+          { $match: { status: { $in: ['created', 'held'] } } },
+          { $group: { _id: null, total: { $sum: '$amount' } } },
+        ]),
+      ]);
+
+    const safeTotal = (arr) =>
+      Array.isArray(arr) && arr.length > 0 ? arr[0].total || 0 : 0;
+
+    return res.json({
+      users: {
+        total: totalUsers,
+        clients: totalClients,
+        students: totalStudents,
+      },
+      tasks: {
+        total: totalTasks,
+        open: openTasks,
+        assigned: assignedTasks,
+        underReview: underReviewTasks,
+        completed: completedTasks,
+        declined: declinedTasks,
+      },
+      payments: {
+        totalCount: totalPayments,
+        pendingCount: pendingPayments,
+        completedCount: completedPayments,
+        totalAmount: safeTotal(totalPayoutAmount),
+        completedAmount: safeTotal(completedPayoutAmount),
+        heldAmount: safeTotal(heldPayoutAmount),
+      },
+    });
+  } catch (err) {
+    console.error('Error in GET /api/admin/stats/overview', err);
+    return res.status(500).json({
+      message: 'Error loading overview stats',
+      error: err.message,
+    });
+  }
+});
+
+// Payment quote / summary stats: /api/admin/stats/payments
+router.get('/stats/payments', verifyJWT, ensureAdmin, async (req, res) => {
+  try {
+    const [byStatus, byStudent] = await Promise.all([
+      Payment.aggregate([
+        {
+          $group: {
+            _id: '$status',
+            count: { $sum: 1 },
+            total: { $sum: '$amount' },
+          },
+        },
+      ]),
+      Payment.aggregate([
+        {
+          $group: {
+            _id: '$student',
+            count: { $sum: 1 },
+            total: { $sum: '$amount' },
+          },
+        },
+        { $sort: { total: -1 } },
+        { $limit: 20 },
+      ]),
+    ]);
+
+    return res.json({
+      byStatus,
+      byStudent,
+    });
+  } catch (err) {
+    console.error('Error in GET /api/admin/stats/payments', err);
+    return res.status(500).json({
+      message: 'Error loading payment stats',
+      error: err.message,
+    });
+  }
+});
+
+// List payments: /api/admin/payments?status=
+router.get('/payments', verifyJWT, ensureAdmin, async (req, res) => {
+  try {
+    const status = clean(req.query.status);
+    const filter = {};
+    if (status) {
+      filter.status = status;
+    }
+
+    const payments = await Payment.find(filter)
+      .populate('student', 'name email')
+      .populate('task', 'title status')
+      .sort({ createdAt: -1 });
+
+    return res.json(payments);
+  } catch (err) {
+    console.error('Error in GET /api/admin/payments', err);
+    return res.status(500).json({
+      message: 'Error loading payments',
+      error: err.message,
+    });
+  }
+});
+
+// Pending payments: /api/admin/getPendingPayments
+router.get('/getPendingPayments', verifyJWT, ensureAdmin, async (req, res) => {
+  try {
+    const payments = await Payment.find({
+      status: { $in: ['created', 'held'] },
+    })
+      .populate('student', 'name email')
+      .populate('task', 'title status')
+      .sort({ createdAt: -1 });
+
+    return res.json(payments);
+  } catch (err) {
+    console.error('Error in GET /api/admin/getPendingPayments', err);
+    return res.status(500).json({
+      message: 'Error loading pending payments',
+      error: err.message,
+    });
+  }
+});
+
+// Release payment: /api/admin/releasePayment/:id
+router.post(
+  '/releasePayment/:id',
+  verifyJWT,
+  ensureAdmin,
+  async (req, res) => {
+    try {
+      const paymentId = normalizeId(req.params.id);
+      if (!paymentId) {
+        return res.status(400).json({ message: 'Payment ID is required' });
+      }
+
+      const payment = await Payment.findById(paymentId)
+        .populate('student', 'name email')
+        .populate('task', 'title status');
+
+      if (!payment) {
+        return res.status(404).json({ message: 'Payment not found' });
+      }
+
+      if (payment.status === 'completed') {
+        return res.status(400).json({ message: 'Payment already completed' });
+      }
+      if (payment.status === 'cancelled') {
+        return res.status(400).json({ message: 'Payment is cancelled' });
+      }
+
+      payment.status = 'completed';
+      payment.releasedByAdmin = req.user.id;
+      payment.releasedAt = new Date();
+
+      await payment.save();
+
+      return res.json({
+        message: 'Payment released successfully',
+        payment,
+      });
+    } catch (err) {
+      console.error('Error in POST /api/admin/releasePayment/:id', err);
+      return res.status(500).json({
+        message: 'Error releasing payment',
+        error: err.message,
+      });
+    }
+  }
+);
+
+// Task stats: /api/admin/getTaskStats
+router.get('/getTaskStats', verifyJWT, ensureAdmin, async (req, res) => {
+  try {
+    const byStatus = await Task.aggregate([
+      {
+        $group: {
+          _id: '$status',
+          count: { $sum: 1 },
+        },
+      },
+    ]);
+
+    const byCompany = await Task.aggregate([
+      { $match: { company: { $ne: null } } },
+      {
+        $group: {
+          _id: '$company',
+          count: { $sum: 1 },
+        },
+      },
+      { $sort: { count: -1 } },
+      { $limit: 20 },
+    ]);
+
+    return res.json({
+      byStatus,
+      byCompany,
+    });
+  } catch (err) {
+    console.error('Error in GET /api/admin/getTaskStats', err);
+    return res.status(500).json({
+      message: 'Error loading task stats',
+      error: err.message,
+    });
+  }
+});
+
+// Domain stats: /api/admin/getDomainStats
+router.get('/getDomainStats', verifyJWT, ensureAdmin, async (req, res) => {
+  try {
+    const tasksByDomain = await Task.aggregate([
+      { $match: { domain: { $ne: null } } },
+      {
+        $group: {
+          _id: '$domain',
+          tasks: { $sum: 1 },
+        },
+      },
+      { $sort: { tasks: -1 } },
+    ]);
+
+    const studentsByDomain = await User.aggregate([
+      { $match: { role: 'student', domain: { $ne: null } } },
+      {
+        $group: {
+          _id: '$domain',
+          students: { $sum: 1 },
+        },
+      },
+      { $sort: { students: -1 } },
+    ]);
+
+    return res.json({
+      tasksByDomain,
+      studentsByDomain,
+    });
+  } catch (err) {
+    console.error('Error in GET /api/admin/getDomainStats', err);
+    return res.status(500).json({
+      message: 'Error loading domain stats',
+      error: err.message,
+    });
+  }
+});
+
+// Top students: /api/admin/getTopStudents
+router.get('/getTopStudents', verifyJWT, ensureAdmin, async (req, res) => {
+  try {
+    const topStudents = await User.aggregate([
+      { $match: { role: 'student', isApproved: true } },
+      {
+        $addFields: {
+          averageScore: {
+            $cond: [
+              { $gt: ['$totalScoreCount', 0] },
+              { $divide: ['$totalScore', '$totalScoreCount'] },
+              0,
+            ],
+          },
+        },
+      },
+      {
+        $project: {
+          name: 1,
+          email: 1,
+          tasksCompleted: 1,
+          totalScore: 1,
+          totalScoreCount: 1,
+          averageScore: 1,
+          domain: 1,
+          wallet: 1,
+        },
+      },
+      {
+        $sort: {
+          averageScore: -1,
+          tasksCompleted: -1,
+          createdAt: -1,
+        },
+      },
+      { $limit: 20 },
+    ]);
+
+    return res.json(topStudents);
+  } catch (err) {
+    console.error('Error in GET /api/admin/getTopStudents', err);
+    return res.status(500).json({
+      message: 'Error loading top students',
+      error: err.message,
+    });
+  }
+});
+
+// Time series stats: /api/admin/getTimeSeriesStats
+router.get('/getTimeSeriesStats', verifyJWT, ensureAdmin, async (req, res) => {
+  try {
+    // Daily task counts (last 90 days)
+    const since = new Date();
+    since.setDate(since.getDate() - 90);
+
+    const tasksTimeSeries = await Task.aggregate([
+      { $match: { createdAt: { $gte: since } } },
+      {
+        $group: {
+          _id: {
+            year: { $year: '$createdAt' },
+            month: { $month: '$createdAt' },
+            day: { $dayOfMonth: '$createdAt' },
+          },
+          count: { $sum: 1 },
+        },
+      },
+      {
+        $sort: {
+          '_id.year': 1,
+          '_id.month': 1,
+          '_id.day': 1,
+        },
+      },
+    ]);
+
+    const paymentsTimeSeries = await Payment.aggregate([
+      { $match: { createdAt: { $gte: since } } },
+      {
+        $group: {
+          _id: {
+            year: { $year: '$createdAt' },
+            month: { $month: '$createdAt' },
+            day: { $dayOfMonth: '$createdAt' },
+          },
+          count: { $sum: 1 },
+          total: { $sum: '$amount' },
+        },
+      },
+      {
+        $sort: {
+          '_id.year': 1,
+          '_id.month': 1,
+          '_id.day': 1,
+        },
+      },
+    ]);
+
+    return res.json({
+      tasks: tasksTimeSeries,
+      payments: paymentsTimeSeries,
+    });
+  } catch (err) {
+    console.error('Error in GET /api/admin/getTimeSeriesStats', err);
+    return res.status(500).json({
+      message: 'Error loading time series stats',
+      error: err.message,
+    });
+  }
+});
+
+// Task funnel: /api/admin/getTaskFunnelStats
+router.get('/getTaskFunnelStats', verifyJWT, ensureAdmin, async (req, res) => {
+  try {
+    const funnel = await Task.aggregate([
+      {
+        $group: {
+          _id: '$status',
+          count: { $sum: 1 },
+        },
+      },
+    ]);
+
+    return res.json({
+      funnel,
+    });
+  } catch (err) {
+    console.error('Error in GET /api/admin/getTaskFunnelStats', err);
+    return res.status(500).json({
+      message: 'Error loading task funnel stats',
+      error: err.message,
+    });
+  }
+});
+
+// Growth stats: /api/admin/stats/growth?metric=tasks&granularity=month
+router.get('/stats/growth', verifyJWT, ensureAdmin, async (req, res) => {
+  try {
+    const metric = clean(req.query.metric) || 'tasks'; // 'tasks' | 'students' | 'payments'
+    const granularity = clean(req.query.granularity) || 'month'; // 'day' | 'week' | 'month'
+    const from = req.query.from ? new Date(req.query.from) : null;
+    const to = req.query.to ? new Date(req.query.to) : new Date();
+
+    if (from && Number.isNaN(from.getTime())) {
+      return res.status(400).json({ message: 'Invalid from date' });
+    }
+    if (Number.isNaN(to.getTime())) {
+      return res.status(400).json({ message: 'Invalid to date' });
+    }
+
+    const match = {};
+    if (from) {
+      match.createdAt = { $gte: from, $lte: to };
+    } else {
+      match.createdAt = { $lte: to };
+    }
+
+    const dateProjection = (() => {
+      if (granularity === 'day') {
+        return {
+          year: { $year: '$createdAt' },
+          month: { $month: '$createdAt' },
+          day: { $dayOfMonth: '$createdAt' },
+        };
+      }
+      if (granularity === 'week') {
+        return {
+          year: { $year: '$createdAt' },
+          week: { $isoWeek: '$createdAt' },
+        };
+      }
+      return {
+        year: { $year: '$createdAt' },
+        month: { $month: '$createdAt' },
+      };
+    })();
+
+    let collection;
+    if (metric === 'students') {
+      collection = User;
+      match.role = 'student';
+    } else if (metric === 'payments') {
+      collection = Payment;
+    } else {
+      collection = Task;
+    }
+
+    const growth = await collection.aggregate([
+      { $match: match },
+      {
+        $group: {
+          _id: dateProjection,
+          count: { $sum: 1 },
+        },
+      },
+      {
+        $sort: {
+          '_id.year': 1,
+          '_id.month': 1,
+          '_id.week': 1,
+          '_id.day': 1,
+        },
+      },
+    ]);
+
+    return res.json(growth);
+  } catch (err) {
+    console.error('Error in GET /api/admin/stats/growth', err);
+    return res.status(500).json({
+      message: 'Error loading growth stats',
+      error: err.message,
+    });
+  }
+});
+
 module.exports = router;
