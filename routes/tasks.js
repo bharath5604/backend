@@ -32,7 +32,6 @@ const createTaskSchema = Joi.object({
   company: Joi.string().max(200).allow('', null),
   attachments: Joi.array().items(Joi.string().uri().max(2000)).default([]),
   attachmentNames: Joi.array().items(Joi.string().max(255)).default([]),
-  // NEW: Requirement for client to agree to T&C
   clientAgreedToTerms: Joi.boolean().valid(true).required()
 });
 
@@ -54,68 +53,38 @@ const submissionSchema = Joi.object({
   notes: Joi.string().max(2000).allow('', null),
 });
 
-const assignSchema = Joi.object({
-  studentId: Joi.string().required(),
-});
-
 // =========================================================
-// CLIENT ENDPOINTS
+// 1. SPECIFIC ROUTES (MUST BE AT THE TOP TO FIX 404)
 // =========================================================
 
 /**
- * POST /api/tasks/create
- * MODIFIED: Client must agree to Terms & Conditions
+ * GET /api/tasks/assigned
+ * FIXED: Moved to top so Express finds it before /:id
  */
-router.post('/create', verifyJWT, async (req, res) => {
+router.get('/assigned', verifyJWT, async (req, res) => {
   try {
-    if (req.user.role !== 'client') {
-      return res.status(403).json({ message: 'Only clients can create tasks' });
+    if (req.user.role !== 'student') {
+      return res.status(403).json({ message: 'Only students can view assigned tasks' });
     }
 
-    const { error, value } = createTaskSchema.validate(req.body, { abortEarly: false, stripUnknown: true });
-    if (error) {
-      return res.status(400).json({ message: 'Validation error', details: error.details.map((d) => d.message) });
-    }
+    const tasks = await Task.find({
+      student: req.user.id,
+      status: { $in: ['assigned', 'under_review', 'completed', 'declined'] },
+    })
+      .populate('client', 'name company location')
+      .sort({ createdAt: -1 })
+      .lean();
 
-    const client = await User.findById(req.user.id).select('company location domain');
-    if (!client) return res.status(404).json({ message: 'Client not found' });
-
-    const task = await Task.create({
-      ...value,
-      client: req.user.id,
-      location: value.location || client.location || '',
-      domain: value.domain || client.domain || '',
-      company: value.company || client.company || '',
-      status: 'open',
-      attemptCount: 0,
-    });
-
-    return res.json(task);
+    return res.json(tasks);
   } catch (err) {
-    console.error('Error creating task:', err);
-    return res.status(400).json({ message: 'Error creating task', error: err.message });
+    console.error('Error in GET /assigned:', err);
+    return res.status(500).json({ message: 'Server error', error: err.message });
   }
 });
 
 /**
- * GET /api/tasks/mine
- * RESTORED: Client’s own tasks
- */
-router.get('/mine', verifyJWT, async (req, res) => {
-  try {
-    if (req.user.role !== 'client') return res.status(403).json({ message: 'Only clients' });
-    const tasks = await Task.find({ client: req.user.id }).populate('client', 'name company').sort({ createdAt: -1 }).lean();
-    return res.json(tasks);
-  } catch (err) { return res.status(500).json({ message: 'Server error' }); }
-});
-
-// =========================================================
-// STUDENT REQUEST WORKFLOW (THE "TICK" RESPONSES)
-// =========================================================
-
-/**
  * GET /api/tasks/requests
- * NEW: Students see tasks where Admin has "Ticked" them
+ * NEW: Students see tasks where Admin has sent an invitation ("Tick")
  */
 router.get('/requests', verifyJWT, async (req, res) => {
   try {
@@ -127,169 +96,27 @@ router.get('/requests', verifyJWT, async (req, res) => {
     }).populate('client', 'name company location');
 
     return res.json(requests);
-  } catch (err) { return res.status(500).json({ message: 'Server error' }); }
+  } catch (err) { 
+    console.error('Error in GET /requests:', err);
+    return res.status(500).json({ message: 'Server error' }); 
+  }
 });
 
 /**
- * POST /api/tasks/:id/accept-request
- * NEW: Student accepts the Admin invitation (Requires T&C Popup)
+ * GET /api/tasks/mine
+ * RESTORED: Client's personal task list
  */
-router.post('/:id/accept-request', verifyJWT, async (req, res) => {
+router.get('/mine', verifyJWT, async (req, res) => {
   try {
-    if (req.user.role !== 'student') return res.status(403).json({ message: 'Only students' });
-
-    const { error } = acceptRequestSchema.validate(req.body);
-    if (error) return res.status(400).json({ message: 'You must accept Terms and Conditions' });
-
-    const task = await Task.findById(req.params.id);
-    if (!task || task.requestedStudent?.toString() !== req.user.id) {
-      return res.status(404).json({ message: 'Request not found' });
-    }
-
-    // Workflow transition
-    task.student = req.user.id;
-    task.studentAgreedToTerms = true;
-    task.status = 'assigned';
-    task.assignedAt = new Date();
-    task.requestedStudent = null;
-    task.assignmentRequestStatus = null;
-
-    await task.save();
-    return res.json({ message: 'Task accepted successfully', task });
-  } catch (err) { return res.status(500).json({ message: 'Accept failed' }); }
-});
-
-// =========================================================
-// WORK EXECUTION (SUBMIT / APPROVE / DECLINE)
-// =========================================================
-
-/**
- * POST /api/tasks/:id/submit
- * RESTORED: Student submits work
- */
-router.post('/:id/submit', verifyJWT, async (req, res) => {
-  try {
-    if (req.user.role !== 'student') return res.status(403).json({ message: 'Only students' });
-
-    const { error, value } = submissionSchema.validate(req.body);
-    if (error) return res.status(400).json({ message: 'Invalid submission data' });
-
-    const task = await Task.findById(req.params.id);
-    if (!task || task.student?.toString() !== req.user.id) return res.status(403).json({ message: 'Not your task' });
-
-    if (task.attemptCount >= task.maxAttempts || ['completed', 'declined'].includes(task.status)) {
-      return res.status(400).json({ message: 'Submission no longer allowed' });
-    }
-
-    task.submission = { student: req.user.id, fileUrl: value.fileUrl, notes: value.notes || '', submittedAt: new Date() };
-    task.status = 'under_review';
-    await task.save();
-
-    // Notify Client
-    await sendNotification(task.client, {
-      title: 'New submission received',
-      body: `A student has uploaded work for "${task.title}". Please review.`,
-      data: { type: 'task_submitted', taskId: task._id.toString() }
-    });
-
-    return res.json({ message: 'Work submitted', task });
-  } catch (err) { return res.status(500).json({ message: 'Submission failed' }); }
-});
-
-/**
- * POST /api/tasks/:id/approve
- * MODIFIED: Permission granted to CLIENT as per workflow
- */
-router.post('/:id/approve', verifyJWT, async (req, res) => {
-  try {
-    const task = await Task.findById(req.params.id);
-    if (!task) return res.status(404).json({ message: 'Task not found' });
-
-    // WORKFLOW CHECK: Only the client who posted the task can approve it
-    if (req.user.id !== task.client.toString()) {
-      return res.status(403).json({ message: 'Only the client who posted the task can approve work' });
-    }
-
-    if (!task.submission) return res.status(400).json({ message: 'No submission to approve' });
-
-    task.submission.approved = true;
-    task.submission.clientApprovedAt = new Date();
-    task.status = 'completed';
-
-    await task.save();
-
-    // Handle Payment Status
-    const payment = await Payment.findOne({ task: task._id, student: task.student, status: { $in: ['created', 'held'] } });
-    if (payment) {
-      payment.status = 'approved'; // Ready for Admin release
-      await payment.save();
-    }
-
-    // Notify Student
-    await sendNotification(task.student, {
-      title: 'Task Approved!',
-      body: `The client has approved your work for "${task.title}". Payment will be released soon.`,
-      data: { type: 'task_approved', taskId: task._id.toString() }
-    });
-
-    return res.json({ message: 'Task approved by client', task });
-  } catch (err) { return res.status(500).json({ message: 'Approval failed' }); }
-});
-
-/**
- * POST /api/tasks/:id/decline
- * MODIFIED: Permission granted to CLIENT as per workflow
- */
-router.post('/:id/decline', verifyJWT, async (req, res) => {
-  try {
-    const task = await Task.findById(req.params.id);
-    if (!task || req.user.id !== task.client.toString()) {
-      return res.status(403).json({ message: 'Not authorized' });
-    }
-
-    const maxAttempts = task.maxAttempts || 3;
-    task.attemptCount = (task.attemptCount || 0) + 1;
-    const studentToNotify = task.student;
-    task.submission = null;
-
-    if (task.attemptCount >= maxAttempts) {
-      task.status = 'declined';
-      await Payment.updateMany({ task: task._id, status: { $in: ['created', 'held'] } }, { $set: { status: 'cancelled', declineReason: 'Max attempts reached' } });
-    } else {
-      task.status = 'assigned';
-    }
-
-    await task.save();
-
-    // Notify Student
-    await sendNotification(studentToNotify, {
-      title: 'Submission Declined',
-      body: task.status === 'declined' ? `Task permanently closed.` : `Please revise and submit again.`,
-      data: { type: 'task_declined', taskId: task._id.toString() }
-    });
-
-    return res.json({ message: 'Declined', task });
-  } catch (err) { return res.status(500).json({ message: 'Decline failed' }); }
-});
-
-// =========================================================
-// SEARCH & RECOMMENDATIONS (RESTORED ALL ORIGINAL LOGIC)
-// =========================================================
-
-router.get('/', verifyJWT, async (req, res) => {
-  try {
-    const query = { status: 'open' };
-    if (req.query.location) query.location = req.query.location;
-    if (req.query.domain) query.domain = req.query.domain;
-    
-    if (req.user.role === 'student') {
-      const student = await User.findById(req.user.id).select('skills');
-      if (student?.skills?.length > 0) query.requiredSkills = { $in: student.skills };
-    }
-
-    const tasks = await Task.find(query).populate('client', 'name company');
+    if (req.user.role !== 'client') return res.status(403).json({ message: 'Only clients' });
+    const tasks = await Task.find({ client: req.user.id })
+      .populate('client', 'name company')
+      .sort({ createdAt: -1 })
+      .lean();
     return res.json(tasks);
-  } catch (err) { return res.status(500).json({ message: 'Server error' }); }
+  } catch (err) { 
+    return res.status(500).json({ message: 'Server error' }); 
+  }
 });
 
 router.get('/recommended', verifyJWT, async (req, res) => {
@@ -304,43 +131,168 @@ router.get('/recommended', verifyJWT, async (req, res) => {
   } catch (err) { return res.status(500).json({ message: 'Error' }); }
 });
 
+router.get('/search', verifyJWT, async (req, res) => {
+  try {
+    const query = { status: 'open' };
+    if (req.query.domain) query.domain = req.query.domain;
+    const tasks = await Task.find(query).populate('client', 'name company');
+    return res.json(tasks);
+  } catch (err) { return res.status(500).json({ message: 'Error searching' }); }
+});
+
 // =========================================================
-// FEEDBACK & RATINGS (RESTORED)
+// 2. CREATION & GENERAL FETCH
 // =========================================================
 
-router.post('/:id/feedback', verifyJWT, async (req, res) => {
+/**
+ * POST /api/tasks/create
+ * MODIFIED: Enforces Client Terms & Conditions
+ */
+router.post('/create', verifyJWT, async (req, res) => {
   try {
-    const { error, value } = feedbackSchema.validate(req.body);
-    if (req.user.role !== 'client') return res.status(403).json({ message: 'Forbidden' });
+    if (req.user.role !== 'client') return res.status(403).json({ message: 'Only clients' });
+    
+    const { error, value } = createTaskSchema.validate(req.body, { abortEarly: false, stripUnknown: true });
+    if (error) return res.status(400).json({ message: 'Validation error', details: error.details.map((d) => d.message) });
+
+    const client = await User.findById(req.user.id);
+    const task = await Task.create({
+      ...value,
+      client: req.user.id,
+      company: value.company || client.company || '',
+      status: 'open',
+    });
+    return res.json(task);
+  } catch (err) { 
+    console.error('Task creation failed:', err);
+    return res.status(400).json({ message: 'Creation failed' }); 
+  }
+});
+
+router.get('/', verifyJWT, async (req, res) => {
+  try {
+    const query = { status: 'open' };
+    const tasks = await Task.find(query).populate('client', 'name company').sort({ createdAt: -1 });
+    return res.json(tasks);
+  } catch (err) { return res.status(500).json({ message: 'Error' }); }
+});
+
+// =========================================================
+// 3. PARAMETERIZED ROUTES (MUST BE AT THE BOTTOM)
+// =========================================================
+
+/**
+ * POST /api/tasks/:id/accept-request
+ * Student Accepts Admin Tick invitation (Requires T&C confirmation)
+ */
+router.post('/:id/accept-request', verifyJWT, async (req, res) => {
+  try {
+    if (req.user.role !== 'student') return res.status(403).json({ message: 'Only students' });
+    
+    const { error } = acceptRequestSchema.validate(req.body);
+    if (error) return res.status(400).json({ message: 'Accept Terms first' });
 
     const task = await Task.findById(req.params.id);
-    if (!task || task.client.toString() !== req.user.id) return res.status(403).json({ message: 'Not authorized' });
+    if (!task || task.requestedStudent?.toString() !== req.user.id) {
+      return res.status(404).json({ message: 'Invitation not found' });
+    }
 
-    const student = await User.findById(task.student);
-    if (!student) return res.status(404).json({ message: 'Student not found' });
+    // Finalize Assignment
+    task.student = req.user.id;
+    task.studentAgreedToTerms = true;
+    task.status = 'assigned';
+    task.assignedAt = new Date();
+    task.requestedStudent = null;
+    task.assignmentRequestStatus = null;
 
-    task.feedback = value.text || '';
-    task.score = value.score;
-    task.rating = value.score;
+    await task.save();
+    return res.json({ message: 'Task accepted successfully', task });
+  } catch (err) { 
+    console.error('Accept Request error:', err);
+    return res.status(500).json({ message: 'Failed' }); 
+  }
+});
+
+router.post('/:id/submit', verifyJWT, async (req, res) => {
+  try {
+    const { error, value } = submissionSchema.validate(req.body);
+    if (error) return res.status(400).json({ message: 'Invalid data' });
+
+    const task = await Task.findById(req.params.id);
+    if (!task || task.student?.toString() !== req.user.id) return res.status(403).json({ message: 'Access denied' });
+
+    task.submission = { student: req.user.id, fileUrl: value.fileUrl, notes: value.notes || '', submittedAt: new Date() };
+    task.status = 'under_review';
+    await task.save();
+    return res.json({ message: 'Submitted', task });
+  } catch (err) { return res.status(500).json({ message: 'Error' }); }
+});
+
+/**
+ * POST /api/tasks/:id/approve
+ * MODIFIED: Permission granted to CLIENT as per workflow
+ */
+router.post('/:id/approve', verifyJWT, async (req, res) => {
+  try {
+    const task = await Task.findById(req.params.id);
+    if (!task) return res.status(404).json({ message: 'Task not found' });
+
+    // Ensure only the task owner (Client) can approve
+    if (req.user.id !== task.client.toString()) {
+      return res.status(403).json({ message: 'Only the client can approve this work' });
+    }
+
+    if (!task.submission) return res.status(400).json({ message: 'No submission found' });
+
+    task.submission.approved = true;
+    task.status = 'completed';
     await task.save();
 
-    // Aggregate to student profile
-    student.totalScore = (student.totalScore || 0) + value.score;
-    student.totalScoreCount = (student.totalScoreCount || 0) + 1;
-    await student.save();
+    // Move payment status to 'approved' for Admin release
+    const payment = await Payment.findOne({ task: task._id, student: task.student });
+    if (payment) { 
+      payment.status = 'approved'; 
+      await payment.save(); 
+    }
 
-    return res.status(201).json({ message: 'Feedback saved' });
+    return res.json({ message: 'Work Approved', task });
+  } catch (err) { return res.status(500).json({ message: 'Error' }); }
+});
+
+/**
+ * POST /api/tasks/:id/decline
+ * MODIFIED: Permission granted to CLIENT for revision requests
+ */
+router.post('/:id/decline', verifyJWT, async (req, res) => {
+  try {
+    const task = await Task.findById(req.params.id);
+    if (!task || req.user.id !== task.client.toString()) return res.status(403).json({ message: 'Denied' });
+
+    task.attemptCount = (task.attemptCount || 0) + 1;
+    task.submission = null;
+    task.status = task.attemptCount >= task.maxAttempts ? 'declined' : 'assigned';
+    await task.save();
+
+    return res.json({ message: 'Revision Requested', task });
+  } catch (err) { return res.status(500).json({ message: 'Error' }); }
+});
+
+router.get('/:id/candidates', verifyJWT, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') return res.status(403).json({ message: 'Admin only' });
+    const task = await Task.findById(req.params.id);
+    const students = await User.find({ role: 'student', isApproved: true, skills: { $in: task.requiredSkills || [] } });
+    return res.json(students);
   } catch (err) { return res.status(500).json({ message: 'Error' }); }
 });
 
 router.delete('/:id', verifyJWT, async (req, res) => {
   try {
     const task = await Task.findById(req.params.id);
-    if (!task || task.client.toString() !== req.user.id) return res.status(403).json({ message: 'Forbidden' });
-    await Payment.deleteMany({ task: task._id });
-    await task.deleteOne();
-    return res.json({ message: 'Task deleted' });
-  } catch (err) { return res.status(500).json({ message: 'Delete failed' }); }
+    if (task.client.toString() !== req.user.id) return res.status(403).json({ message: 'Denied' });
+    await Task.deleteOne({ _id: req.params.id });
+    return res.json({ message: 'Deleted' });
+  } catch (err) { return res.status(500).json({ message: 'Error' }); }
 });
 
 module.exports = router;
