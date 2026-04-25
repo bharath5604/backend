@@ -176,7 +176,29 @@ router.get('/', verifyJWT, async (req, res) => {
     return res.json(tasks);
   } catch (err) { return res.status(500).json({ message: 'Error' }); }
 });
+router.post('/:id/feedback', verifyJWT, async (req, res) => {
+  try {
+    const { error, value } = feedbackSchema.validate(req.body);
+    if (error) return res.status(400).json({ message: 'Score is required' });
 
+    const task = await Task.findById(req.params.id);
+    if (!task || task.client.toString() !== req.user.id) return res.status(403).json({ message: 'Access denied' });
+
+    const student = await User.findById(task.student);
+    if (!student) return res.status(404).json({ message: 'Student not found' });
+
+    task.feedback = value.text || '';
+    task.score = value.score;
+    task.rating = value.score;
+    await task.save();
+
+    student.totalScore = (student.totalScore || 0) + value.score;
+    student.totalScoreCount = (student.totalScoreCount || 0) + 1;
+    await student.save();
+
+    return res.status(201).json({ message: 'Feedback saved' });
+  } catch (err) { return res.status(500).json({ message: 'Error saving feedback' }); }
+});
 // =========================================================
 // 3. PARAMETERIZED ROUTES (MUST BE AT THE BOTTOM)
 // =========================================================
