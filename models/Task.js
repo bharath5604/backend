@@ -1,4 +1,4 @@
-//backend/models/Task.js
+// backend/models/Task.js
 const mongoose = require('mongoose');
 const { Schema } = mongoose;
 
@@ -262,6 +262,49 @@ const taskSchema = new Schema(
       enum: ['admin_only'],
       default: 'admin_only',
     },
+
+    /**
+     * NEW: Admin → student assignment request workflow
+     *
+     * assignmentRequestStatus:
+     *   null            - no request yet
+     *   request_sent    - admin sent request to a student
+     *   terms_accepted  - student accepted T&C, can now accept task
+     *   request_rejected- student rejected request
+     *
+     * requestedStudent:
+     *   Which student the current request is for (NOT yet final assignment).
+     */
+    assignmentRequestStatus: {
+      type: String,
+      enum: [null, 'request_sent', 'terms_accepted', 'request_rejected'],
+      default: null,
+      index: true,
+    },
+
+    requestedStudent: {
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+      index: true,
+    },
+
+    termsAcceptedAt: {
+      type: Date,
+      default: null,
+    },
+
+    requestRespondedAt: {
+      type: Date,
+      default: null,
+    },
+
+    requestRejectionReason: {
+      type: String,
+      default: '',
+      trim: true,
+      maxlength: [1000, 'Rejection reason cannot exceed 1000 characters'],
+    },
   },
   {
     timestamps: true,
@@ -281,6 +324,7 @@ taskSchema.index({ client: 1, status: 1, createdAt: -1 });
 taskSchema.index({ domain: 1, status: 1, createdAt: -1 });
 taskSchema.index({ assignedByAdmin: 1, createdAt: -1 });
 taskSchema.index({ student: 1, status: 1, createdAt: -1 });
+taskSchema.index({ assignmentRequestStatus: 1, requestedStudent: 1 }); // NEW
 
 /**
  * Pre-validation cleanup
@@ -296,12 +340,18 @@ taskSchema.pre('validate', function () {
   if (this.submission?.notes != null) {
     this.submission.notes = String(this.submission.notes || '').trim();
   }
+
+  // NEW: normalize rejection reason
+  if (this.requestRejectionReason != null) {
+    this.requestRejectionReason = String(this.requestRejectionReason || '').trim();
+  }
 });
 
 /**
  * Business-rule validation
  */
 taskSchema.pre('validate', function () {
+  // Existing rules:
   if (this.status === 'open') {
     this.student = null;
     this.assignedByAdmin = null;
@@ -337,6 +387,24 @@ taskSchema.pre('validate', function () {
 
   if (this.attemptCount > this.maxAttempts) {
     throw new Error('Attempt count cannot exceed max attempts');
+  }
+
+  // NEW: keep request fields consistent with main status
+  if (this.status === 'open') {
+    // If task is fully open again, any old request should not block new ones
+    if (this.assignmentRequestStatus === 'assigned') {
+      // safety: we don't use 'assigned' here, but in case
+      this.assignmentRequestStatus = null;
+    }
+  }
+
+  if (this.status === 'assigned') {
+    // Once final assignment is done, we can clear the intermediate request state
+    if (this.student && this.requestedStudent &&
+        this.student.toString() === this.requestedStudent.toString()) {
+      this.assignmentRequestStatus = null;
+      this.requestedStudent = null;
+    }
   }
 });
 

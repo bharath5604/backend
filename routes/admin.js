@@ -41,7 +41,9 @@ function toObjectIdString(value) {
 }
 
 function isValidObjectId(value) {
-  return mongoose.Types.ObjectId.isValid(value);
+  if (!value) return false;
+  if (!mongoose.Types.ObjectId.isValid(value)) return false;
+  return String(new mongoose.Types.ObjectId(value)) === String(value);
 }
 
 const ensureAdmin = (req, res, next) => {
@@ -64,6 +66,16 @@ const adminTaskFilterSchema = Joi.object({
   status: Joi.string()
     .valid('open', 'assigned', 'under_review', 'completed', 'declined')
     .allow('', null),
+  assignmentStatus: Joi.string()
+    .valid(
+      'unassigned',
+      'request_sent',
+      'accepted',
+      'rejected',
+      'cancelled',
+      'expired'
+    )
+    .allow('', null),
 });
 
 const assignStudentSchema = Joi.object({
@@ -83,6 +95,13 @@ const adminMessageSchema = Joi.object({
   fileName: Joi.string().allow('', null),
   studentId: Joi.string().allow('', null),
 });
+
+function taskSupportsAssignmentRequest(task) {
+  return (
+    task &&
+    Object.prototype.hasOwnProperty.call(task.toObject?.() || task, 'assignmentStatus')
+  );
+}
 
 // =========================================================
 // USERS
@@ -130,7 +149,10 @@ router.patch(
         });
       }
 
-      const { id } = req.params;
+      const id = normalizeId(req.params.id);
+      if (!id || !isValidObjectId(id)) {
+        return res.status(400).json({ message: 'Valid user ID is required' });
+      }
 
       const user = await User.findByIdAndUpdate(
         id,
@@ -156,7 +178,7 @@ router.patch(
 );
 
 // =========================================================
-/* TASKS */
+// TASKS
 // =========================================================
 
 router.get('/tasks', verifyJWT, ensureAdmin, async (req, res) => {
@@ -178,6 +200,9 @@ router.get('/tasks', verifyJWT, ensureAdmin, async (req, res) => {
     if (clean(value.location)) filter.location = clean(value.location);
     if (clean(value.domain)) filter.domain = clean(value.domain);
     if (clean(value.status)) filter.status = clean(value.status);
+    if (clean(value.assignmentStatus)) {
+      filter.assignmentStatus = clean(value.assignmentStatus);
+    }
 
     const tasks = await Task.find(filter)
       .populate('client', 'name email company')
@@ -197,16 +222,18 @@ router.get('/tasks', verifyJWT, ensureAdmin, async (req, res) => {
 
 router.get('/tasks/filters', verifyJWT, ensureAdmin, async (req, res) => {
   try {
-    const [companies, locations, domains] = await Promise.all([
+    const [companies, locations, domains, assignmentStatuses] = await Promise.all([
       Task.distinct('company'),
       Task.distinct('location'),
       Task.distinct('domain'),
+      Task.distinct('assignmentStatus'),
     ]);
 
     return res.json({
       companies: companies.filter(Boolean),
       locations: locations.filter(Boolean),
       domains: domains.filter(Boolean),
+      assignmentStatuses: assignmentStatuses.filter(Boolean),
     });
   } catch (err) {
     console.error('Error in /api/admin/tasks/filters', err);
@@ -223,8 +250,13 @@ router.get(
   ensureAdmin,
   async (req, res) => {
     try {
-      const task = await Task.findById(req.params.id).select(
-        'requiredSkills skills domain status'
+      const taskId = normalizeId(req.params.id);
+      if (!taskId || !isValidObjectId(taskId)) {
+        return res.status(400).json({ message: 'Valid task ID is required' });
+      }
+
+      const task = await Task.findById(taskId).select(
+        'requiredSkills skills domain status assignmentStatus'
       );
 
       if (!task) {
@@ -308,12 +340,12 @@ router.post(
       const taskId = normalizeId(req.params.id);
       const studentId = normalizeId(value.studentId);
 
-      if (!taskId) {
-        return res.status(400).json({ message: 'Task ID is required' });
+      if (!taskId || !isValidObjectId(taskId)) {
+        return res.status(400).json({ message: 'Valid task ID is required' });
       }
 
-      if (!studentId) {
-        return res.status(400).json({ message: 'Student ID is required' });
+      if (!studentId || !isValidObjectId(studentId)) {
+        return res.status(400).json({ message: 'Valid student ID is required' });
       }
 
       const task = await Task.findById(taskId);
@@ -322,8 +354,21 @@ router.post(
         return res.status(404).json({ message: 'Task not found' });
       }
 
-      if (task.status !== 'open') {
-        return res.status(400).json({ message: 'Only open tasks can be assigned' });
+      const supportedRequestFlow = taskSupportsAssignmentRequest(task);
+
+      if (supportedRequestFlow) {
+        if (
+          task.assignmentStatus &&
+          !['unassigned', 'rejected', 'cancelled', 'expired'].includes(task.assignmentStatus)
+        ) {
+          return res.status(400).json({
+            message: `Task cannot be reassigned while assignmentStatus is "${task.assignmentStatus}"`,
+          });
+        }
+      } else {
+        if (task.status !== 'open') {
+          return res.status(400).json({ message: 'Only open tasks can be assigned' });
+        }
       }
 
       const student = await User.findById(studentId).select(
@@ -341,9 +386,23 @@ router.post(
       task.student = student._id;
       task.assignedByAdmin = req.user.id;
       task.assignedAt = new Date();
-      task.status = 'assigned';
 
-      if ('attemptCount' in task && (task.attemptCount == null || Number.isNaN(Number(task.attemptCount)))) {
+      if (supportedRequestFlow) {
+        task.assignmentStatus = 'request_sent';
+        task.assignmentRequestedAt = new Date();
+        task.assignmentRespondedAt = null;
+        task.assignmentAcceptedAt = null;
+        task.assignmentRejectedAt = null;
+        task.assignmentRejectedReason = '';
+        task.status = 'open';
+      } else {
+        task.status = 'assigned';
+      }
+
+      if (
+        'attemptCount' in task &&
+        (task.attemptCount == null || Number.isNaN(Number(task.attemptCount)))
+      ) {
         task.attemptCount = 0;
       }
 
@@ -355,7 +414,9 @@ router.post(
         .populate('assignedByAdmin', 'name email');
 
       return res.json({
-        message: 'Student assigned successfully',
+        message: supportedRequestFlow
+          ? 'Assignment request sent successfully'
+          : 'Student assigned successfully',
         task: populatedTask,
       });
     } catch (err) {
@@ -369,7 +430,7 @@ router.post(
 );
 
 // =========================================================
-// ADMIN MESSAGES (ALL CHAT ROUTES — LEFT UNCHANGED)
+// ADMIN MESSAGES
 // =========================================================
 
 router.get('/tasks/:id/messages', verifyJWT, ensureAdmin, async (req, res) => {
@@ -377,8 +438,12 @@ router.get('/tasks/:id/messages', verifyJWT, ensureAdmin, async (req, res) => {
     const taskId = normalizeId(req.params.id);
     const studentId = normalizeId(req.query.studentId);
 
-    if (!taskId) {
-      return res.status(400).json({ message: 'Task ID is required' });
+    if (!taskId || !isValidObjectId(taskId)) {
+      return res.status(400).json({ message: 'Valid task ID is required' });
+    }
+
+    if (studentId && !isValidObjectId(studentId)) {
+      return res.status(400).json({ message: 'Invalid student ID' });
     }
 
     const task = await Task.findById(taskId).populate(
@@ -418,8 +483,8 @@ router.get(
     try {
       const taskId = normalizeId(req.params.id);
 
-      if (!taskId) {
-        return res.status(400).json({ message: 'Task ID is required' });
+      if (!taskId || !isValidObjectId(taskId)) {
+        return res.status(400).json({ message: 'Valid task ID is required' });
       }
 
       const task = await Task.findById(taskId).populate(
@@ -437,6 +502,12 @@ router.get(
 
       const clientId = toObjectIdString(task.client);
       const adminId = toObjectIdString(req.user.id);
+
+      if (!clientId || !isValidObjectId(clientId)) {
+        return res.status(400).json({
+          message: 'Valid client ID could not be resolved',
+        });
+      }
 
       const messages = await Message.find({
         task: taskId,
@@ -483,8 +554,8 @@ router.post(
         });
       }
 
-      if (!taskId) {
-        return res.status(400).json({ message: 'Task ID is required' });
+      if (!taskId || !isValidObjectId(taskId)) {
+        return res.status(400).json({ message: 'Valid task ID is required' });
       }
 
       const task = await Task.findById(taskId).populate(
@@ -565,8 +636,12 @@ router.get(
       const taskId = normalizeId(req.params.id);
       const requestedStudentId = normalizeId(req.query.studentId);
 
-      if (!taskId) {
-        return res.status(400).json({ message: 'Task ID is required' });
+      if (!taskId || !isValidObjectId(taskId)) {
+        return res.status(400).json({ message: 'Valid task ID is required' });
+      }
+
+      if (requestedStudentId && !isValidObjectId(requestedStudentId)) {
+        return res.status(400).json({ message: 'Invalid student ID' });
       }
 
       const task = await Task.findById(taskId).populate(
@@ -634,8 +709,8 @@ router.post(
         });
       }
 
-      if (!taskId) {
-        return res.status(400).json({ message: 'Task ID is required' });
+      if (!taskId || !isValidObjectId(taskId)) {
+        return res.status(400).json({ message: 'Valid task ID is required' });
       }
 
       const task = await Task.findById(taskId).populate(
@@ -710,8 +785,8 @@ router.post('/tasks/:id/messages', verifyJWT, ensureAdmin, async (req, res) => {
       });
     }
 
-    if (!taskId) {
-      return res.status(400).json({ message: 'Task ID is required' });
+    if (!taskId || !isValidObjectId(taskId)) {
+      return res.status(400).json({ message: 'Valid task ID is required' });
     }
 
     const task = await Task.findById(taskId).populate(
@@ -774,10 +849,9 @@ router.post('/tasks/:id/messages', verifyJWT, ensureAdmin, async (req, res) => {
 });
 
 // =========================================================
-// DASHBOARD / STATS / PAYMENTS (ADDED TO MATCH AdminService)
+// DASHBOARD / STATS / PAYMENTS
 // =========================================================
 
-// Overview stats: /api/admin/stats/overview
 router.get('/stats/overview', verifyJWT, ensureAdmin, async (req, res) => {
   try {
     const [
@@ -858,7 +932,6 @@ router.get('/stats/overview', verifyJWT, ensureAdmin, async (req, res) => {
   }
 });
 
-// Payment quote / summary stats: /api/admin/stats/payments
 router.get('/stats/payments', verifyJWT, ensureAdmin, async (req, res) => {
   try {
     const [byStatus, byStudent] = await Promise.all([
@@ -897,7 +970,6 @@ router.get('/stats/payments', verifyJWT, ensureAdmin, async (req, res) => {
   }
 });
 
-// List payments: /api/admin/payments?status=
 router.get('/payments', verifyJWT, ensureAdmin, async (req, res) => {
   try {
     const status = clean(req.query.status);
@@ -921,7 +993,6 @@ router.get('/payments', verifyJWT, ensureAdmin, async (req, res) => {
   }
 });
 
-// Pending payments: /api/admin/getPendingPayments
 router.get('/getPendingPayments', verifyJWT, ensureAdmin, async (req, res) => {
   try {
     const payments = await Payment.find({
@@ -941,7 +1012,6 @@ router.get('/getPendingPayments', verifyJWT, ensureAdmin, async (req, res) => {
   }
 });
 
-// Release payment: /api/admin/releasePayment/:id
 router.post(
   '/releasePayment/:id',
   verifyJWT,
@@ -949,8 +1019,8 @@ router.post(
   async (req, res) => {
     try {
       const paymentId = normalizeId(req.params.id);
-      if (!paymentId) {
-        return res.status(400).json({ message: 'Payment ID is required' });
+      if (!paymentId || !isValidObjectId(paymentId)) {
+        return res.status(400).json({ message: 'Valid payment ID is required' });
       }
 
       const payment = await Payment.findById(paymentId)
@@ -988,7 +1058,6 @@ router.post(
   }
 );
 
-// Task stats: /api/admin/getTaskStats
 router.get('/getTaskStats', verifyJWT, ensureAdmin, async (req, res) => {
   try {
     const byStatus = await Task.aggregate([
@@ -1025,7 +1094,6 @@ router.get('/getTaskStats', verifyJWT, ensureAdmin, async (req, res) => {
   }
 });
 
-// Domain stats: /api/admin/getDomainStats
 router.get('/getDomainStats', verifyJWT, ensureAdmin, async (req, res) => {
   try {
     const tasksByDomain = await Task.aggregate([
@@ -1063,7 +1131,6 @@ router.get('/getDomainStats', verifyJWT, ensureAdmin, async (req, res) => {
   }
 });
 
-// Top students: /api/admin/getTopStudents
 router.get('/getTopStudents', verifyJWT, ensureAdmin, async (req, res) => {
   try {
     const topStudents = await User.aggregate([
@@ -1111,10 +1178,8 @@ router.get('/getTopStudents', verifyJWT, ensureAdmin, async (req, res) => {
   }
 });
 
-// Time series stats: /api/admin/getTimeSeriesStats
 router.get('/getTimeSeriesStats', verifyJWT, ensureAdmin, async (req, res) => {
   try {
-    // Daily task counts (last 90 days)
     const since = new Date();
     since.setDate(since.getDate() - 90);
 
@@ -1174,7 +1239,6 @@ router.get('/getTimeSeriesStats', verifyJWT, ensureAdmin, async (req, res) => {
   }
 });
 
-// Task funnel: /api/admin/getTaskFunnelStats
 router.get('/getTaskFunnelStats', verifyJWT, ensureAdmin, async (req, res) => {
   try {
     const funnel = await Task.aggregate([
@@ -1198,11 +1262,10 @@ router.get('/getTaskFunnelStats', verifyJWT, ensureAdmin, async (req, res) => {
   }
 });
 
-// Growth stats: /api/admin/stats/growth?metric=tasks&granularity=month
 router.get('/stats/growth', verifyJWT, ensureAdmin, async (req, res) => {
   try {
-    const metric = clean(req.query.metric) || 'tasks'; // 'tasks' | 'students' | 'payments'
-    const granularity = clean(req.query.granularity) || 'month'; // 'day' | 'week' | 'month'
+    const metric = clean(req.query.metric) || 'tasks';
+    const granularity = clean(req.query.granularity) || 'month';
     const from = req.query.from ? new Date(req.query.from) : null;
     const to = req.query.to ? new Date(req.query.to) : new Date();
 
