@@ -3,7 +3,7 @@ const mongoose = require('mongoose');
 const { Schema } = mongoose;
 
 /**
- * Reusable string array sanitizer
+ * Reusable string array sanitizer (RESTORED)
  */
 function normalizeStringArray(value) {
   if (!Array.isArray(value)) return [];
@@ -14,6 +14,7 @@ function normalizeStringArray(value) {
 
 /**
  * Submission Sub Schema
+ * Modified to explicitly support Client Approval as per your workflow.
  */
 const submissionSchema = new Schema(
   {
@@ -37,6 +38,7 @@ const submissionSchema = new Schema(
       maxlength: [2000, 'Submission notes cannot exceed 2000 characters'],
     },
 
+    // Representing if the Student work is approved by the CLIENT
     approved: {
       type: Boolean,
       default: false,
@@ -46,6 +48,12 @@ const submissionSchema = new Schema(
       type: Date,
       default: Date.now,
     },
+    
+    // NEW: Specifically tracks Client's interaction for your workflow
+    clientApprovedAt: {
+      type: Date,
+      default: null,
+    }
   },
   { _id: false }
 );
@@ -56,7 +64,7 @@ const submissionSchema = new Schema(
 const taskSchema = new Schema(
   {
     /**
-     * Basic Info
+     * Basic Info (RESTORED)
      */
     title: {
       type: String,
@@ -75,7 +83,7 @@ const taskSchema = new Schema(
     },
 
     /**
-     * Client Info
+     * Client Info (RESTORED)
      */
     client: {
       type: Schema.Types.ObjectId,
@@ -84,8 +92,14 @@ const taskSchema = new Schema(
       index: true,
     },
 
+    // NEW: Track that client agreed to T&C during creation
+    clientAgreedToTerms: {
+      type: Boolean,
+      default: false,
+    },
+
     /**
-     * Admin assignment info
+     * Admin assignment info (RESTORED)
      */
     assignedByAdmin: {
       type: Schema.Types.ObjectId,
@@ -100,7 +114,7 @@ const taskSchema = new Schema(
     },
 
     /**
-     * Skills Required
+     * Skills Required (RESTORED)
      */
     requiredSkills: {
       type: [String],
@@ -109,7 +123,7 @@ const taskSchema = new Schema(
     },
 
     /**
-     * Budget & Deadline
+     * Budget & Deadline (RESTORED)
      */
     budget: {
       type: Number,
@@ -135,7 +149,7 @@ const taskSchema = new Schema(
     },
 
     /**
-     * Filters
+     * Filters (RESTORED)
      */
     location: {
       type: String,
@@ -160,12 +174,11 @@ const taskSchema = new Schema(
     },
 
     /**
-     * Task Status
-     *
+     * Task Status (RESTORED)
      * open         - posted, no student assigned yet
-     * assigned     - admin assigned a student
-     * under_review - student submitted; client/admin reviewing
-     * completed    - approved & paid
+     * assigned     - student accepted the admin's request
+     * under_review - student submitted; awaiting Client approval
+     * completed    - Client approved
      * declined     - hard-declined after max attempts
      */
     status: {
@@ -176,7 +189,7 @@ const taskSchema = new Schema(
     },
 
     /**
-     * Assigned Student
+     * Assigned Student (FINAL Assignee after acceptance)
      */
     student: {
       type: Schema.Types.ObjectId,
@@ -186,7 +199,7 @@ const taskSchema = new Schema(
     },
 
     /**
-     * Submission attempts
+     * Submission attempts (RESTORED)
      */
     attemptCount: {
       type: Number,
@@ -202,7 +215,7 @@ const taskSchema = new Schema(
     },
 
     /**
-     * Client Attachments
+     * Client Attachments (RESTORED)
      */
     attachments: {
       type: [String],
@@ -221,7 +234,7 @@ const taskSchema = new Schema(
     },
 
     /**
-     * Student Submission
+     * Student Submission (RESTORED)
      */
     submission: {
       type: submissionSchema,
@@ -229,7 +242,7 @@ const taskSchema = new Schema(
     },
 
     /**
-     * Rating & Feedback
+     * Rating & Feedback (RESTORED)
      */
     rating: {
       type: Number,
@@ -253,9 +266,7 @@ const taskSchema = new Schema(
     },
 
     /**
-     * Communication policy
-     * Stored explicitly so backend/UI can enforce that
-     * client-student direct chat is disabled for every task.
+     * Communication policy (RESTORED)
      */
     chatMode: {
       type: String,
@@ -264,16 +275,7 @@ const taskSchema = new Schema(
     },
 
     /**
-     * NEW: Admin → student assignment request workflow
-     *
-     * assignmentRequestStatus:
-     *   null            - no request yet
-     *   request_sent    - admin sent request to a student
-     *   terms_accepted  - student accepted T&C, can now accept task
-     *   request_rejected- student rejected request
-     *
-     * requestedStudent:
-     *   Which student the current request is for (NOT yet final assignment).
+     * Admin → student assignment request workflow (RESTORED & REFINED)
      */
     assignmentRequestStatus: {
       type: String,
@@ -313,7 +315,7 @@ const taskSchema = new Schema(
 );
 
 /**
- * Indexes for faster querying
+ * Indexes for faster querying (RESTORED ALL)
  */
 taskSchema.index({ requiredSkills: 1 });
 taskSchema.index({ location: 1 });
@@ -324,10 +326,10 @@ taskSchema.index({ client: 1, status: 1, createdAt: -1 });
 taskSchema.index({ domain: 1, status: 1, createdAt: -1 });
 taskSchema.index({ assignedByAdmin: 1, createdAt: -1 });
 taskSchema.index({ student: 1, status: 1, createdAt: -1 });
-taskSchema.index({ assignmentRequestStatus: 1, requestedStudent: 1 }); // NEW
+taskSchema.index({ assignmentRequestStatus: 1, requestedStudent: 1 });
 
 /**
- * Pre-validation cleanup
+ * Pre-validation cleanup (RESTORED ALL ORIGINAL LOGIC)
  */
 taskSchema.pre('validate', function () {
   this.title = String(this.title || '').trim();
@@ -341,23 +343,24 @@ taskSchema.pre('validate', function () {
     this.submission.notes = String(this.submission.notes || '').trim();
   }
 
-  // NEW: normalize rejection reason
   if (this.requestRejectionReason != null) {
     this.requestRejectionReason = String(this.requestRejectionReason || '').trim();
   }
 });
 
 /**
- * Business-rule validation
+ * Business-rule validation (RESTORED & REFINED FOR WORKFLOW)
  */
 taskSchema.pre('validate', function () {
-  // Existing rules:
+  
+  // Logic: If task is open, it cannot have a final assigned student
   if (this.status === 'open') {
     this.student = null;
-    this.assignedByAdmin = null;
     this.assignedAt = null;
+    // Note: assignedByAdmin remains for auditing who sent the request
   }
 
+  // Logic: If assigned, student must exist
   if (
     ['assigned', 'under_review', 'completed', 'declined'].includes(this.status) &&
     !this.student
@@ -365,6 +368,7 @@ taskSchema.pre('validate', function () {
     throw new Error('Assigned student is required when task is not open');
   }
 
+  // Logic: If assigned, admin record must exist
   if (
     ['assigned', 'under_review', 'completed', 'declined'].includes(this.status) &&
     !this.assignedByAdmin
@@ -372,6 +376,7 @@ taskSchema.pre('validate', function () {
     throw new Error('assignedByAdmin is required once a student is assigned');
   }
 
+  // Logic: Submission integrity (RESTORED)
   if (this.submission && this.student) {
     const submissionStudentId = this.submission.student?.toString();
     const assignedStudentId = this.student?.toString();
@@ -385,21 +390,14 @@ taskSchema.pre('validate', function () {
     }
   }
 
+  // Logic: Attempt constraint (RESTORED)
   if (this.attemptCount > this.maxAttempts) {
     throw new Error('Attempt count cannot exceed max attempts');
   }
 
-  // NEW: keep request fields consistent with main status
-  if (this.status === 'open') {
-    // If task is fully open again, any old request should not block new ones
-    if (this.assignmentRequestStatus === 'assigned') {
-      // safety: we don't use 'assigned' here, but in case
-      this.assignmentRequestStatus = null;
-    }
-  }
-
+  // Logic: Request Cleanup (Workflow Alignment)
+  // When final assignment is done, we clear the intermediate "Tick" state
   if (this.status === 'assigned') {
-    // Once final assignment is done, we can clear the intermediate request state
     if (this.student && this.requestedStudent &&
         this.student.toString() === this.requestedStudent.toString()) {
       this.assignmentRequestStatus = null;
