@@ -1,11 +1,11 @@
-//backend/controllers/adminController.js
+// backend/controllers/adminController.js
 const mongoose = require("mongoose");
 const User = require("../models/User");
 const Task = require("../models/Task");
 const Payment = require("../models/Payment");
 
 // ====================================
-// HELPERS
+// HELPERS (RESTORED 100%)
 // ====================================
 
 const sendServerError = (res, error, fallbackMessage) => {
@@ -20,7 +20,7 @@ const toMoneyNumber = (value) => {
 };
 
 // ====================================
-// OVERVIEW STATS
+// OVERVIEW STATS (MODIFIED FOR WORKFLOW)
 // ====================================
 
 exports.getOverviewStats = async (req, res) => {
@@ -33,6 +33,9 @@ exports.getOverviewStats = async (req, res) => {
       totalTasks,
       openTasks,
       assignedTasks,
+      underReviewTasks,
+      awaitingAdvanceTasks,
+      awaitingFinalTasks,
       completedTasks,
       totalPayments,
       heldPayments,
@@ -46,9 +49,12 @@ exports.getOverviewStats = async (req, res) => {
       Task.countDocuments(),
       Task.countDocuments({ status: "open" }),
       Task.countDocuments({ status: "assigned" }),
+      Task.countDocuments({ status: "under_review" }),
+      Task.countDocuments({ status: "awaiting_advance" }),
+      Task.countDocuments({ status: "awaiting_final_payment" }),
       Task.countDocuments({ status: "completed" }),
       Payment.countDocuments(),
-      Payment.countDocuments({ status: "held" }),
+      Payment.countDocuments({ status: { $in: ["awaiting_advance", "partially_paid", "fully_paid"] } }),
       Payment.countDocuments({ status: "released" }),
       Payment.aggregate([
         {
@@ -56,7 +62,14 @@ exports.getOverviewStats = async (req, res) => {
             _id: null,
             totalGrossAmount: { $sum: { $ifNull: ["$amount", 0] } },
             totalNetToStudent: { $sum: { $ifNull: ["$netToStudent", 0] } },
-            totalPlatformFee: { $sum: { $ifNull: ["$platformFee", 0] } },
+            totalPlatformFee: { 
+                $sum: { 
+                    $add: [
+                        { $ifNull: ["$platformFeeClient", 0] }, 
+                        { $ifNull: ["$platformFeeStudent", 0] }
+                    ] 
+                } 
+            },
           },
         },
       ]),
@@ -76,6 +89,9 @@ exports.getOverviewStats = async (req, res) => {
       totalTasks,
       openTasks,
       assignedTasks,
+      underReviewTasks,
+      awaitingAdvanceTasks,
+      awaitingFinalTasks,
       completedTasks,
       totalPayments,
       heldPayments,
@@ -90,25 +106,31 @@ exports.getOverviewStats = async (req, res) => {
 };
 
 // ====================================
-// TASK STATS
+// TASK STATS (MODIFIED FOR WORKFLOW)
 // ====================================
 
 exports.getTaskStats = async (req, res) => {
   try {
-    const [total, open, assigned, completed, pending] = await Promise.all([
+    const [total, open, assigned, review, awaitingAdvance, awaitingFinal, completed, declined] = await Promise.all([
       Task.countDocuments(),
       Task.countDocuments({ status: "open" }),
       Task.countDocuments({ status: "assigned" }),
+      Task.countDocuments({ status: "under_review" }),
+      Task.countDocuments({ status: "awaiting_advance" }),
+      Task.countDocuments({ status: "awaiting_final_payment" }),
       Task.countDocuments({ status: "completed" }),
-      Task.countDocuments({ status: "pending" }),
+      Task.countDocuments({ status: "declined" }),
     ]);
 
     return res.json({
       total,
       open,
       assigned,
+      under_review: review,
+      awaiting_advance: awaitingAdvance,
+      awaiting_final_payment: awaitingFinal,
       completed,
-      pending,
+      declined
     });
   } catch (error) {
     return sendServerError(res, error, "Failed to load task stats");
@@ -116,7 +138,7 @@ exports.getTaskStats = async (req, res) => {
 };
 
 // ====================================
-// COMPLETED TASKS
+// COMPLETED TASKS (RESTORED)
 // ====================================
 
 exports.getCompletedTasks = async (req, res) => {
@@ -134,15 +156,18 @@ exports.getCompletedTasks = async (req, res) => {
 };
 
 // ====================================
-// PENDING PAYMENTS
+// PENDING PAYMENTS (MODIFIED FOR VERIFICATION)
 // ====================================
 
 exports.getPendingPayments = async (req, res) => {
   try {
-    const payments = await Payment.find({ status: "held" })
+    // Fetches payments that need Admin to verify 20% or 80% or final release
+    const payments = await Payment.find({ 
+        status: { $in: ["awaiting_advance", "partially_paid", "fully_paid", "approved"] } 
+    })
       .populate(
         "student",
-        "name email wallet pendingEarnings totalEarningsReleased"
+        "name email wallet pendingEarnings totalEarningsReleased bankAccountNumber ifscCode bankAccountHolderName bankName"
       )
       .populate("task", "title budget status")
       .sort({ createdAt: -1 })
@@ -155,7 +180,7 @@ exports.getPendingPayments = async (req, res) => {
 };
 
 // ====================================
-// PAY STUDENT
+// PAY STUDENT (RELEASE LOGIC - SYNCED)
 // ====================================
 
 exports.payStudent = async (req, res) => {
@@ -172,15 +197,16 @@ exports.payStudent = async (req, res) => {
 
     session.startTransaction();
 
+    // Workflow check: Payment is only ready for final release if fully paid or approved
     const payment = await Payment.findOne({
       task: taskId,
-      status: { $in: ["held", "completed"] },
+      status: { $in: ["fully_paid", "approved", "completed"] },
     }).session(session);
 
     if (!payment) {
       await session.abortTransaction();
       return res.status(404).json({
-        message: "Pending payment not found for this task",
+        message: "Eligible payment record not found for final release",
       });
     }
 
@@ -209,15 +235,8 @@ exports.payStudent = async (req, res) => {
       });
     }
 
-    const rawNetToStudent = Number(payment.netToStudent);
-    const rawAmount = Number(payment.amount);
-
-    const amount =
-      Number.isFinite(rawNetToStudent) && rawNetToStudent > 0
-        ? rawNetToStudent
-        : Number.isFinite(rawAmount) && rawAmount > 0
-        ? rawAmount
-        : 0;
+    // Logic: Use netToStudent if available (budget minus SKILEN fees)
+    const amount = toMoneyNumber(payment.netToStudent || payment.amount || task.budget);
 
     if (amount <= 0) {
       await session.abortTransaction();
@@ -230,10 +249,12 @@ exports.payStudent = async (req, res) => {
     const currentPending = toMoneyNumber(student.pendingEarnings);
     const currentReleased = toMoneyNumber(student.totalEarningsReleased);
 
+    // Finalize ledger
     payment.status = "released";
     payment.releasedAt = new Date();
     await payment.save({ session });
 
+    // Update Virtual Wallet
     student.wallet = currentWallet + amount;
     student.pendingEarnings = Math.max(0, currentPending - amount);
     student.totalEarningsReleased = currentReleased + amount;
@@ -242,7 +263,7 @@ exports.payStudent = async (req, res) => {
     await session.commitTransaction();
 
     return res.json({
-      message: "Payment released successfully",
+      message: "Payment released successfully to student wallet",
       paymentId: payment._id,
       taskId: task._id,
       taskTitle: task.title || "",

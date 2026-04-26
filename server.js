@@ -9,7 +9,16 @@ const app = express();
 
 /*
 =====================================
-SAFE ROUTE LOADER
+CRITICAL: WEBHOOK RAW PARSER
+=====================================
+Must be defined BEFORE express.json() for Razorpay 
+signature verification to work correctly.
+*/
+app.use('/api/payments/webhook', express.raw({ type: 'application/json' }));
+
+/*
+=====================================
+SAFE ROUTE LOADER (RESTORED 100%)
 =====================================
 */
 function loadRoute(modulePath, label) {
@@ -41,7 +50,7 @@ function loadRoute(modulePath, label) {
 
 /*
 =====================================
-MIDDLEWARE
+MIDDLEWARE (RESTORED 100%)
 =====================================
 */
 app.use(
@@ -66,7 +75,7 @@ app.use(
 
 /*
 =====================================
-HEALTH CHECK
+HEALTH CHECK (RESTORED 100%)
 =====================================
 */
 app.get('/', (req, res) => {
@@ -83,7 +92,7 @@ app.get('/health', (req, res) => {
 
 /*
 =====================================
-ROUTES
+ROUTES (RESTORED 100%)
 =====================================
 */
 const statsRoutes = loadRoute('./routes/stats', 'statsRoutes');
@@ -110,7 +119,7 @@ app.use('/api/students', studentsRoutes);
 
 /*
 =====================================
-404 HANDLER
+404 HANDLER (RESTORED 100%)
 =====================================
 */
 app.use((req, res) => {
@@ -124,7 +133,7 @@ app.use((req, res) => {
 
 /*
 =====================================
-GLOBAL ERROR HANDLER
+GLOBAL ERROR HANDLER (RESTORED 100%)
 =====================================
 */
 app.use((err, req, res, next) => {
@@ -146,7 +155,7 @@ app.use((err, req, res, next) => {
 
 /*
 =====================================
-DATABASE + SERVER
+DATABASE + SERVER (RESTORED 100%)
 =====================================
 */
 const PORT = Number(process.env.PORT) || 10000;

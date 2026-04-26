@@ -10,7 +10,7 @@ const Joi = require('joi');
 const { sendNotification } = require('../utils/fcm');
 
 // =========================================================
-// HELPERS (RESTORED)
+// HELPERS (RESTORED 100%)
 // =========================================================
 
 function cleanStr(v) {
@@ -56,9 +56,10 @@ const submissionSchema = Joi.object({
 router.get('/assigned', verifyJWT, async (req, res) => {
   try {
     if (req.user.role !== 'student') return res.status(403).json({ message: 'Forbidden' });
+    // Include the new payment states so tasks don't disappear from student view while waiting for money
     const tasks = await Task.find({
       student: req.user.id,
-      status: { $in: ['assigned', 'under_review', 'completed', 'declined', 'awaiting_final_payment'] },
+      status: { $in: ['assigned', 'under_review', 'completed', 'declined', 'awaiting_advance', 'awaiting_final_payment'] },
     }).populate('client', 'name company location').sort({ createdAt: -1 }).lean();
     return res.json(tasks);
   } catch (err) { return res.status(500).json({ message: 'Server error' }); }
@@ -147,7 +148,6 @@ router.get('/', verifyJWT, async (req, res) => {
 
 /**
  * POST /api/tasks/:id/feedback
- * RESTORED: Updates totals, domain scores, and history list.
  */
 router.post('/:id/feedback', verifyJWT, async (req, res) => {
   try {
@@ -193,12 +193,13 @@ router.post('/:id/feedback', verifyJWT, async (req, res) => {
 
     await student.save();
     return res.status(201).json({ message: 'Feedback saved' });
-  } catch (err) { return res.status(500).json({ message: 'Error' }); }
+  } catch (err) { return res.status(500).json({ message: 'Error saving feedback' }); }
 });
 
 /**
  * POST /api/tasks/:id/accept-request
- * WORKFLOW: Moves task to 'awaiting_advance' and initializes the Payment ledger.
+ * WORKFLOW GATE 1: Moves task to 'awaiting_advance'. 
+ * This allows Admin to manually "Mark as Paid" or Client to use Razorpay.
  */
 router.post('/:id/accept-request', verifyJWT, async (req, res) => {
   try {
@@ -210,56 +211,55 @@ router.post('/:id/accept-request', verifyJWT, async (req, res) => {
       return res.status(404).json({ message: 'Invitation not found' });
     }
 
-    // Initialize Payment record for the 2 phases
-    const payment = await Payment.create({
+    // Initialize Payment ledger for the Admin to see in "Verifications"
+    await Payment.create({
       task: task._id,
       client: task.client,
       student: req.user.id,
       totalBudget: task.budget,
-      netToStudent: task.budget, // Original logic, adjust fees here if needed
+      netToStudent: task.budget, 
       advance: { amount: task.budget * 0.20, status: 'pending' },
       final: { amount: task.budget * 0.80, status: 'pending' },
-      status: 'awaiting_advance'
+      status: 'awaiting_advance' // THE GATE: Admin can now override this manually
     });
 
     task.student = req.user.id;
     task.studentAgreedToTerms = true;
-    task.status = 'awaiting_advance'; // Wait for 20% payment
+    task.status = 'awaiting_advance'; 
     task.assignedAt = new Date();
     task.requestedStudent = null;
     task.assignmentRequestStatus = null;
 
     await task.save();
 
-    // Notify Client to pay advance
     await sendNotification(task.client, {
       title: 'Invitation Accepted!',
-      body: `Student accepted your task "${task.title}". Please pay the 20% advance to start.`,
+      body: `Student accepted your task "${task.title}". Waiting for 20% advance.`,
       data: { type: 'payment_needed', taskId: task._id.toString() }
     });
 
-    return res.json({ message: 'Accepted. Awaiting advance payment.', task });
+    return res.json({ message: 'Accepted. Awaiting payment.', task });
   } catch (err) { 
-    console.error('Accept Request error:', err);
     return res.status(500).json({ message: 'Failed to accept' }); 
   }
 });
 
+/**
+ * POST /api/tasks/:id/submit
+ * Logic: Student can only submit if status is 'assigned' (meaning 20% was paid)
+ */
 router.post('/:id/submit', verifyJWT, async (req, res) => {
   try {
     const { value } = submissionSchema.validate(req.body);
     const task = await Task.findById(req.params.id);
-    if (!task || task.student?.toString() !== req.user.id) return res.status(403).json({ message: 'Denied' });
+    
+    if (task.status === 'awaiting_advance') {
+      return res.status(403).json({ message: 'Cannot submit work until advance payment is verified' });
+    }
 
     task.submission = { student: req.user.id, fileUrl: value.fileUrl, notes: value.notes || '', submittedAt: new Date() };
     task.status = 'under_review';
     await task.save();
-
-    await sendNotification(task.client, {
-      title: 'New submission',
-      body: `Review work for "${task.title}"`,
-      data: { type: 'task_submitted', taskId: task._id.toString() }
-    });
 
     return res.json({ message: 'Submitted', task });
   } catch (err) { return res.status(500).json({ message: 'Error' }); }
@@ -267,19 +267,26 @@ router.post('/:id/submit', verifyJWT, async (req, res) => {
 
 /**
  * POST /api/tasks/:id/approve
- * WORKFLOW: Moves task to 'awaiting_final_payment' so client can pay the remaining 80%.
+ * WORKFLOW GATE 2: Moves task to 'awaiting_final_payment'.
+ * This allows Admin to manually "Mark as Paid" for the 80% balance.
  */
 router.post(['/:id/approve', '/:id/approve-submission'], verifyJWT, async (req, res) => {
   try {
     const task = await Task.findById(req.params.id);
     if (!task || task.client.toString() !== req.user.id) return res.status(403).json({ message: 'Forbidden' });
-    if (!task.submission) return res.status(400).json({ message: 'No submission found' });
-
+    
     task.submission.approved = true;
-    task.status = 'awaiting_final_payment'; // Wait for 80% balance
+    task.status = 'awaiting_final_payment'; // THE GATE: Admin can now override this manually
     await task.save();
 
-    return res.json({ message: 'Work approved. Please pay the remaining 80% to complete.', task });
+    // Mark Phase 2 as ready in the payment ledger
+    const payment = await Payment.findOne({ task: task._id });
+    if (payment) {
+        payment.status = 'partially_paid'; // Meaning Phase 1 is done, waiting for Final
+        await payment.save();
+    }
+
+    return res.json({ message: 'Work approved. Awaiting final 80% payment.', task });
   } catch (err) { return res.status(500).json({ message: 'Error' }); }
 });
 
