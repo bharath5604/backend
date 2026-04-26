@@ -1,9 +1,11 @@
-// models/Payment.js
-
+// backend/models/Payment.js
 const mongoose = require('mongoose');
 
 const paymentSchema = new mongoose.Schema(
   {
+    /**
+     * REFERENCES (RESTORED)
+     */
     task: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Task',
@@ -12,7 +14,7 @@ const paymentSchema = new mongoose.Schema(
     bid: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Bid',
-      required: true,
+      required: true, // Preserving original logic requiring a bid
     },
     client: {
       type: mongoose.Schema.Types.ObjectId,
@@ -25,54 +27,116 @@ const paymentSchema = new mongoose.Schema(
       required: true,
     },
 
-    // Full task amount (before platform fees) – proposed by client
-    amount: { type: Number, required: true },
+    /**
+     * AMOUNTS & FEES (RESTORED & EXPANDED)
+     */
+    amount: { type: Number, required: true }, // Full task budget
     currency: { type: String, default: 'INR' },
-
-    // Platform fees (split between client and student)
+    
+    // Original fee logic preserved
     platformFeeClient: { type: Number, default: 0 },
     platformFeeStudent: { type: Number, default: 0 },
 
-    // Net amount that should go to the student (based on student's bid)
+    // Total net amount that student receives into virtual wallet after both phases
     netToStudent: { type: Number, required: true },
 
-    // Status lifecycle
-    // created    -> payment object created
-    // held       -> bid accepted by client, waiting for client approval of work
-    // approved   -> client approved task, waiting for admin release
-    // released   -> admin released funds to student
-    // cancelled  -> payment voided (e.g., task expired or manually cancelled)
-    // declined   -> task hard-declined after max attempts; no payout
+    /**
+     * PHASE 1: ADVANCE PAYMENT (20%)
+     */
+    advance: {
+      amount: { type: Number }, // Set as 20% of total
+      orderId: { type: String }, // Razorpay Order ID for Phase 1
+      paymentId: { type: String }, // Razorpay Payment ID after success
+      status: { 
+        type: String, 
+        enum: ['pending', 'paid', 'refunded'], 
+        default: 'pending' 
+      },
+      method: { 
+        type: String, 
+        enum: ['razorpay', 'manual'], 
+        default: 'razorpay' 
+      },
+      paidAt: { type: Date }
+    },
+
+    /**
+     * PHASE 2: FINAL PAYMENT (80%)
+     */
+    final: {
+      amount: { type: Number }, // Set as 80% of total
+      orderId: { type: String }, // Razorpay Order ID for Phase 2
+      paymentId: { type: String },
+      status: { 
+        type: String, 
+        enum: ['pending', 'paid'], 
+        default: 'pending' 
+      },
+      method: { 
+        type: String, 
+        enum: ['razorpay', 'manual'], 
+        default: 'razorpay' 
+      },
+      paidAt: { type: Date }
+    },
+
+    /**
+     * OVERALL LEDGER STATUS (RESTORED & EXPANDED)
+     * 
+     * created         - Payment object initialized
+     * awaiting_advance - Waiting for client to pay 20%
+     * partially_paid  - 20% advance received, work in progress
+     * fully_paid      - 100% received, stored in platform account
+     * released        - Admin released funds to student virtual wallet
+     * cancelled       - Payment voided
+     * declined        - Work rejected; no payout
+     */
     status: {
       type: String,
-      enum: ['created', 'held', 'approved', 'released', 'cancelled', 'declined','completed'],
+      enum: [
+        'created', 
+        'awaiting_advance', 
+        'partially_paid', 
+        'fully_paid', 
+        'released', 
+        'cancelled', 
+        'declined', 
+        'completed'
+      ],
       default: 'created',
     },
 
-    // When funds were actually released to student (for growth charts)
+    // Timestamp when Admin releases money to Student Wallet
     releasedAt: {
       type: Date,
     },
 
-    // Optional manual notes, e.g., “paid offline on UPI”, “3 attempts failed”, etc.
+    // Metadata for manual verification (e.g., "Verified UPI Ref #12345")
+    adminNote: { type: String },
+    
+    // Reason if payment is cancelled or declined
     declineReason: { type: String },
 
-    // Optional gateway info
+    // Gateway Info (RESTORED)
     gateway: { type: String, default: 'razorpay' },
-    gatewayOrderId: { type: String },
   },
   { timestamps: true }
 );
 
-// Keep releasedAt in sync with status (promise style: no next)
-paymentSchema.pre('save', function () {
-  if (!this.isModified('status')) return;
+/**
+ * PRE-SAVE HOOK (RESTORED)
+ * Keep releasedAt in sync with status
+ */
+paymentSchema.pre('save', function (next) {
+  if (!this.isModified('status')) return next();
 
-  if (this.status === 'released') {
+  if (this.status === 'released' || this.status === 'completed') {
     this.releasedAt = this.releasedAt || new Date();
-  } else {
+  } else if (this.status !== 'released') {
+    // If status is moved away from released, clear the date
     this.releasedAt = undefined;
   }
+  next();
 });
 
 module.exports = mongoose.model('Payment', paymentSchema);

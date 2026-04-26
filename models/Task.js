@@ -14,7 +14,7 @@ function normalizeStringArray(value) {
 
 /**
  * Submission Sub Schema
- * Modified to explicitly support Client Approval as per your workflow.
+ * Tracks the work uploaded by the student and the client's approval status.
  */
 const submissionSchema = new Schema(
   {
@@ -49,7 +49,7 @@ const submissionSchema = new Schema(
       default: Date.now,
     },
     
-    // NEW: Specifically tracks Client's interaction for your workflow
+    // Specifically tracks the time the Client clicked "Approve" for your workflow
     clientApprovedAt: {
       type: Date,
       default: null,
@@ -64,7 +64,7 @@ const submissionSchema = new Schema(
 const taskSchema = new Schema(
   {
     /**
-     * Basic Info (RESTORED)
+     * Basic Info
      */
     title: {
       type: String,
@@ -83,7 +83,7 @@ const taskSchema = new Schema(
     },
 
     /**
-     * Client Info (RESTORED)
+     * Client Info & SKILEN Agreement
      */
     client: {
       type: Schema.Types.ObjectId,
@@ -92,14 +92,14 @@ const taskSchema = new Schema(
       index: true,
     },
 
-    // NEW: Track that client agreed to T&C during creation
+    // Tracks if client agreed to the SKILEN T&C during task creation
     clientAgreedToTerms: {
       type: Boolean,
       default: false,
     },
 
     /**
-     * Admin assignment info (RESTORED)
+     * Admin assignment tracking
      */
     assignedByAdmin: {
       type: Schema.Types.ObjectId,
@@ -114,7 +114,7 @@ const taskSchema = new Schema(
     },
 
     /**
-     * Skills Required (RESTORED)
+     * Skills Required
      */
     requiredSkills: {
       type: [String],
@@ -123,7 +123,7 @@ const taskSchema = new Schema(
     },
 
     /**
-     * Budget & Deadline (RESTORED)
+     * Budget & Deadline
      */
     budget: {
       type: Number,
@@ -149,7 +149,7 @@ const taskSchema = new Schema(
     },
 
     /**
-     * Filters (RESTORED)
+     * Filters
      */
     location: {
       type: String,
@@ -174,22 +174,35 @@ const taskSchema = new Schema(
     },
 
     /**
-     * Task Status (RESTORED)
-     * open         - posted, no student assigned yet
-     * assigned     - student accepted the admin's request
-     * under_review - student submitted; awaiting Client approval
-     * completed    - Client approved
-     * declined     - hard-declined after max attempts
+     * UPDATED TASK STATUSES FOR PAYMENT WORKFLOW
+     *
+     * open                   - Posted by Client
+     * request_sent           - Admin invited student ("Ticked" them)
+     * awaiting_advance       - Student accepted, waiting for 20% payment
+     * assigned               - 20% paid, student is now working
+     * under_review           - Student submitted work, Client review pending
+     * awaiting_final_payment - Client approved work, waiting for 80% payment
+     * completed              - 100% paid, task finalized
+     * declined               - Permanently cancelled
      */
     status: {
       type: String,
-      enum: ['open', 'assigned', 'under_review', 'completed', 'declined'],
+      enum: [
+        'open', 
+        'request_sent', 
+        'awaiting_advance', 
+        'assigned', 
+        'under_review', 
+        'awaiting_final_payment', 
+        'completed', 
+        'declined'
+      ],
       default: 'open',
       index: true,
     },
 
     /**
-     * Assigned Student (FINAL Assignee after acceptance)
+     * Final Assigned Student (Locked after 20% payment)
      */
     student: {
       type: Schema.Types.ObjectId,
@@ -199,7 +212,47 @@ const taskSchema = new Schema(
     },
 
     /**
-     * Submission attempts (RESTORED)
+     * Invitation Flow Metadata
+     */
+    assignmentRequestStatus: {
+      type: String,
+      enum: [null, 'request_sent', 'request_rejected'],
+      default: null,
+      index: true,
+    },
+
+    requestedStudent: {
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+      index: true,
+    },
+
+    // Tracks if student agreed to the SKILEN Eligibility T&C during acceptance
+    studentAgreedToTerms: {
+      type: Boolean,
+      default: false,
+    },
+
+    requestSentAt: {
+      type: Date,
+      default: null,
+    },
+
+    requestRespondedAt: {
+      type: Date,
+      default: null,
+    },
+
+    requestRejectionReason: {
+      type: String,
+      default: '',
+      trim: true,
+      maxlength: [1000, 'Rejection reason cannot exceed 1000 characters'],
+    },
+
+    /**
+     * Execution Metadata
      */
     attemptCount: {
       type: Number,
@@ -215,7 +268,7 @@ const taskSchema = new Schema(
     },
 
     /**
-     * Client Attachments (RESTORED)
+     * Assets
      */
     attachments: {
       type: [String],
@@ -234,7 +287,7 @@ const taskSchema = new Schema(
     },
 
     /**
-     * Student Submission (RESTORED)
+     * Results
      */
     submission: {
       type: submissionSchema,
@@ -242,7 +295,7 @@ const taskSchema = new Schema(
     },
 
     /**
-     * Rating & Feedback (RESTORED)
+     * Ratings & Feedback
      */
     rating: {
       type: Number,
@@ -266,46 +319,12 @@ const taskSchema = new Schema(
     },
 
     /**
-     * Communication policy (RESTORED)
+     * Policy
      */
     chatMode: {
       type: String,
       enum: ['admin_only'],
       default: 'admin_only',
-    },
-
-    /**
-     * Admin → student assignment request workflow (RESTORED & REFINED)
-     */
-    assignmentRequestStatus: {
-      type: String,
-      enum: [null, 'request_sent', 'terms_accepted', 'request_rejected'],
-      default: null,
-      index: true,
-    },
-
-    requestedStudent: {
-      type: Schema.Types.ObjectId,
-      ref: 'User',
-      default: null,
-      index: true,
-    },
-
-    termsAcceptedAt: {
-      type: Date,
-      default: null,
-    },
-
-    requestRespondedAt: {
-      type: Date,
-      default: null,
-    },
-
-    requestRejectionReason: {
-      type: String,
-      default: '',
-      trim: true,
-      maxlength: [1000, 'Rejection reason cannot exceed 1000 characters'],
     },
   },
   {
@@ -315,21 +334,18 @@ const taskSchema = new Schema(
 );
 
 /**
- * Indexes for faster querying (RESTORED ALL)
+ * Indexes for faster querying
  */
 taskSchema.index({ requiredSkills: 1 });
 taskSchema.index({ location: 1 });
 taskSchema.index({ client: 1, createdAt: -1 });
 taskSchema.index({ student: 1, createdAt: -1 });
 taskSchema.index({ status: 1, createdAt: -1 });
-taskSchema.index({ client: 1, status: 1, createdAt: -1 });
 taskSchema.index({ domain: 1, status: 1, createdAt: -1 });
-taskSchema.index({ assignedByAdmin: 1, createdAt: -1 });
-taskSchema.index({ student: 1, status: 1, createdAt: -1 });
 taskSchema.index({ assignmentRequestStatus: 1, requestedStudent: 1 });
 
 /**
- * Pre-validation cleanup (RESTORED ALL ORIGINAL LOGIC)
+ * Pre-validation cleanup (Trimming logic)
  */
 taskSchema.pre('validate', function () {
   this.title = String(this.title || '').trim();
@@ -349,60 +365,44 @@ taskSchema.pre('validate', function () {
 });
 
 /**
- * Business-rule validation (RESTORED & REFINED FOR WORKFLOW)
+ * Business-rule validation
  */
 taskSchema.pre('validate', function () {
   
-  // Logic: If task is open, it cannot have a final assigned student
-  if (this.status === 'open') {
+  // Rule: If task is not yet fully assigned, 'student' field must be null
+  if (['open', 'request_sent', 'awaiting_advance'].includes(this.status)) {
     this.student = null;
-    this.assignedAt = null;
-    // Note: assignedByAdmin remains for auditing who sent the request
   }
 
-  // Logic: If assigned, student must exist
-  if (
-    ['assigned', 'under_review', 'completed', 'declined'].includes(this.status) &&
-    !this.student
-  ) {
-    throw new Error('Assigned student is required when task is not open');
+  // Rule: If status is 'assigned' or beyond, validation for student data
+  if (['assigned', 'under_review', 'awaiting_final_payment', 'completed'].includes(this.status)) {
+    if (!this.student) {
+      throw new Error('Assigned student is required for this status');
+    }
+    if (!this.assignedByAdmin) {
+      throw new Error('assignedByAdmin record is required for active tasks');
+    }
+    if (!this.studentAgreedToTerms) {
+      throw new Error('Assignment requires Student Terms & Conditions agreement');
+    }
   }
 
-  // Logic: If assigned, admin record must exist
-  if (
-    ['assigned', 'under_review', 'completed', 'declined'].includes(this.status) &&
-    !this.assignedByAdmin
-  ) {
-    throw new Error('assignedByAdmin is required once a student is assigned');
-  }
-
-  // Logic: Submission integrity (RESTORED)
+  // Rule: Submission student must match assigned student
   if (this.submission && this.student) {
-    const submissionStudentId = this.submission.student?.toString();
-    const assignedStudentId = this.student?.toString();
-
-    if (
-      submissionStudentId &&
-      assignedStudentId &&
-      submissionStudentId !== assignedStudentId
-    ) {
+    if (this.submission.student.toString() !== this.student.toString()) {
       throw new Error('Submission student must match assigned student');
     }
   }
 
-  // Logic: Attempt constraint (RESTORED)
+  // Rule: Attempt count safety
   if (this.attemptCount > this.maxAttempts) {
     throw new Error('Attempt count cannot exceed max attempts');
   }
 
-  // Logic: Request Cleanup (Workflow Alignment)
-  // When final assignment is done, we clear the intermediate "Tick" state
+  // Workflow Alignment: Once 20% is paid and task moves to 'assigned', clear the invite fields
   if (this.status === 'assigned') {
-    if (this.student && this.requestedStudent &&
-        this.student.toString() === this.requestedStudent.toString()) {
-      this.assignmentRequestStatus = null;
-      this.requestedStudent = null;
-    }
+    this.assignmentRequestStatus = null;
+    this.requestedStudent = null;
   }
 });
 

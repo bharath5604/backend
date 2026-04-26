@@ -1,4 +1,4 @@
-//backend/routes/user.js
+// backend/routes/user.js
 const express = require('express');
 const router = express.Router();
 const mongoose = require('mongoose');
@@ -6,9 +6,13 @@ const Joi = require('joi');
 
 const User = require('../models/User');
 const Payment = require('../models/Payment');
+const Withdrawal = require('../models/Withdrawal'); // NEW: Import the Withdrawal model
 const verifyJWT = require('../middleware/authMiddleware');
 
-// Joi schemas
+// =========================================================
+// JOI SCHEMAS (RESTORED & EXPANDED)
+// =========================================================
+
 const updateMeSchema = Joi.object({
   name: Joi.string().min(2).max(100).optional(),
   bio: Joi.string().max(1000).allow('', null),
@@ -28,7 +32,13 @@ const updateMeSchema = Joi.object({
   ifscCode: Joi.string().max(50).allow('', null),
 });
 
-// ---------- Shared helpers ----------
+const withdrawRequestSchema = Joi.object({
+  amount: Joi.number().min(500).required(), // Enforce minimum withdrawal of ₹500
+});
+
+// =========================================================
+// SHARED HELPERS (RESTORED)
+// =========================================================
 
 async function sumNetToStudentByStatuses(studentId, statuses) {
   const result = await Payment.aggregate([
@@ -51,8 +61,14 @@ async function sumNetToStudentByStatuses(studentId, statuses) {
   return result.length > 0 ? result[0].total : 0;
 }
 
-// ---------- GET /api/users/me ----------
+// =========================================================
+// 1. AUTHENTICATED USER ROUTES
+// =========================================================
 
+/**
+ * GET /api/users/me
+ * RESTORED: Fetches private profile and aggregated earnings
+ */
 router.get('/me', verifyJWT, async (req, res) => {
   try {
     if (!mongoose.Types.ObjectId.isValid(req.user.id)) {
@@ -66,11 +82,11 @@ router.get('/me', verifyJWT, async (req, res) => {
       const [pendingPayments, earnedPayments, acceptedQuoteTotal] =
         await Promise.all([
           // payments approved by client, waiting for admin release
-          sumNetToStudentByStatuses(user._id, ['held']),
+          sumNetToStudentByStatuses(user._id, ['held', 'approved']),
           // payments fully released to wallet
-          sumNetToStudentByStatuses(user._id, ['completed']),
-          // all accepted for this student (pending + completed)
-          sumNetToStudentByStatuses(user._id, ['held', 'completed']),
+          sumNetToStudentByStatuses(user._id, ['completed', 'released']),
+          // total assigned workload value
+          sumNetToStudentByStatuses(user._id, ['held', 'approved', 'completed', 'released']),
         ]);
 
       const userObj = user.toObject();
@@ -89,20 +105,13 @@ router.get('/me', verifyJWT, async (req, res) => {
   }
 });
 
-/*
-=====================================
-PAYMENT-ONLY STATS FOR STUDENT
-GET /api/users/me/payment-stats
-
-- totalAcceptedAmount  => sum netToStudent where status in ['held','completed']
-- totalReceivedAmount  => sum netToStudent where status = 'completed'
-- totalPendingAmount   => accepted - received
-=====================================
-*/
+/**
+ * GET /api/users/me/payment-stats
+ * RESTORED: Returns cashflow overview for the student dashboard
+ */
 router.get('/me/payment-stats', verifyJWT, async (req, res) => {
   try {
     const userId = req.user.id;
-
     if (!mongoose.Types.ObjectId.isValid(userId)) {
       return res.status(400).json({ message: 'Invalid user id' });
     }
@@ -111,43 +120,17 @@ router.get('/me/payment-stats', verifyJWT, async (req, res) => {
 
     const [acceptedAgg, receivedAgg] = await Promise.all([
       Payment.aggregate([
-        {
-          $match: {
-            student: studentId,
-            status: { $in: ['held', 'completed'] },
-          },
-        },
-        {
-          $group: {
-            _id: null,
-            totalAcceptedAmount: {
-              $sum: { $ifNull: ['$netToStudent', 0] },
-            },
-          },
-        },
+        { $match: { student: studentId, status: { $in: ['held', 'approved', 'completed', 'released'] } } },
+        { $group: { _id: null, total: { $sum: { $ifNull: ['$netToStudent', 0] } } } },
       ]),
       Payment.aggregate([
-        {
-          $match: {
-            student: studentId,
-            status: 'completed',
-          },
-        },
-        {
-          $group: {
-            _id: null,
-            totalReceivedAmount: {
-              $sum: { $ifNull: ['$netToStudent', 0] },
-            },
-          },
-        },
+        { $match: { student: studentId, status: { $in: ['completed', 'released'] } } },
+        { $group: { _id: null, total: { $sum: { $ifNull: ['$netToStudent', 0] } } } },
       ]),
     ]);
 
-    const totalAcceptedAmount =
-      acceptedAgg.length > 0 ? acceptedAgg[0].totalAcceptedAmount : 0;
-    const totalReceivedAmount =
-      receivedAgg.length > 0 ? receivedAgg[0].totalReceivedAmount : 0;
+    const totalAcceptedAmount = acceptedAgg.length > 0 ? acceptedAgg[0].total : 0;
+    const totalReceivedAmount = receivedAgg.length > 0 ? receivedAgg[0].total : 0;
     const totalPendingAmount = totalAcceptedAmount - totalReceivedAmount;
 
     return res.json({
@@ -157,15 +140,14 @@ router.get('/me/payment-stats', verifyJWT, async (req, res) => {
     });
   } catch (err) {
     console.error('Error in GET /api/users/me/payment-stats', err);
-    return res.status(500).json({
-      message: 'Error computing student payment stats',
-      error: err.message,
-    });
+    return res.status(500).json({ message: 'Error computing student payment stats' });
   }
 });
 
-// ---------- internal helper to apply validated updates ----------
-
+/**
+ * PROFILE UPDATES
+ * RESTORED: Shared logic for PUT/PATCH
+ */
 async function applyProfileUpdate(req, res) {
   const { error, value } = updateMeSchema.validate(req.body, {
     abortEarly: false,
@@ -180,12 +162,8 @@ async function applyProfileUpdate(req, res) {
   }
 
   const updates = { ...value };
-
   if (req.user.role !== 'client') {
-    delete updates.company;
-    delete updates.location;
-    delete updates.domain;
-    delete updates.description;
+    delete updates.company; delete updates.location; delete updates.domain; delete updates.description;
   }
 
   try {
@@ -195,111 +173,121 @@ async function applyProfileUpdate(req, res) {
     }).select('-password');
 
     if (!user) return res.status(404).json({ message: 'User not found' });
-
     return res.json({ message: 'Profile updated', user });
   } catch (err) {
-    return res
-      .status(400)
-      .json({ message: 'Error updating profile', error: err.message });
+    return res.status(400).json({ message: 'Error updating profile', error: err.message });
   }
 }
 
-// PUT /api/users/me
-router.put('/me', verifyJWT, async (req, res) => {
-  await applyProfileUpdate(req, res);
+router.put('/me', verifyJWT, applyProfileUpdate);
+router.patch('/me', verifyJWT, applyProfileUpdate);
+
+// =========================================================
+// 2. NEW: WITHDRAWAL MODULE (STUDENT ACTION)
+// =========================================================
+
+/**
+ * POST /api/users/withdraw
+ * WORKFLOW: Student requests cashing out virtual wallet to real bank account
+ */
+router.post('/withdraw', verifyJWT, async (req, res) => {
+  const session = await mongoose.startSession();
+  try {
+    session.startTransaction();
+
+    if (req.user.role !== 'student') {
+      return res.status(403).json({ message: 'Only students can request withdrawals' });
+    }
+
+    const { error, value } = withdrawRequestSchema.validate(req.body);
+    if (error) return res.status(400).json({ message: error.details[0].message });
+
+    const user = await User.findById(req.user.id).session(session);
+
+    // 1. Logic: Check if virtual wallet has sufficient balance
+    if (user.wallet < value.amount) {
+      return res.status(400).json({ message: 'Insufficient balance in your virtual wallet' });
+    }
+
+    // 2. Logic: Ensure bank details exist for the transfer
+    if (!user.bankAccountNumber || !user.ifscCode) {
+      return res.status(400).json({ message: 'Please set your bank account details in your profile first' });
+    }
+
+    // 3. Logic: Create Withdrawal Request with a snapshot of current bank details
+    const withdrawal = new Withdrawal({
+      student: user._id,
+      amount: value.amount,
+      bankSnapshot: {
+        accountHolderName: user.bankAccountHolderName,
+        bankName: user.bankName,
+        accountNumber: user.bankAccountNumber,
+        ifscCode: user.ifscCode
+      },
+      status: 'pending'
+    });
+
+    // 4. Logic: Deduct money from virtual wallet immediately (to "Lock" the funds)
+    user.wallet -= value.amount;
+
+    await withdrawal.save({ session });
+    await user.save({ session });
+
+    await session.commitTransaction();
+    return res.json({ message: 'Withdrawal request submitted successfully', newBalance: user.wallet });
+
+  } catch (err) {
+    await session.abortTransaction();
+    console.error('Withdrawal Request Error:', err);
+    return res.status(500).json({ message: 'Failed to process withdrawal request' });
+  } finally {
+    session.endSession();
+  }
 });
 
-// PATCH /api/users/me (backward compatibility)
-router.patch('/me', verifyJWT, async (req, res) => {
-  await applyProfileUpdate(req, res);
-});
-
-// ---------- GET /api/students/:id/public-profile ----------
+// =========================================================
+// 3. PUBLIC PROFILES (RESTORED)
+// =========================================================
 
 router.get('/students/:id/public-profile', async (req, res) => {
   try {
     const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: 'Invalid ID' });
 
-    if (!mongoose.Types.ObjectId.isValid(id)) {
-      return res.status(400).json({ message: 'Invalid student id' });
-    }
-
-    const student = await User.findById(id).select(
-      'name role bio skills portfolioUrl totalScore totalScoreCount feedbackScores'
-    );
-
-    if (!student || student.role !== 'student') {
-      return res.status(404).json({ message: 'Student not found' });
-    }
+    const student = await User.findById(id).select('name role bio skills portfolioUrl totalScore totalScoreCount feedbackScores');
+    if (!student || student.role !== 'student') return res.status(404).json({ message: 'Student not found' });
 
     const domains = (student.feedbackScores || []).map((d) => {
-      const totalScore = Number(d.totalScore || 0);
-      const count = Number(d.count || 0);
-
-      return {
-        domain: d.domain || '',
-        averageScore: count > 0 ? totalScore / count : 0,
-        count,
-      };
+      const ts = Number(d.totalScore || 0); const c = Number(d.count || 0);
+      return { domain: d.domain || '', averageScore: c > 0 ? ts / c : 0, count: c };
     });
-
-    const totalScore = Number(student.totalScore || 0);
-    const totalScoreCount = Number(student.totalScoreCount || 0);
-    const totalAverageScore =
-      totalScoreCount > 0 ? totalScore / totalScoreCount : 0;
 
     return res.json({
-      id: student._id,
-      name: student.name || '',
-      role: student.role,
-      bio: student.bio || '',
-      skills: Array.isArray(student.skills) ? student.skills : [],
-      portfolioUrl: student.portfolioUrl || '',
-      totalScore,
-      totalScoreCount,
-      totalAverageScore,
-      domains,
+      id: student._id, name: student.name, role: student.role, bio: student.bio,
+      skills: student.skills, portfolioUrl: student.portfolioUrl,
+      totalScore: student.totalScore, totalScoreCount: student.totalScoreCount,
+      totalAverageScore: student.totalScoreCount > 0 ? student.totalScore / student.totalScoreCount : 0,
+      domains
     });
   } catch (err) {
-    return res.status(500).json({
-      message: 'Error fetching public profile',
-      error: err.message,
-    });
+    return res.status(500).json({ message: 'Error fetching student profile' });
   }
 });
-
-// ---------- GET /api/clients/:id/public-profile ----------
 
 router.get('/clients/:id/public-profile', async (req, res) => {
   try {
     const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: 'Invalid ID' });
 
-    if (!mongoose.Types.ObjectId.isValid(id)) {
-      return res.status(400).json({ message: 'Invalid client id' });
-    }
-
-    const client = await User.findById(id).select(
-      'name role company location domain description'
-    );
-
-    if (!client || client.role !== 'client') {
-      return res.status(404).json({ message: 'Client not found' });
-    }
+    const client = await User.findById(id).select('name role company location domain description');
+    if (!client || client.role !== 'client') return res.status(404).json({ message: 'Client not found' });
 
     return res.json({
-      id: client._id,
-      name: client.name || '',
-      role: client.role,
-      company: client.company || '',
-      location: client.location || '',
-      domain: client.domain || '',
-      description: client.description || '',
+      id: client._id, name: client.name, role: client.role,
+      company: client.company, location: client.location, domain: client.domain, description: client.description
     });
   } catch (err) {
-    return res.status(500).json({
-      message: 'Error fetching public profile',
-      error: err.message,
-    });
+    return res.status(500).json({ message: 'Error fetching client profile' });
   }
 });
 

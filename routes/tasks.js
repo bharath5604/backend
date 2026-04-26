@@ -10,7 +10,7 @@ const Joi = require('joi');
 const { sendNotification } = require('../utils/fcm');
 
 // =========================================================
-// HELPERS (RESTORED FROM ORIGINAL)
+// HELPERS (RESTORED)
 // =========================================================
 
 function cleanStr(v) {
@@ -39,10 +39,6 @@ const acceptRequestSchema = Joi.object({
   studentAgreedToTerms: Joi.boolean().valid(true).required()
 });
 
-const rateSchema = Joi.object({
-  rating: Joi.number().integer().min(1).max(5).required(),
-});
-
 const feedbackSchema = Joi.object({
   text: Joi.string().max(2000).allow('', null),
   score: Joi.number().integer().min(1).max(5).required(),
@@ -62,7 +58,7 @@ router.get('/assigned', verifyJWT, async (req, res) => {
     if (req.user.role !== 'student') return res.status(403).json({ message: 'Forbidden' });
     const tasks = await Task.find({
       student: req.user.id,
-      status: { $in: ['assigned', 'under_review', 'completed', 'declined'] },
+      status: { $in: ['assigned', 'under_review', 'completed', 'declined', 'awaiting_final_payment'] },
     }).populate('client', 'name company location').sort({ createdAt: -1 }).lean();
     return res.json(tasks);
   } catch (err) { return res.status(500).json({ message: 'Server error' }); }
@@ -71,7 +67,10 @@ router.get('/assigned', verifyJWT, async (req, res) => {
 router.get('/requests', verifyJWT, async (req, res) => {
   try {
     if (req.user.role !== 'student') return res.status(403).json({ message: 'Forbidden' });
-    const requests = await Task.find({ requestedStudent: req.user.id, assignmentRequestStatus: 'request_sent' }).populate('client', 'name company location');
+    const requests = await Task.find({ 
+      requestedStudent: req.user.id, 
+      assignmentRequestStatus: 'request_sent' 
+    }).populate('client', 'name company location');
     return res.json(requests);
   } catch (err) { return res.status(500).json({ message: 'Server error' }); }
 });
@@ -86,10 +85,8 @@ router.get('/mine', verifyJWT, async (req, res) => {
 
 router.get('/recommended', verifyJWT, async (req, res) => {
   try {
-    if (req.user.role !== 'student') return res.json([]);
     const student = await User.findById(req.user.id).select('skills');
-    if (!student?.skills?.length) return res.json([]);
-    const tasks = await Task.find({ status: 'open', requiredSkills: { $in: student.skills } })
+    const tasks = await Task.find({ status: 'open', requiredSkills: { $in: student.skills || [] } })
       .sort({ createdAt: -1 }).limit(5).populate('client', 'name company');
     return res.json(tasks);
   } catch (err) { return res.status(500).json({ message: 'Error' }); }
@@ -118,8 +115,14 @@ router.post('/create', verifyJWT, async (req, res) => {
     if (req.user.role !== 'client') return res.status(403).json({ message: 'Only clients' });
     const { error, value } = createTaskSchema.validate(req.body, { abortEarly: false, stripUnknown: true });
     if (error) return res.status(400).json({ message: 'Validation error', details: error.details.map((d) => d.message) });
+    
     const client = await User.findById(req.user.id);
-    const task = await Task.create({ ...value, client: req.user.id, company: value.company || client.company || '', status: 'open' });
+    const task = await Task.create({ 
+      ...value, 
+      client: req.user.id, 
+      company: value.company || client.company || '', 
+      status: 'open' 
+    });
     return res.json(task);
   } catch (err) { return res.status(400).json({ message: 'Creation failed' }); }
 });
@@ -144,14 +147,16 @@ router.get('/', verifyJWT, async (req, res) => {
 
 /**
  * POST /api/tasks/:id/feedback
- * FIXED: Updates global totals, domain-aggregates, and history list.
+ * RESTORED: Updates totals, domain scores, and history list.
  */
 router.post('/:id/feedback', verifyJWT, async (req, res) => {
   try {
     const { error, value } = feedbackSchema.validate(req.body);
     if (error) return res.status(400).json({ message: 'Score is required' });
+
     const task = await Task.findById(req.params.id);
-    if (!task || task.client.toString() !== req.user.id) return res.status(403).json({ message: 'Denied' });
+    if (!task || task.client.toString() !== req.user.id) return res.status(403).json({ message: 'Access denied' });
+
     const student = await User.findById(task.student);
     if (!student) return res.status(404).json({ message: 'Student not found' });
 
@@ -165,46 +170,79 @@ router.post('/:id/feedback', verifyJWT, async (req, res) => {
 
     const taskDomain = task.domain || 'General';
     if (!student.feedbackScores) student.feedbackScores = [];
-    let dEntry = student.feedbackScores.find(d => d.domain === taskDomain);
-    if (dEntry) { dEntry.totalScore += value.score; dEntry.count += 1; }
-    else { student.feedbackScores.push({ domain: taskDomain, totalScore: value.score, count: 1 }); }
+    let domainEntry = student.feedbackScores.find(d => d.domain === taskDomain);
+    if (domainEntry) {
+      domainEntry.totalScore += value.score;
+      domainEntry.count += 1;
+    } else {
+      student.feedbackScores.push({ domain: taskDomain, totalScore: value.score, count: 1 });
+    }
 
     if (!student.feedbackEntries) student.feedbackEntries = [];
     const client = await User.findById(req.user.id).select('name');
-    student.feedbackEntries.push({ taskId: task._id, taskTitle: task.title, clientId: req.user.id, clientName: client?.name || 'Client', rating: value.score, comment: value.text || '', domain: taskDomain, createdAt: new Date() });
+    student.feedbackEntries.push({
+      taskId: task._id,
+      taskTitle: task.title,
+      clientId: req.user.id,
+      clientName: client?.name || 'Client',
+      rating: value.score,
+      comment: value.text || '',
+      domain: taskDomain,
+      createdAt: new Date()
+    });
 
     await student.save();
     return res.status(201).json({ message: 'Feedback saved' });
   } catch (err) { return res.status(500).json({ message: 'Error' }); }
 });
 
-router.post('/:id/rate', verifyJWT, async (req, res) => {
-  try {
-    const { error, value } = rateSchema.validate(req.body);
-    if (error) return res.status(400).json({ message: 'Invalid rating' });
-    const task = await Task.findById(req.params.id);
-    if (!task || task.client.toString() !== req.user.id) return res.status(403).json({ message: 'Denied' });
-    task.rating = value.rating;
-    await task.save();
-    return res.json({ message: 'Rated' });
-  } catch (err) { return res.status(500).json({ message: 'Error' }); }
-});
-
+/**
+ * POST /api/tasks/:id/accept-request
+ * WORKFLOW: Moves task to 'awaiting_advance' and initializes the Payment ledger.
+ */
 router.post('/:id/accept-request', verifyJWT, async (req, res) => {
   try {
     const { error } = acceptRequestSchema.validate(req.body);
     if (error) return res.status(400).json({ message: 'Accept T&C first' });
+
     const task = await Task.findById(req.params.id);
-    if (!task || task.requestedStudent?.toString() !== req.user.id) return res.status(404).json({ message: 'Invitation not found' });
+    if (!task || task.requestedStudent?.toString() !== req.user.id) {
+      return res.status(404).json({ message: 'Invitation not found' });
+    }
+
+    // Initialize Payment record for the 2 phases
+    const payment = await Payment.create({
+      task: task._id,
+      client: task.client,
+      student: req.user.id,
+      totalBudget: task.budget,
+      netToStudent: task.budget, // Original logic, adjust fees here if needed
+      advance: { amount: task.budget * 0.20, status: 'pending' },
+      final: { amount: task.budget * 0.80, status: 'pending' },
+      status: 'awaiting_advance'
+    });
+
     task.student = req.user.id;
     task.studentAgreedToTerms = true;
-    task.status = 'assigned';
+    task.status = 'awaiting_advance'; // Wait for 20% payment
     task.assignedAt = new Date();
     task.requestedStudent = null;
     task.assignmentRequestStatus = null;
+
     await task.save();
-    return res.json({ message: 'Accepted', task });
-  } catch (err) { return res.status(500).json({ message: 'Failed' }); }
+
+    // Notify Client to pay advance
+    await sendNotification(task.client, {
+      title: 'Invitation Accepted!',
+      body: `Student accepted your task "${task.title}". Please pay the 20% advance to start.`,
+      data: { type: 'payment_needed', taskId: task._id.toString() }
+    });
+
+    return res.json({ message: 'Accepted. Awaiting advance payment.', task });
+  } catch (err) { 
+    console.error('Accept Request error:', err);
+    return res.status(500).json({ message: 'Failed to accept' }); 
+  }
 });
 
 router.post('/:id/submit', verifyJWT, async (req, res) => {
@@ -212,28 +250,36 @@ router.post('/:id/submit', verifyJWT, async (req, res) => {
     const { value } = submissionSchema.validate(req.body);
     const task = await Task.findById(req.params.id);
     if (!task || task.student?.toString() !== req.user.id) return res.status(403).json({ message: 'Denied' });
+
     task.submission = { student: req.user.id, fileUrl: value.fileUrl, notes: value.notes || '', submittedAt: new Date() };
     task.status = 'under_review';
     await task.save();
-    await sendNotification(task.client, { title: 'New submission', body: `Review work for "${task.title}"`, data: { type: 'task_submitted', taskId: task._id.toString() } });
+
+    await sendNotification(task.client, {
+      title: 'New submission',
+      body: `Review work for "${task.title}"`,
+      data: { type: 'task_submitted', taskId: task._id.toString() }
+    });
+
     return res.json({ message: 'Submitted', task });
   } catch (err) { return res.status(500).json({ message: 'Error' }); }
 });
 
+/**
+ * POST /api/tasks/:id/approve
+ * WORKFLOW: Moves task to 'awaiting_final_payment' so client can pay the remaining 80%.
+ */
 router.post(['/:id/approve', '/:id/approve-submission'], verifyJWT, async (req, res) => {
   try {
     const task = await Task.findById(req.params.id);
     if (!task || task.client.toString() !== req.user.id) return res.status(403).json({ message: 'Forbidden' });
+    if (!task.submission) return res.status(400).json({ message: 'No submission found' });
+
     task.submission.approved = true;
-    task.status = 'completed';
+    task.status = 'awaiting_final_payment'; // Wait for 80% balance
     await task.save();
 
-    const student = await User.findById(task.student);
-    if (student) { student.tasksCompleted = (student.tasksCompleted || 0) + 1; await student.save(); }
-
-    const payment = await Payment.findOne({ task: task._id, student: task.student });
-    if (payment) { payment.status = 'approved'; await payment.save(); }
-    return res.json({ message: 'Approved' });
+    return res.json({ message: 'Work approved. Please pay the remaining 80% to complete.', task });
   } catch (err) { return res.status(500).json({ message: 'Error' }); }
 });
 
@@ -253,10 +299,6 @@ router.post(['/:id/decline', '/:id/request-revision'], verifyJWT, async (req, re
 // 4. GENERIC PARAMETERIZED ROUTES (LOWEST PRIORITY)
 // =========================================================
 
-/**
- * GET /api/tasks/:id/candidates
- * RESTORED: Original complex aggregation pipeline for candidate matching
- */
 router.get('/:id/candidates', verifyJWT, async (req, res) => {
   try {
     if (req.user.role !== 'admin') return res.status(403).json({ message: 'Admin only' });
@@ -289,7 +331,7 @@ router.get('/:id', verifyJWT, async (req, res) => {
 router.delete('/:id', verifyJWT, async (req, res) => {
   try {
     const task = await Task.findById(req.params.id);
-    if (!task || task.client.toString() !== req.user.id) return res.status(403).json({ message: 'Denied' });
+    if (task.client.toString() !== req.user.id) return res.status(403).json({ message: 'Denied' });
     await Task.deleteOne({ _id: req.params.id });
     return res.json({ message: 'Deleted' });
   } catch (err) { return res.status(500).json({ message: 'Error' }); }
