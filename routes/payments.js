@@ -21,7 +21,11 @@ const key_secret = process.env.RAZORPAY_KEY_SECRET;
 let razorpay = null;
 let isRazorpayActive = false;
 
-// Only initialize if real keys are provided to prevent "mandatory key_id" crash
+/**
+ * We only initialize the SDK if real keys are provided.
+ * This prevents the "Error: key_id is mandatory" crash on environments 
+ * where keys are not yet configured (like a fresh Render deploy).
+ */
 if (key_id && key_secret && key_id !== 'PLACEHOLDER' && key_secret !== 'PLACEHOLDER') {
   try {
     razorpay = new Razorpay({
@@ -34,7 +38,7 @@ if (key_id && key_secret && key_id !== 'PLACEHOLDER' && key_secret !== 'PLACEHOL
     console.error('❌ Razorpay failed to initialize:', err.message);
   }
 } else {
-  console.warn('⚠️ Razorpay credentials missing. Auto-payments disabled. Defaulting to manual workflow.');
+  console.warn('⚠️ Razorpay credentials missing or invalid. Auto-payments disabled. Defaulting to manual workflow.');
 }
 
 /**
@@ -44,10 +48,10 @@ if (key_id && key_secret && key_id !== 'PLACEHOLDER' && key_secret !== 'PLACEHOL
  */
 router.post('/create-order', verifyJWT, async (req, res) => {
   try {
-    // FAIL-SAFE: Check if gateway is active
-    if (!isRazorpayActive) {
+    // FAIL-SAFE: If Razorpay isn't configured, prevent the crash and inform the user
+    if (!isRazorpayActive || !razorpay) {
       return res.status(503).json({ 
-        message: 'Automatic payment gateway is currently unavailable. Please contact Admin for manual payment (UPI/Bank Transfer).' 
+        message: 'Automatic payment gateway is currently unavailable. Please contact Admin for manual payment details (UPI/Bank Transfer).' 
       });
     }
 
@@ -61,17 +65,18 @@ router.post('/create-order', verifyJWT, async (req, res) => {
     if (!task) return res.status(404).json({ message: 'Task not found' });
 
     // Calculate amount based on phase (20% or 80%)
+    // Note: Razorpay expects amount in PAISE (₹1 = 100 paise)
     const amount = type === 'advance' ? (task.budget * 0.20) : (task.budget * 0.80);
     
     const options = {
-      amount: Math.round(amount * 100), // paise
+      amount: Math.round(amount * 100), 
       currency: "INR",
       receipt: `receipt_${taskId}_${type}_${Date.now()}`,
     };
 
     const order = await razorpay.orders.create(options);
 
-    // Update or Create the Payment Ledger in MongoDB
+    // Update the Payment Ledger in MongoDB
     let paymentRecord = await Payment.findOne({ task: taskId });
     
     if (!paymentRecord) {
@@ -81,7 +86,7 @@ router.post('/create-order', verifyJWT, async (req, res) => {
     if (type === 'advance') {
       paymentRecord.advance.amount = amount;
       paymentRecord.advance.orderId = order.id;
-      paymentRecord.status = 'awaiting_advance';
+      // We don't change task status yet; that happens after payment success
     } else {
       paymentRecord.final.amount = amount;
       paymentRecord.final.orderId = order.id;
@@ -93,7 +98,7 @@ router.post('/create-order', verifyJWT, async (req, res) => {
       orderId: order.id,
       amount: order.amount,
       currency: order.currency,
-      keyId: process.env.RAZORPAY_KEY_ID
+      keyId: process.env.RAZORPAY_KEY_ID // Required by Flutter SDK
     });
 
   } catch (err) {
@@ -105,17 +110,24 @@ router.post('/create-order', verifyJWT, async (req, res) => {
 /**
  * POST /api/payments/webhook
  * AUTOMATIC: Hit by Razorpay servers instantly when payment is successful.
+ * This manages the automated workflow transitions.
  */
 router.post('/webhook', async (req, res) => {
   const secret = process.env.RAZORPAY_WEBHOOK_SECRET;
   const signature = req.headers['x-razorpay-signature'];
 
-  // FAIL-SAFE: If no secret is set, ignore webhooks to prevent errors
+  // FAIL-SAFE: If no secret is set, ignore webhooks to prevent processing errors
   if (!secret || !signature) {
     return res.status(200).json({ status: 'ignored', message: 'Webhook secret not configured' });
   }
 
   try {
+    /**
+     * Verification Logic:
+     * We use the raw request body to verify the signature.
+     * Note: This assumes app.use(express.raw) or similar is used in server.js 
+     * specifically for this route to preserve the original string formatting.
+     */
     const shasum = crypto.createHmac('sha256', secret);
     shasum.update(JSON.stringify(req.body));
     const digest = shasum.digest('hex');
@@ -127,9 +139,11 @@ router.post('/webhook', async (req, res) => {
     const event = req.body.event;
     const payload = req.body.payload.payment.entity;
 
+    // We react to captured payments
     if (event === 'payment.captured') {
       const orderId = payload.order_id;
       
+      // Find the specific ledger phase (Advance or Final) associated with this Order ID
       const paymentRecord = await Payment.findOne({
         $or: [{ 'advance.orderId': orderId }, { 'final.orderId': orderId }]
       });
@@ -139,12 +153,14 @@ router.post('/webhook', async (req, res) => {
         const student = await User.findById(paymentRecord.student);
 
         if (orderId === paymentRecord.advance.orderId) {
-          /** PHASE 1: 20% Paid */
+          /** PHASE 1 COMPLETE: 20% Advance Received */
           paymentRecord.advance.status = 'paid';
           paymentRecord.advance.paymentId = payload.id;
           paymentRecord.advance.paidAt = new Date();
           paymentRecord.advance.method = 'razorpay';
           paymentRecord.status = 'partially_paid';
+          
+          // Work can now begin
           task.status = 'assigned';
 
           await sendNotification(student._id, {
@@ -154,22 +170,26 @@ router.post('/webhook', async (req, res) => {
           });
 
         } else if (orderId === paymentRecord.final.orderId) {
-          /** PHASE 2: 80% Paid */
+          /** PHASE 2 COMPLETE: 80% Final Received */
           paymentRecord.final.status = 'paid';
           paymentRecord.final.paymentId = payload.id;
           paymentRecord.final.paidAt = new Date();
           paymentRecord.final.method = 'razorpay';
           paymentRecord.status = 'completed';
+          
+          // Project is officially finished
           task.status = 'completed';
 
-          // Automatically credit Student virtual wallet
-          student.wallet += (paymentRecord.netToStudent || task.budget);
+          // AUTOMATIC STUDENT WALLET CREDIT
+          // Credit the 'netToStudent' amount (usually task budget minus SKILEN platform fees)
+          const amountToCredit = paymentRecord.netToStudent || task.budget;
+          student.wallet += amountToCredit;
           student.tasksCompleted += 1;
           await student.save();
 
           await sendNotification(student._id, {
             title: 'Earnings Credited',
-            body: `Final payment for "${task.title}" received. Check your wallet!`,
+            body: `Final payment for "${task.title}" received. Check your virtual wallet!`,
             data: { type: 'payment_received', taskId: task._id.toString() }
           });
         }
@@ -182,8 +202,8 @@ router.post('/webhook', async (req, res) => {
     return res.status(200).json({ status: 'ok' });
 
   } catch (err) {
-    console.error('Webhook Error:', err);
-    return res.status(500).send('Internal Error');
+    console.error('Webhook Logic Error:', err);
+    return res.status(500).send('Internal Processing Error');
   }
 });
 
