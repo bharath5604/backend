@@ -11,11 +11,6 @@ const paymentSchema = new mongoose.Schema(
       ref: 'Task',
       required: true,
     },
-    bid: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'Bid',
-      required: true, // Preserving original logic requiring a bid
-    },
     client: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
