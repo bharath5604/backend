@@ -85,8 +85,9 @@ const withdrawalStatusSchema = Joi.object({
 });
 
 const acceptRequestSchema = Joi.object({
-  agreedToTerms: Joi.boolean().required(),
-});
+  studentAgreedToTerms: Joi.boolean().valid(true).optional(),
+  acceptedTerms: Joi.boolean().valid(true).optional()
+}).or('studentAgreedToTerms', 'acceptedTerms');
 
 // =========================================================
 // 1. DASHBOARD ANALYTICS (TOP PRIORITY - STATIC PATHS FIRST)
@@ -132,7 +133,7 @@ router.get('/getTaskFunnelStats', verifyJWT, ensureAdmin, async (req, res) => {
 
 /**
  * GET /api/admin/stats/overview
- * Breakdown: Total Users, Students, Clients
+ * FIXED: Added Student and Client breakdown logic
  */
 router.get('/stats/overview', verifyJWT, ensureAdmin, async (req, res) => {
   try {
@@ -199,7 +200,9 @@ router.get('/tasks', verifyJWT, ensureAdmin, async (req, res) => {
 
 router.get('/withdrawals', verifyJWT, ensureAdmin, async (req, res) => {
   try {
-    const requests = await Withdrawal.find({}).populate('student').sort({ createdAt: -1 });
+    const status = req.query.status;
+    const filter = status ? { status } : {};
+    const requests = await Withdrawal.find(filter).populate('student').sort({ createdAt: -1 });
     return res.json(requests);
   } catch (err) { return res.status(500).json({ message: 'Error loading withdrawals' }); }
 });
@@ -212,6 +215,10 @@ router.get('/getPendingPayments', verifyJWT, ensureAdmin, async (req, res) => {
     return res.json(p);
   } catch (err) { return res.status(500).json({ message: 'Error fetching payments' }); }
 });
+
+// =========================================================
+// 3. ACTION ROUTES (PARAMETERIZED - LOWEST PRIORITY)
+// =========================================================
 
 router.get('/tasks/:id/candidates', verifyJWT, ensureAdmin, async (req, res) => {
   try {
@@ -231,9 +238,6 @@ router.get('/tasks/:id/candidates', verifyJWT, ensureAdmin, async (req, res) => 
     return res.json(students);
   } catch (err) { return res.status(500).json({ message: 'Error loading candidates' }); }
 });
-// =========================================================
-// 3. ACTION ROUTES (PARAMETERIZED - LOWEST PRIORITY)
-// =========================================================
 
 router.patch('/users/:id/approve', verifyJWT, ensureAdmin, async (req, res) => {
   try {
@@ -245,42 +249,37 @@ router.patch('/users/:id/approve', verifyJWT, ensureAdmin, async (req, res) => {
     return res.json({ message: 'User status updated', user });
   } catch (err) { return res.status(500).json({ message: 'Error' }); }
 });
+
 /**
- * POST /api/tasks/:id/accept-request
+ * POST /api/admin/:id/accept-request
+ * FIXED: Resolves 500 Error by initializing Payment Ledger without requiring a 'bid'
  */
 router.post('/:id/accept-request', verifyJWT, async (req, res) => {
+  const session = await mongoose.startSession();
   try {
+    session.startTransaction();
     if (req.user.role !== 'student') return res.status(403).json({ message: 'Forbidden' });
 
     const { error } = acceptRequestSchema.validate(req.body);
-    if (error) return res.status(400).json({ message: 'You must agree to the SKILEN terms.' });
+    if (error) return res.status(400).json({ message: 'Terms agreement required' });
 
-    const task = await Task.findById(req.params.id);
-    
-    // Safety check: Is this student actually the one invited?
+    const task = await Task.findById(req.params.id).session(session);
     if (!task || task.requestedStudent?.toString() !== req.user.id) {
-      return res.status(404).json({ message: 'Invitation not found or expired.' });
+      return res.status(404).json({ message: 'Invitation not found' });
     }
 
-    // 1. Create the Payment record (The Gate for the Admin)
-    // We create this NOW so it shows up in Admin > Payouts immediately
-    try {
-      await Payment.create({
-        task: task._id,
-        client: task.client,
-        student: req.user.id,
-        totalBudget: task.budget,
-        netToStudent: task.budget, // Original logic
-        advance: { amount: task.budget * 0.20, status: 'pending' },
-        final: { amount: task.budget * 0.80, status: 'pending' },
-        status: 'awaiting_advance'
-      });
-    } catch (payErr) {
-      console.error('CRITICAL: Payment Creation Failed:', payErr);
-      return res.status(500).json({ message: 'Financial ledger could not be initialized.' });
-    }
+    // Initialize Payment ledger for the Admin/Client workflow
+    await Payment.create([{
+      task: task._id,
+      client: task.client,
+      student: req.user.id,
+      totalBudget: task.budget,
+      netToStudent: task.budget,
+      advance: { amount: task.budget * 0.20, status: 'pending' },
+      final: { amount: task.budget * 0.80, status: 'pending' },
+      status: 'awaiting_advance'
+    }], { session });
 
-    // 2. Update the Task Status
     task.student = req.user.id;
     task.studentAgreedToTerms = true;
     task.status = 'awaiting_advance'; 
@@ -288,15 +287,17 @@ router.post('/:id/accept-request', verifyJWT, async (req, res) => {
     task.requestedStudent = null;
     task.assignmentRequestStatus = null;
 
-    await task.save();
+    await task.save({ session });
+    await session.commitTransaction();
     
     return res.json({ message: 'Project accepted. Awaiting advance payment.', task });
-
   } catch (err) {
-    console.error('Accept Request Crash:', err);
-    return res.status(500).json({ message: 'Server error during acceptance.' });
-  }
+    await session.abortTransaction();
+    console.error('Accept Request Error:', err);
+    return res.status(500).json({ message: 'Internal Server Error during acceptance' });
+  } finally { session.endSession(); }
 });
+
 router.post('/tasks/:id/assign', verifyJWT, ensureAdmin, async (req, res) => {
   try {
     const { value } = assignStudentSchema.validate(req.body);
@@ -355,7 +356,7 @@ router.patch('/withdrawals/:id', verifyJWT, ensureAdmin, async (req, res) => {
 
     if (status === 'rejected') {
       const student = await User.findById(withdrawal.student).session(session);
-      student.wallet += withdrawal.amount; // Refund
+      student.wallet += withdrawal.amount; 
       await student.save({ session });
     }
 
