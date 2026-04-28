@@ -87,6 +87,7 @@ const paymentSchema = new mongoose.Schema({
     enum: [
         'created', 
         'awaiting_advance', 
+        'approved',
         'partially_paid', 
         'fully_paid', 
         'released', 

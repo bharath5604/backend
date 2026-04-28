@@ -285,26 +285,47 @@ router.post('/:id/submit', verifyJWT, async (req, res) => {
  * POST /api/tasks/:id/approve
  * WORKFLOW: Moves task to 'awaiting_final_payment' AND Payment to 'approved'
  */
+// backend/routes/tasks.js
+
 router.post(['/:id/approve', '/:id/approve-submission'], verifyJWT, async (req, res) => {
   try {
     const task = await Task.findById(req.params.id);
-    if (!task || task.client.toString() !== req.user.id) return res.status(403).json({ message: 'Forbidden' });
-    if (!task.submission) return res.status(400).json({ message: 'No submission found' });
-
-    // 1. Update Task status
-    task.submission.approved = true;
-    task.status = 'awaiting_final_payment'; 
-    await task.save();
-
-    // 2. Update Payment status to 'approved' (Ready for 80% Verification)
-    const payment = await Payment.findOne({ task: task._id });
-    if (payment) { 
-      payment.status = 'approved'; // <--- CHANGE THIS from partially_paid to approved
-      await payment.save(); 
+    if (!task || task.client.toString() !== req.user.id) {
+        return res.status(403).json({ message: 'Forbidden' });
+    }
+    if (!task.submission) {
+        return res.status(400).json({ message: 'No submission found' });
     }
 
-    return res.json({ message: 'Work approved. Please pay the remaining 80%.', task });
-  } catch (err) { return res.status(500).json({ message: 'Error' }); }
+    // 1. Update Task
+    task.submission.approved = true;
+    task.submission.clientApprovedAt = new Date();
+    task.status = 'awaiting_final_payment'; 
+
+    // 2. Update Payment
+    const payment = await Payment.findOne({ task: task._id });
+    if (!payment) {
+        return res.status(404).json({ message: 'Payment record not found' });
+    }
+
+    payment.status = 'approved'; // This triggers the "Verify 80%" button in Flutter
+
+    // 3. Atomic Save (Both must succeed)
+    await task.save();
+    await payment.save();
+
+    return res.json({ 
+        message: 'Work approved. Awaiting final payment verification.', 
+        status: task.status 
+    });
+    
+  } catch (err) {
+    console.error('APPROVAL ERROR:', err.message);
+    return res.status(500).json({ 
+        message: 'Internal Server Error during approval', 
+        error: err.message 
+    });
+  }
 });
 
 router.post(['/:id/decline', '/:id/request-revision'], verifyJWT, async (req, res) => {
