@@ -223,6 +223,10 @@ router.post('/task', verifyJWT, async (req, res) => {
 
     const message = await Message.create(messagePayload);
     await message.populate([{ path: 'sender', select: 'name role' }, { path: 'receiver', select: 'name role' }]);
+    // --- ADD THIS BLOCK ---
+    const io = req.app.get('socketio');
+    io.to(taskId).emit('new_message', message); 
+    // -----------------------
 
     res.status(201).json(message);
 
@@ -315,6 +319,11 @@ router.post('/admin-student', verifyJWT, async (req, res) => {
     });
 
     await message.populate([{ path: 'sender', select: 'name role' }, { path: 'receiver', select: 'name role' }]);
+    // --- ADD THIS BLOCK ---
+    const io = req.app.get('socketio');
+    io.to(taskId).emit('new_message', message); 
+    // -----------------------
+
     res.status(201).json(message);
 
     (async () => {
