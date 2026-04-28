@@ -1,11 +1,51 @@
-//backend/server.js
+// backend/server.js
 const express = require('express');
 const cors = require('cors');
+const http = require('http'); // Required for Socket.io
+const { Server } = require('socket.io'); // Required for Real-time
 require('dotenv').config();
 
 const connectDB = require('./config/db');
 
 const app = express();
+const server = http.createServer(app); // Wrap express app with HTTP server
+
+// Initialize Socket.io
+const io = new Server(server, {
+  cors: {
+    origin: "*", // Adjust this to your frontend URL in production
+    methods: ["GET", "POST"],
+    credentials: true
+  }
+});
+
+// Make socket.io accessible in all route files via req.app.get('socketio')
+app.set('socketio', io);
+
+/*
+=====================================
+REAL-TIME CONNECTION LOGIC
+=====================================
+*/
+io.on('connection', (socket) => {
+  console.log('A user connected:', socket.id);
+
+  // Users join a specific task room to see chat updates instantly
+  socket.on('join_task', (taskId) => {
+    socket.join(taskId);
+    console.log(`User joined task room: ${taskId}`);
+  });
+
+  // Users join a personal room to receive wallet/status updates
+  socket.on('join_user', (userId) => {
+    socket.join(userId);
+    console.log(`User joined private room: ${userId}`);
+  });
+
+  socket.on('disconnect', () => {
+    console.log('User disconnected');
+  });
+});
 
 /*
 =====================================
@@ -79,7 +119,7 @@ HEALTH CHECK (RESTORED 100%)
 =====================================
 */
 app.get('/', (req, res) => {
-  res.status(200).send('SkillBid API Running ✅');
+  res.status(200).send('SkillBid API Running with Real-Time Support ✅');
 });
 
 app.get('/health', (req, res) => {
@@ -87,6 +127,7 @@ app.get('/health', (req, res) => {
     ok: true,
     message: 'SkillBid API is healthy',
     environment: process.env.NODE_ENV || 'development',
+    sockets: 'active'
   });
 });
 
@@ -159,17 +200,18 @@ DATABASE + SERVER (RESTORED 100%)
 =====================================
 */
 const PORT = Number(process.env.PORT) || 10000;
-let server = null;
+let activeServer = null;
 
 async function startServer() {
   try {
     await connectDB();
 
-    server = app.listen(PORT, '0.0.0.0', () => {
-      console.log(`Server running on port ${PORT}`);
+    // Use server.listen instead of app.listen to enable Sockets
+    activeServer = server.listen(PORT, '0.0.0.0', () => {
+      console.log(`Server running on port ${PORT} (Real-Time Enabled)`);
     });
 
-    server.on('error', (err) => {
+    activeServer.on('error', (err) => {
       console.error('HTTP server error:', err);
     });
   } catch (err) {
@@ -181,8 +223,8 @@ async function startServer() {
 async function shutdown(signal) {
   console.log(`${signal} received. Shutting down gracefully...`);
 
-  if (server) {
-    server.close(() => {
+  if (activeServer) {
+    activeServer.close(() => {
       console.log('HTTP server closed');
       process.exit(0);
     });

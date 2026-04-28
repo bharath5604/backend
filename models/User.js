@@ -1,4 +1,4 @@
-//backend/models/User.js
+// backend/models/User.js
 const mongoose = require('mongoose');
 
 ////////////////////////////////////////////////////
@@ -78,6 +78,20 @@ const userSchema = new mongoose.Schema(
       type: String,
       enum: ['student', 'client', 'admin'],
       required: true,
+    },
+
+    ////////////////////////////////////////////////////
+    /// AUTHENTICATION / PASSWORD RESET (NEW)
+    ////////////////////////////////////////////////////
+
+    resetPasswordOTP: {
+      type: String,
+      default: null,
+    },
+
+    resetPasswordExpires: {
+      type: Date,
+      default: null,
     },
 
     ////////////////////////////////////////////////////
