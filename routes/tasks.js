@@ -279,18 +279,29 @@ router.post('/:id/submit', verifyJWT, async (req, res) => {
   } catch (err) { return res.status(500).json({ message: 'Error' }); }
 });
 
+
+
+/**
+ * POST /api/tasks/:id/approve
+ * WORKFLOW: Moves task to 'awaiting_final_payment' AND Payment to 'approved'
+ */
 router.post(['/:id/approve', '/:id/approve-submission'], verifyJWT, async (req, res) => {
   try {
     const task = await Task.findById(req.params.id);
     if (!task || task.client.toString() !== req.user.id) return res.status(403).json({ message: 'Forbidden' });
     if (!task.submission) return res.status(400).json({ message: 'No submission found' });
 
+    // 1. Update Task status
     task.submission.approved = true;
     task.status = 'awaiting_final_payment'; 
     await task.save();
 
+    // 2. Update Payment status to 'approved' (Ready for 80% Verification)
     const payment = await Payment.findOne({ task: task._id });
-    if (payment) { payment.status = 'partially_paid'; await payment.save(); }
+    if (payment) { 
+      payment.status = 'approved'; // <--- CHANGE THIS from partially_paid to approved
+      await payment.save(); 
+    }
 
     return res.json({ message: 'Work approved. Please pay the remaining 80%.', task });
   } catch (err) { return res.status(500).json({ message: 'Error' }); }
