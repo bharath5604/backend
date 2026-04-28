@@ -196,6 +196,8 @@ router.post('/tasks/:id/assign', verifyJWT, ensureAdmin, async (req, res) => {
 
 
 
+// backend/routes/admin.js
+
 router.post('/tasks/:id/record-manual-payment', verifyJWT, ensureAdmin, async (req, res) => {
   const session = await mongoose.startSession();
   try {
@@ -203,15 +205,25 @@ router.post('/tasks/:id/record-manual-payment', verifyJWT, ensureAdmin, async (r
     const taskId = normalizeId(req.params.id);
     const { type, note } = req.body;
 
+    // 1. Fetch the Task
     const task = await Task.findById(taskId).session(session);
-    if (!task) throw new Error('Task not found');
+    if (!task) throw new Error('Task not found in database.');
 
-    const resolvedStudentId = task.student || task.requestedStudent;
-    if (!resolvedStudentId) throw new Error('No student found for this task.');
-
+    // 2. Fetch the existing Payment record (The Ledger)
     let payment = await Payment.findOne({ task: taskId }).session(session);
 
+    // 3. RESOLVE STUDENT ID (Smart Search)
+    // We check the Payment record first, then the Task's assigned student, then the invited student.
+    const resolvedStudentId = payment?.student || task.student || task.requestedStudent;
+    
+    if (!resolvedStudentId) {
+      throw new Error('No student is currently linked to this task. You must "Invite" a student from the candidate list before verifying a payment.');
+    }
+
+    // 4. Initialize Payment record if it doesn't exist yet
+    // (This happens if Admin is force-assigning via payment before student clicks accept)
     if (!payment) {
+      console.log('Ledger not found. Creating a new payment record for manual verification...');
       payment = new Payment({
         task: task._id,
         client: task.client,
@@ -224,24 +236,27 @@ router.post('/tasks/:id/record-manual-payment', verifyJWT, ensureAdmin, async (r
       });
     }
 
+    // 5. Update based on Phase
     if (type === 'advance') {
-      // Set sub-object fields (Supported by updated Payment.js)
+      /** PHASE 1: 20% ADVANCE */
       payment.advance.status = 'paid';
       payment.advance.method = 'manual';
       payment.advance.paidAt = new Date();
       payment.status = 'partially_paid';
       
-      // Update Task - CRITICAL: cast req.user.id to ObjectId
+      // Update Task status and fulfill ALL schema requirements
       task.status = 'assigned'; 
       task.student = resolvedStudentId;
       task.assignedByAdmin = new mongoose.Types.ObjectId(req.user.id); 
       task.assignedAt = new Date();
-      task.studentAgreedToTerms = true; 
+      task.studentAgreedToTerms = true; // Implicitly agreed if Admin is paying for them
       
+      // Clear invitation metadata
       task.requestedStudent = null;
       task.assignmentRequestStatus = null;
       
     } else {
+      /** PHASE 2: 80% FINAL BALANCE */
       payment.final.status = 'paid';
       payment.final.method = 'manual';
       payment.final.paidAt = new Date();
@@ -249,29 +264,40 @@ router.post('/tasks/:id/record-manual-payment', verifyJWT, ensureAdmin, async (r
       
       task.status = 'completed';
 
+      // 6. Credit Student Virtual Wallet
       const student = await User.findById(resolvedStudentId).session(session);
       if (student) {
         const amountToCredit = payment.netToStudent || task.budget;
         student.wallet = (student.wallet || 0) + amountToCredit;
         student.tasksCompleted = (student.tasksCompleted || 0) + 1;
         await student.save({ session });
+        console.log(`Successfully credited Student Wallet with ₹${amountToCredit}`);
       }
     }
 
+    // Add Admin note for the audit trail
     payment.adminNote = note || 'Verified manually by Admin';
     
+    // Save both documents inside the transaction
     await payment.save({ session });
     await task.save({ session });
 
     await session.commitTransaction();
-    return res.json({ message: 'Success', status: task.status });
+    return res.json({ 
+        message: 'Payment verified successfully', 
+        status: task.status,
+        studentId: resolvedStudentId 
+    });
 
   } catch (err) {
     if (session.inTransaction()) {
       await session.abortTransaction();
     }
-    console.error('SERVER ERROR LOG:', err.message);
-    return res.status(500).json({ message: err.message });
+    console.error('MANUAL PAYMENT LOGIC ERROR:', err.message);
+    return res.status(500).json({ 
+        message: 'Verification failed', 
+        error: err.message 
+    });
   } finally {
     session.endSession();
   }
