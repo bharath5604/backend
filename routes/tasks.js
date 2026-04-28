@@ -287,44 +287,96 @@ router.post('/:id/submit', verifyJWT, async (req, res) => {
  */
 // backend/routes/tasks.js
 
+/**
+ * POST /api/tasks/:id/approve
+ * WORKFLOW: 
+ * 1. Client marks work as approved.
+ * 2. Task moves to 'awaiting_final_payment'.
+ * 3. Payment Ledger moves to 'approved' (This enables the "Verify 80%" button for Admin).
+ */
 router.post(['/:id/approve', '/:id/approve-submission'], verifyJWT, async (req, res) => {
+  const session = await mongoose.startSession();
   try {
-    const task = await Task.findById(req.params.id);
-    if (!task || task.client.toString() !== req.user.id) {
-        return res.status(403).json({ message: 'Forbidden' });
-    }
-    if (!task.submission) {
-        return res.status(400).json({ message: 'No submission found' });
+    session.startTransaction();
+
+    // 1. Fetch Task
+    const task = await Task.findById(req.params.id).session(session);
+    
+    if (!task) {
+      await session.abortTransaction();
+      return res.status(404).json({ message: 'Task not found' });
     }
 
-    // 1. Update Task
+    // 2. Authorization Check (Only the client who owns the task can approve)
+    if (task.client.toString() !== req.user.id) {
+      await session.abortTransaction();
+      return res.status(403).json({ message: 'Forbidden: You do not own this task' });
+    }
+
+    // 3. Validation Check (Must have a submission to approve)
+    if (!task.submission) {
+      await session.abortTransaction();
+      return res.status(400).json({ message: 'No student submission found to approve' });
+    }
+
+    // 4. Update Task Submission Metadata
     task.submission.approved = true;
     task.submission.clientApprovedAt = new Date();
+    
+    // 5. Update Task Workflow Status
     task.status = 'awaiting_final_payment'; 
 
-    // 2. Update Payment
-    const payment = await Payment.findOne({ task: task._id });
+    // 6. Update Payment Ledger
+    // Find the ledger associated with this task
+    const payment = await Payment.findOne({ task: task._id }).session(session);
+    
     if (!payment) {
-        return res.status(404).json({ message: 'Payment record not found' });
+      await session.abortTransaction();
+      return res.status(404).json({ message: 'Payment ledger not found for this task' });
     }
 
-    payment.status = 'approved'; // This triggers the "Verify 80%" button in Flutter
+    /** 
+     * CRITICAL: Moving status to 'approved'. 
+     * This makes the "Verify 80%" button visible in the Admin's Financial Management page.
+     */
+    payment.status = 'approved'; 
 
-    // 3. Atomic Save (Both must succeed)
-    await task.save();
-    await payment.save();
+    // 7. Save both documents atomically
+    await task.save({ session });
+    await payment.save({ session });
+
+    await session.commitTransaction();
+
+    // 8. Background Notification to Admin/Student (Optional but recommended)
+    try {
+        await sendNotification(task.student, {
+            title: 'Work Approved!',
+            body: `The client has approved your work for "${task.title}". Admin will verify the final payout shortly.`,
+            data: { type: 'task_approved', taskId: task._id.toString() }
+        });
+    } catch (notifErr) {
+        console.error('Notification failed after approval:', notifErr.message);
+    }
 
     return res.json({ 
-        message: 'Work approved. Awaiting final payment verification.', 
-        status: task.status 
+      message: 'Work approved successfully. Awaiting final payment verification from Admin.', 
+      status: task.status,
+      paymentStatus: payment.status
     });
-    
+
   } catch (err) {
-    console.error('APPROVAL ERROR:', err.message);
+    // Rollback changes if anything goes wrong
+    if (session.inTransaction()) {
+        await session.abortTransaction();
+    }
+    console.error('CRITICAL APPROVAL ERROR:', err.message);
+    
     return res.status(500).json({ 
-        message: 'Internal Server Error during approval', 
-        error: err.message 
+      message: 'Internal Server Error during approval process', 
+      error: err.message 
     });
+  } finally {
+    session.endSession();
   }
 });
 
