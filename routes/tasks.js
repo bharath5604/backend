@@ -1,16 +1,18 @@
 // backend/routes/tasks.js
 const express = require('express');
 const router = express.Router();
+const mongoose = require('mongoose');
 
 const Task = require('../models/Task');
 const User = require('../models/User');
 const Payment = require('../models/Payment');
+const Message = require('../models/Message'); // Added for chat-list logic
 const verifyJWT = require('../middleware/authMiddleware');
 const Joi = require('joi');
 const { sendNotification } = require('../utils/fcm');
 
 // =========================================================
-// HELPERS (RESTORED 100%)
+// HELPERS
 // =========================================================
 
 function cleanStr(v) {
@@ -18,7 +20,7 @@ function cleanStr(v) {
 }
 
 // =========================================================
-// JOI SCHEMAS (RESTORED & EXPANDED)
+// JOI SCHEMAS
 // =========================================================
 
 const createTaskSchema = Joi.object({
@@ -51,18 +53,57 @@ const submissionSchema = Joi.object({
 });
 
 // =========================================================
-// 1. HIGH-PRIORITY STATIC ROUTES (FIXES 404 ERRORS)
+// 1. HIGH-PRIORITY STATIC ROUTES
 // =========================================================
 
+/**
+ * FIXED: /assigned
+ * Now includes tasks where the user is either the final student OR the requested student.
+ * This ensures they appear in the "Workspace" and "Chat" lists during vetting.
+ */
 router.get('/assigned', verifyJWT, async (req, res) => {
   try {
     if (req.user.role !== 'student') return res.status(403).json({ message: 'Forbidden' });
+    
     const tasks = await Task.find({
-      student: req.user.id,
-      status: { $in: ['assigned', 'under_review', 'completed', 'declined', 'awaiting_final_payment', 'awaiting_advance'] },
+      $or: [
+        { student: req.user.id },
+        { requestedStudent: req.user.id }
+      ],
+      status: { $in: ['request_sent', 'assigned', 'under_review', 'completed', 'declined', 'awaiting_final_payment', 'awaiting_advance'] },
     }).populate('client', 'name company location').sort({ createdAt: -1 }).lean();
+    
     return res.json(tasks);
   } catch (err) { return res.status(500).json({ message: 'Server error' }); }
+});
+
+/**
+ * NEW: /chat-tasks
+ * Specifically for the student's chat inbox. It fetches tasks where messages exist
+ * between the admin and the student, even if the task is still "Open".
+ */
+router.get('/chat-tasks', verifyJWT, async (req, res) => {
+  try {
+    const userId = req.user.id;
+
+    // 1. Find all tasks where this student has participated in a message
+    const taskIdsFromMessages = await Message.distinct('task', {
+      $or: [{ sender: userId }, { receiver: userId }]
+    });
+
+    // 2. Find tasks where they are assigned, requested, OR have existing messages
+    const tasks = await Task.find({
+      $or: [
+        { student: userId },
+        { requestedStudent: userId },
+        { _id: { $in: taskIdsFromMessages } }
+      ]
+    }).populate('client', 'name company').sort({ updatedAt: -1 });
+
+    return res.json(tasks);
+  } catch (err) {
+    return res.status(500).json({ message: 'Error fetching chat list' });
+  }
 });
 
 router.get('/requests', verifyJWT, async (req, res) => {
@@ -131,13 +172,9 @@ router.get('/', verifyJWT, async (req, res) => {
 });
 
 // =========================================================
-// 3. PARAMETERIZED SUB-PATHS (MEDIUM PRIORITY)
+// 3. PARAMETERIZED SUB-PATHS
 // =========================================================
 
-/**
- * POST /api/tasks/:id/feedback
- * RESTORED: Updates global totals, domain-wise aggregates, and entry history.
- */
 router.post('/:id/feedback', verifyJWT, async (req, res) => {
   try {
     const { error, value } = feedbackSchema.validate(req.body);
@@ -185,10 +222,6 @@ router.post('/:id/feedback', verifyJWT, async (req, res) => {
   } catch (err) { return res.status(500).json({ message: 'Error saving feedback' }); }
 });
 
-/**
- * POST /api/tasks/:id/accept-request
- * FIXED: Resolves 500 Error by properly initializing Payment record without 'bid'
- */
 router.post('/:id/accept-request', verifyJWT, async (req, res) => {
   try {
     const { error } = acceptRequestSchema.validate(req.body);
@@ -197,7 +230,6 @@ router.post('/:id/accept-request', verifyJWT, async (req, res) => {
     const task = await Task.findById(req.params.id);
     if (!task || task.requestedStudent?.toString() !== req.user.id) return res.status(404).json({ message: 'Invitation not found' });
 
-    // Initialize Payment Ledger (The stop point for Admin/Client)
     await Payment.create({
       task: task._id,
       client: task.client,
@@ -219,18 +251,13 @@ router.post('/:id/accept-request', verifyJWT, async (req, res) => {
     await task.save();
     return res.json({ message: 'Accepted. Awaiting payment.', task });
   } catch (err) { 
-    console.error('Accept Request Error:', err.message);
     return res.status(500).json({ message: 'Internal Server Error' }); 
   }
 });
 
-/**
- * POST /api/tasks/:id/submit
- * Logic: Prevents submission if Phase 1 (20%) is not yet verified
- */
 router.post('/:id/submit', verifyJWT, async (req, res) => {
   try {
-    const { value } = submissionSchema.validate(req.body);
+    const { error, value } = submissionSchema.validate(req.body);
     const task = await Task.findById(req.params.id);
     if (!task || task.student?.toString() !== req.user.id) return res.status(403).json({ message: 'Denied' });
 
@@ -252,10 +279,6 @@ router.post('/:id/submit', verifyJWT, async (req, res) => {
   } catch (err) { return res.status(500).json({ message: 'Error' }); }
 });
 
-/**
- * POST /api/tasks/:id/approve
- * WORKFLOW: Moves task to Phase 2 (Awaiting 80%)
- */
 router.post(['/:id/approve', '/:id/approve-submission'], verifyJWT, async (req, res) => {
   try {
     const task = await Task.findById(req.params.id);
@@ -286,7 +309,7 @@ router.post(['/:id/decline', '/:id/request-revision'], verifyJWT, async (req, re
 });
 
 // =========================================================
-// 4. GENERIC PARAMETERIZED ROUTES (LOWEST PRIORITY)
+// 4. GENERIC PARAMETERIZED ROUTES
 // =========================================================
 
 router.get('/:id/candidates', verifyJWT, async (req, res) => {
