@@ -313,6 +313,7 @@ router.get('/tasks/:id/candidates', verifyJWT, ensureAdmin, async (req, res) => 
  * PATCH /api/admin/withdrawals/:id
  * FIXED: Now utilizes withdrawalStatusSchema for safe processing
  */
+
 router.patch('/withdrawals/:id', verifyJWT, ensureAdmin, async (req, res) => {
   const wId = normalizeId(req.params.id);
   const session = await mongoose.startSession();
@@ -322,23 +323,42 @@ router.patch('/withdrawals/:id', verifyJWT, ensureAdmin, async (req, res) => {
     if (error) return res.status(400).json({ message: error.details[0].message });
 
     const withdrawal = await Withdrawal.findById(wId).session(session);
-    if (!withdrawal || withdrawal.status !== 'pending') throw new Error('Invalid request');
+    
+    // Check if exists and is still pending
+    if (!withdrawal) throw new Error('Withdrawal request not found');
+    if (withdrawal.status !== 'pending') throw new Error('Request already processed');
 
     if (value.status === 'rejected') {
       const student = await User.findById(withdrawal.student).session(session);
-      student.wallet += withdrawal.amount; // Refund virtual wallet
+      student.wallet += withdrawal.amount; 
       await student.save({ session });
     }
 
     withdrawal.status = value.status;
-    withdrawal.adminNote = value.adminNote;
+    withdrawal.adminNote = value.adminNote || 'Processed by Admin';
     withdrawal.processedAt = new Date();
     await withdrawal.save({ session });
 
     await session.commitTransaction();
+
+    // ==========================================
+    // REAL-TIME TRIGGER: Notify Student & Admin
+    // ==========================================
+    const io = req.app.get('socketio');
+    if (io) {
+      // 1. Notify the student to refresh their dashboard
+      io.to(withdrawal.student.toString()).emit('wallet_update', { 
+        message: `Your withdrawal of ₹${withdrawal.amount} was ${value.status}` 
+      });
+      // 2. Notify all admins to refresh the pending list
+      io.emit('admin_stats_update'); 
+    }
+
     return res.json({ message: 'Withdrawal processed', withdrawal });
-  } catch (err) { await session.abortTransaction(); return res.status(400).json({ message: err.message }); }
-  finally { session.endSession(); }
+  } catch (err) { 
+    if (session.inTransaction()) await session.abortTransaction();
+    return res.status(400).json({ message: err.message }); 
+  } finally { session.endSession(); }
 });
 
 router.post('/releasePayment/:id', verifyJWT, ensureAdmin, async (req, res) => {
