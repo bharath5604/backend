@@ -203,18 +203,14 @@ router.post('/tasks/:id/record-manual-payment', verifyJWT, ensureAdmin, async (r
     const taskId = normalizeId(req.params.id);
     const { type, note } = req.body;
 
-    // 1. Fetch Task
     const task = await Task.findById(taskId).session(session);
     if (!task) throw new Error('Task not found');
 
-    // 2. Resolve Student
     const resolvedStudentId = task.student || task.requestedStudent;
-    if (!resolvedStudentId) {
-      throw new Error('No student found. Please invite a student to this task first.');
-    }
+    if (!resolvedStudentId) throw new Error('No student found for this task.');
 
-    // 3. Find or Create Payment Ledger
     let payment = await Payment.findOne({ task: taskId }).session(session);
+
     if (!payment) {
       payment = new Payment({
         task: task._id,
@@ -228,26 +224,24 @@ router.post('/tasks/:id/record-manual-payment', verifyJWT, ensureAdmin, async (r
       });
     }
 
-    // 4. Handle Advance (20%)
     if (type === 'advance') {
+      // Set sub-object fields (Supported by updated Payment.js)
       payment.advance.status = 'paid';
       payment.advance.method = 'manual';
       payment.advance.paidAt = new Date();
       payment.status = 'partially_paid';
       
-      // --- CRITICAL VALIDATION FIXES ---
+      // Update Task - CRITICAL: cast req.user.id to ObjectId
       task.status = 'assigned'; 
       task.student = resolvedStudentId;
-      task.assignedByAdmin = req.user.id; // <--- REQUIRED BY SCHEMA
-      task.assignedAt = new Date();       // <--- REQUIRED BY SCHEMA
-      task.studentAgreedToTerms = true;   // Force true to ensure task activates
+      task.assignedByAdmin = new mongoose.Types.ObjectId(req.user.id); 
+      task.assignedAt = new Date();
+      task.studentAgreedToTerms = true; 
       
-      // Clean up invitation metadata
       task.requestedStudent = null;
       task.assignmentRequestStatus = null;
       
     } else {
-      // 5. Handle Final (80%)
       payment.final.status = 'paid';
       payment.final.method = 'manual';
       payment.final.paidAt = new Date();
@@ -255,7 +249,6 @@ router.post('/tasks/:id/record-manual-payment', verifyJWT, ensureAdmin, async (r
       
       task.status = 'completed';
 
-      // Credit Student Wallet
       const student = await User.findById(resolvedStudentId).session(session);
       if (student) {
         const amountToCredit = payment.netToStudent || task.budget;
@@ -265,10 +258,8 @@ router.post('/tasks/:id/record-manual-payment', verifyJWT, ensureAdmin, async (r
       }
     }
 
-    // Save Note
     payment.adminNote = note || 'Verified manually by Admin';
     
-    // Save both documents inside the transaction
     await payment.save({ session });
     await task.save({ session });
 
@@ -276,13 +267,11 @@ router.post('/tasks/:id/record-manual-payment', verifyJWT, ensureAdmin, async (r
     return res.json({ message: 'Success', status: task.status });
 
   } catch (err) {
-    await session.abortTransaction();
-    console.error('MANUAL PAYMENT ERROR:', err.message);
-    // Send the actual error message back so you can see it in the Flutter logs
-    return res.status(500).json({ 
-      message: 'Payment verification failed', 
-      error: err.message 
-    });
+    if (session.inTransaction()) {
+      await session.abortTransaction();
+    }
+    console.error('SERVER ERROR LOG:', err.message);
+    return res.status(500).json({ message: err.message });
   } finally {
     session.endSession();
   }
