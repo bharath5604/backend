@@ -194,6 +194,8 @@ router.post('/tasks/:id/assign', verifyJWT, ensureAdmin, async (req, res) => {
   return res.json({ message: 'Sent', task });
 });
 
+
+
 router.post('/tasks/:id/record-manual-payment', verifyJWT, ensureAdmin, async (req, res) => {
   const session = await mongoose.startSession();
   try {
@@ -201,89 +203,84 @@ router.post('/tasks/:id/record-manual-payment', verifyJWT, ensureAdmin, async (r
     const taskId = normalizeId(req.params.id);
     const { type, note } = req.body;
 
-    // 1. Fetch the Task
+    // 1. Fetch Task
     const task = await Task.findById(taskId).session(session);
-    if (!task) throw new Error('Task not found in database');
+    if (!task) throw new Error('Task not found');
 
-    // 2. Resolve Student ID
-    // Logic: Use the assigned student, or the student currently being requested (The "Ticked" one)
+    // 2. Resolve Student
     const resolvedStudentId = task.student || task.requestedStudent;
-    
     if (!resolvedStudentId) {
-      throw new Error('No student (assigned or requested) found for this task. Assign a student first.');
+      throw new Error('No student found. Please invite a student to this task first.');
     }
 
-    // 3. Find or Create the Payment Record
+    // 3. Find or Create Payment Ledger
     let payment = await Payment.findOne({ task: taskId }).session(session);
-
     if (!payment) {
-      console.log('Initializing fresh payment ledger for manual verification...');
       payment = new Payment({
         task: task._id,
         client: task.client,
         student: resolvedStudentId,
         totalBudget: task.budget || 0,
-        netToStudent: task.budget || 0, // Default to full budget
+        netToStudent: task.budget || 0,
         status: 'created',
         advance: { amount: (task.budget || 0) * 0.20, status: 'pending' },
         final: { amount: (task.budget || 0) * 0.80, status: 'pending' }
       });
     }
 
-    // 4. Update the Payment Phase
+    // 4. Handle Advance (20%)
     if (type === 'advance') {
-      /** PHASE 1: 20% Manual Verification */
       payment.advance.status = 'paid';
       payment.advance.method = 'manual';
       payment.advance.paidAt = new Date();
       payment.status = 'partially_paid';
       
-      
-      // Update Task Status
+      // --- CRITICAL VALIDATION FIXES ---
       task.status = 'assigned'; 
-      // If we are force-assigning via payment, ensure student ID is moved to the main field
-      if (!task.student) task.student = resolvedStudentId;
-      task.assignedByAdmin = req.user.id; // Satisfies 'assignedByAdmin record is required'
-      task.assignedAt = new Date();       // Records assignment time
-      task.studentAgreedToTerms = true; // Implicit agreement if payment is made
+      task.student = resolvedStudentId;
+      task.assignedByAdmin = req.user.id; // <--- REQUIRED BY SCHEMA
+      task.assignedAt = new Date();       // <--- REQUIRED BY SCHEMA
+      task.studentAgreedToTerms = true;   // Force true to ensure task activates
+      
+      // Clean up invitation metadata
+      task.requestedStudent = null;
+      task.assignmentRequestStatus = null;
       
     } else {
-      /** PHASE 2: 80% Manual Verification */
+      // 5. Handle Final (80%)
       payment.final.status = 'paid';
       payment.final.method = 'manual';
       payment.final.paidAt = new Date();
       payment.status = 'completed';
       
-      // Update Task Status
       task.status = 'completed';
 
-      // 5. Credit Student Virtual Wallet
+      // Credit Student Wallet
       const student = await User.findById(resolvedStudentId).session(session);
       if (student) {
         const amountToCredit = payment.netToStudent || task.budget;
         student.wallet = (student.wallet || 0) + amountToCredit;
         student.tasksCompleted = (student.tasksCompleted || 0) + 1;
         await student.save({ session });
-        console.log(`Manual Credit: ₹${amountToCredit} added to Student: ${student.name}`);
       }
     }
 
-    // 6. Save metadata and documents
-    payment.adminNote = note || 'Manually verified by Admin';
+    // Save Note
+    payment.adminNote = note || 'Verified manually by Admin';
     
+    // Save both documents inside the transaction
     await payment.save({ session });
     await task.save({ session });
 
     await session.commitTransaction();
-    console.log(`Manual Payment Success: Task ${task.title} is now ${task.status}`);
-    
     return res.json({ message: 'Success', status: task.status });
 
   } catch (err) {
     await session.abortTransaction();
-    console.error('CRITICAL DATABASE SAVE ERROR:', err.message);
+    console.error('MANUAL PAYMENT ERROR:', err.message);
+    // Send the actual error message back so you can see it in the Flutter logs
     return res.status(500).json({ 
-      message: 'Database save failed', 
+      message: 'Payment verification failed', 
       error: err.message 
     });
   } finally {
