@@ -164,7 +164,7 @@ router.post('/webhook', async (req, res) => {
           task.status = 'assigned';
 
           await sendNotification(student._id, {
-            title: 'Project Activated',
+            title: 'Task Activated',
             body: `Advance for "${task.title}" received. You can now start the work.`,
             data: { type: 'task_assigned', taskId: task._id.toString() }
           });

@@ -20,10 +20,10 @@ router.get('/', async (req, res) => {
     const [
       studentCount,
       clientCount,
-      totalProjectCount,
-      completedProjectCount,
-      assignedProjectCount,
-      openProjectCount,
+      totalTaskCount,
+      completedTaskCount,
+      assignedTaskCount,
+      openTaskCount,
     ] = await Promise.all([
       User.countDocuments({ role: 'student' }),
       User.countDocuments({ role: 'client' }),
@@ -36,10 +36,10 @@ router.get('/', async (req, res) => {
     return res.json({
       students: toSafeNumber(studentCount),
       clients: toSafeNumber(clientCount),
-      projects: toSafeNumber(totalProjectCount),
-      completedProjects: toSafeNumber(completedProjectCount),
-      assignedProjects: toSafeNumber(assignedProjectCount),
-      openProjects: toSafeNumber(openProjectCount),
+      tasks: toSafeNumber(totalTaskCount),
+      completedTasks: toSafeNumber(completedTaskCount),
+      assignedTasks: toSafeNumber(assignedTaskCount),
+      openTasks: toSafeNumber(openTaskCount),
     });
   } catch (err) {
     console.error('Error in GET /api/stats', err);

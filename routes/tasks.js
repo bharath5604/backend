@@ -262,7 +262,7 @@ router.post('/:id/submit', verifyJWT, async (req, res) => {
     if (!task || task.student?.toString() !== req.user.id) return res.status(403).json({ message: 'Denied' });
 
     if (task.status === 'awaiting_advance') {
-      return res.status(403).json({ message: 'Payment for project activation is pending.' });
+      return res.status(403).json({ message: 'Payment for task activation is pending.' });
     }
 
     task.submission = { student: req.user.id, fileUrl: value.fileUrl, notes: value.notes || '', submittedAt: new Date() };
