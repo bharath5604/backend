@@ -305,7 +305,11 @@ router.post('/tasks/:id/record-manual-payment', verifyJWT, ensureAdmin, async (r
 router.get('/tasks/:id/candidates', verifyJWT, ensureAdmin, async (req, res) => {
     const taskId = normalizeId(req.params.id);
     const task = await Task.findById(taskId);
-    const students = await User.find({ role: 'student', isApproved: true, skills: { $in: task.requiredSkills || [] } });
+    const students = await User.find({ 
+    role: 'student', 
+    isApproved: true, 
+    skills: { $in: task.requiredSkills } 
+  }).select('name email mobile skills tasksCompleted averageScore');
     return res.json(students);
 });
 

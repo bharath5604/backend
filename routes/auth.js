@@ -34,6 +34,7 @@ function clean(value) {
 const signupSchema = Joi.object({
   name: Joi.string().min(2).max(100).required(),
   email: Joi.string().email().max(200).required(),
+  mobile: Joi.string().min(10).max(15).required(), // Added mobile
   password: Joi.string().min(6).max(128).required(),
   role: Joi.string().valid('student', 'client', 'admin').required(),
   company: Joi.string().max(200).allow('', null),
@@ -99,6 +100,7 @@ router.post('/signup', async (req, res) => {
     const userPayload = {
       name,
       email,
+      mobile: value.mobile,
       password: hashed,
       role,
     };
