@@ -381,6 +381,40 @@ router.get('/getTimeSeriesStats', verifyJWT, ensureAdmin, async (req, res) => {
   return res.json({ tasks });
 });
 
+router.get('/students/:id', protect, admin, async (req, res) => {
+  try {
+    const studentId = req.params.id;
+    
+    // 1. Fetch Student User Details
+    const student = await User.findById(studentId).select('-password');
+    if (!student) {
+      return res.status(404).json({ message: 'Student not found' });
+    }
+
+    // 2. Fetch Task Stats
+    const tasks = await Task.find({ student: studentId });
+    
+    const totalTasks = tasks.length;
+    const completedTasks = tasks.filter(t => t.status === 'completed').length;
+    
+    // 3. Calculate Earnings (assuming you have a 'budget' field in Task)
+    const totalEarnings = tasks
+      .filter(t => t.status === 'completed' || t.status === 'awaiting_final_payment')
+      .reduce((sum, t) => sum + (t.budget || 0), 0);
+
+    // 4. Return the structure the Flutter app expects
+    res.json({
+      student: student,
+      totalTasks: totalTasks,
+      completedTasks: completedTasks,
+      totalEarnings: totalEarnings
+    });
+
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
 router.get('/stats/growth', verifyJWT, ensureAdmin, async (req, res) => {
   const metric = clean(req.query.metric) || 'tasks';
   let coll = metric === 'students' ? User : metric === 'payments' ? Payment : Task;

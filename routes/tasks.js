@@ -178,6 +178,9 @@ router.get('/', verifyJWT, async (req, res) => {
 router.post('/:id/feedback', verifyJWT, async (req, res) => {
   try {
     const { error, value } = feedbackSchema.validate(req.body);
+    if (task.rating > 0 || task.feedback) {
+      return res.status(400).json({ message: 'Feedback has already been provided for this task.' });
+    }
     if (error) return res.status(400).json({ message: 'Score is required' });
 
     const task = await Task.findById(req.params.id);
@@ -218,6 +221,10 @@ router.post('/:id/feedback', verifyJWT, async (req, res) => {
     });
 
     await student.save();
+    const io = req.app.get('socketio');
+    if (io) {
+      io.to(task.student.toString()).emit('feedback_update', { message: 'New feedback received!' });
+    }
     return res.status(201).json({ message: 'Feedback saved' });
   } catch (err) { return res.status(500).json({ message: 'Error saving feedback' }); }
 });
