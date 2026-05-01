@@ -9,7 +9,7 @@ const Task = require('../models/Task');
 const Payment = require('../models/Payment');
 const Message = require('../models/Message');
 const Withdrawal = require('../models/Withdrawal');
-
+const { protect, admin } = require('../middleware/authMiddleware');
 const verifyJWT = require('../middleware/authMiddleware');
 const { sendNotification } = require('../utils/fcm');
 
