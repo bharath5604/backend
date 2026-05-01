@@ -9,6 +9,8 @@ const Task = require('../models/Task');
 const Payment = require('../models/Payment');
 const Message = require('../models/Message');
 const Withdrawal = require('../models/Withdrawal');
+
+// Using the project's standard middleware imports
 const { protect, admin } = require('../middleware/authMiddleware');
 const verifyJWT = require('../middleware/authMiddleware');
 const { sendNotification } = require('../utils/fcm');
@@ -172,6 +174,47 @@ router.get('/getPendingPayments', verifyJWT, ensureAdmin, async (req, res) => {
 // 3. ACTION ROUTES (PARAMETERIZED)
 // =========================================================
 
+/**
+ * FIXED DASHBOARD ROUTE: 
+ * Uses standard middleware and optimized queries to fix 404 and 500 errors.
+ */
+router.get('/students/:id', verifyJWT, ensureAdmin, async (req, res) => {
+  try {
+    const studentId = normalizeId(req.params.id);
+    
+    // 1. Fetch Student User Details
+    const student = await User.findById(studentId).select('-password');
+    if (!student) {
+      return res.status(404).json({ message: 'Student not found in database.' });
+    }
+
+    // 2. Fetch Task Stats (checking both common field names for students)
+    const tasks = await Task.find({ 
+      $or: [{ student: studentId }, { assignedTo: studentId }] 
+    });
+    
+    const totalTasks = tasks.length;
+    const completedTasks = tasks.filter(t => t.status === 'completed').length;
+    
+    // 3. Calculate Earnings
+    const totalPayments = tasks
+      .filter(t => t.status === 'completed' || t.status === 'awaiting_final_payment')
+      .reduce((sum, t) => sum + (t.budget || 0), 0);
+
+    // 4. Return formatted data for Flutter
+    return res.json({
+      student: student,
+      totalTasks: totalTasks,
+      completedTasks: completedTasks,
+      totalPayments: totalPayments
+    });
+
+  } catch (error) {
+    console.error('Student Dashboard Route Error:', error);
+    return res.status(500).json({ message: error.message });
+  }
+});
+
 router.patch('/users/:id/approve', verifyJWT, ensureAdmin, async (req, res) => {
   const targetId = normalizeId(req.params.id);
   const { error, value } = approveUserSchema.validate(req.body);
@@ -193,10 +236,6 @@ router.post('/tasks/:id/assign', verifyJWT, ensureAdmin, async (req, res) => {
   await sendNotification(value.studentId, { title: 'New Invitation', body: `Task: ${task.title}`, data: { type: 'task_request', taskId: task._id.toString() } });
   return res.json({ message: 'Sent', task });
 });
-
-
-
-// backend/routes/admin.js
 
 router.post('/tasks/:id/record-manual-payment', verifyJWT, ensureAdmin, async (req, res) => {
   const session = await mongoose.startSession();
@@ -266,33 +305,14 @@ router.post('/tasks/:id/record-manual-payment', verifyJWT, ensureAdmin, async (r
 
     await session.commitTransaction();
 
-    // ==========================================
-    // START REAL-TIME TRIGGERS
-    // ==========================================
     const io = req.app.get('socketio');
     if (io) {
-      // 1. Notify everyone looking at this task (Admin/Client/Student)
-      io.to(taskId).emit('task_update', { 
-        taskId, 
-        status: task.status,
-        message: `Task ${type} payment verified` 
-      });
-
-      // 2. Specifically notify the student to refresh their wallet/dashboard
-      io.to(resolvedStudentId.toString()).emit('wallet_update', { 
-        newBalance: student?.wallet || 0,
-        message: 'Your payment has been credited!'
-      });
-      
-      // 3. Optional: Notify Admin to refresh the Payouts/Stats page
+      io.to(taskId).emit('task_update', { taskId, status: task.status, message: `Task ${type} payment verified` });
+      io.to(resolvedStudentId.toString()).emit('wallet_update', { newBalance: student?.wallet || 0, message: 'Your payment has been credited!' });
       io.emit('admin_stats_update');
     }
-    // ==========================================
 
-    return res.json({ 
-        message: 'Payment verified successfully', 
-        status: task.status 
-    });
+    return res.json({ message: 'Payment verified successfully', status: task.status });
 
   } catch (err) {
     if (session.inTransaction()) await session.abortTransaction();
@@ -313,11 +333,6 @@ router.get('/tasks/:id/candidates', verifyJWT, ensureAdmin, async (req, res) => 
     return res.json(students);
 });
 
-/**
- * PATCH /api/admin/withdrawals/:id
- * FIXED: Now utilizes withdrawalStatusSchema for safe processing
- */
-
 router.patch('/withdrawals/:id', verifyJWT, ensureAdmin, async (req, res) => {
   const wId = normalizeId(req.params.id);
   const session = await mongoose.startSession();
@@ -327,8 +342,6 @@ router.patch('/withdrawals/:id', verifyJWT, ensureAdmin, async (req, res) => {
     if (error) return res.status(400).json({ message: error.details[0].message });
 
     const withdrawal = await Withdrawal.findById(wId).session(session);
-    
-    // Check if exists and is still pending
     if (!withdrawal) throw new Error('Withdrawal request not found');
     if (withdrawal.status !== 'pending') throw new Error('Request already processed');
 
@@ -345,16 +358,9 @@ router.patch('/withdrawals/:id', verifyJWT, ensureAdmin, async (req, res) => {
 
     await session.commitTransaction();
 
-    // ==========================================
-    // REAL-TIME TRIGGER: Notify Student & Admin
-    // ==========================================
     const io = req.app.get('socketio');
     if (io) {
-      // 1. Notify the student to refresh their dashboard
-      io.to(withdrawal.student.toString()).emit('wallet_update', { 
-        message: `Your withdrawal of ₹${withdrawal.amount} was ${value.status}` 
-      });
-      // 2. Notify all admins to refresh the pending list
+      io.to(withdrawal.student.toString()).emit('wallet_update', { message: `Your withdrawal of ₹${withdrawal.amount} was ${value.status}` });
       io.emit('admin_stats_update'); 
     }
 
@@ -373,46 +379,12 @@ router.post('/releasePayment/:id', verifyJWT, ensureAdmin, async (req, res) => {
 });
 
 // =========================================================
-// 4. CHARTS & MESSAGING (USING normalization helpers)
+// 4. CHARTS & MESSAGING
 // =========================================================
 
 router.get('/getTimeSeriesStats', verifyJWT, ensureAdmin, async (req, res) => {
   const tasks = await Task.aggregate([{ $group: { _id: { year: { $year: '$createdAt' }, month: { $month: '$createdAt' }, day: { $dayOfMonth: '$createdAt' } }, count: { $sum: 1 } } }]);
   return res.json({ tasks });
-});
-
-router.get('/students/:id', protect, admin, async (req, res) => {
-  try {
-    const studentId = req.params.id;
-    
-    // 1. Fetch Student User Details
-    const student = await User.findById(studentId).select('-password');
-    if (!student) {
-      return res.status(404).json({ message: 'Student not found' });
-    }
-
-    // 2. Fetch Task Stats
-    const tasks = await Task.find({ student: studentId });
-    
-    const totalTasks = tasks.length;
-    const completedTasks = tasks.filter(t => t.status === 'completed').length;
-    
-    // 3. Calculate Earnings (assuming you have a 'budget' field in Task)
-    const totalEarnings = tasks
-      .filter(t => t.status === 'completed' || t.status === 'awaiting_final_payment')
-      .reduce((sum, t) => sum + (t.budget || 0), 0);
-
-    // 4. Return the structure the Flutter app expects
-    res.json({
-      student: student,
-      totalTasks: totalTasks,
-      completedTasks: completedTasks,
-      totalEarnings: totalEarnings
-    });
-
-  } catch (error) {
-    res.status(500).json({ message: error.message });
-  }
 });
 
 router.get('/stats/growth', verifyJWT, ensureAdmin, async (req, res) => {
