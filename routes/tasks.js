@@ -280,7 +280,7 @@ router.post('/:id/feedback', verifyJWT, async (req, res) => {
     });
   }
 });
-router.post('/:id/update', protect, async (req, res) => {
+router.post('/:id/update', verifyJWT, async (req, res) => {
   try {
     const taskId = req.params.id;
     
@@ -288,20 +288,21 @@ router.post('/:id/update', protect, async (req, res) => {
     const task = await Task.findById(taskId);
 
     if (!task) {
-      return res.status(404).json({ message: 'Task not found' });
+      return res.status(404).json({ message: 'Task not found in database.' });
     }
 
     // 2. Security: Ensure only the owner (client) can edit it
+    // Note: req.user.id is set by the verifyJWT middleware
     if (task.client.toString() !== req.user.id.toString()) {
-      return res.status(403).json({ message: 'Not authorized to edit this task' });
+      return res.status(403).json({ message: 'Access denied. You do not own this task.' });
     }
 
-    // 3. Security: Prevent editing if the task is already completed
+    // 3. Prevent editing if task is already completed
     if (task.status === 'completed') {
-      return res.status(400).json({ message: 'Cannot edit a completed task' });
+      return res.status(400).json({ message: 'Cannot edit a task that is already completed.' });
     }
 
-    // 4. Update the fields
+    // 4. Update fields
     const { 
       title, description, budget, deadline, 
       location, domain, requiredSkills, 
@@ -315,20 +316,22 @@ router.post('/:id/update', protect, async (req, res) => {
     if (location) task.location = location;
     if (domain) task.domain = domain;
     if (requiredSkills) task.requiredSkills = requiredSkills;
+    
+    // For attachments, we overwrite with the new list sent from Flutter
     if (attachments) task.attachments = attachments;
     if (attachmentNames) task.attachmentNames = attachmentNames;
 
-    // 5. Save and Return
-    const updatedTask = await task.save();
+    // 5. Save changes
+    await task.save();
     
-    res.json({
+    return res.json({
       message: 'Task updated successfully',
-      task: updatedTask
+      task
     });
 
   } catch (error) {
     console.error('Update Task Error:', error);
-    res.status(500).json({ message: 'Server error while updating task' });
+    return res.status(500).json({ message: 'Internal server error while updating task.' });
   }
 });
 
