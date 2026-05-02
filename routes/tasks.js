@@ -175,58 +175,110 @@ router.get('/', verifyJWT, async (req, res) => {
 // 3. PARAMETERIZED SUB-PATHS
 // =========================================================
 
+// backend/routes/task.js (or wherever your task routes are)
+
 router.post('/:id/feedback', verifyJWT, async (req, res) => {
   try {
+    // 1. Validate Input First
     const { error, value } = feedbackSchema.validate(req.body);
-    if (task.rating > 0 || task.feedback) {
+    if (error) {
+      return res.status(400).json({ message: 'Score (1-5) and feedback text are required.' });
+    }
+
+    // 2. Fetch the Task
+    const task = await Task.findById(req.params.id);
+    
+    // 3. Security & Existence Checks
+    if (!task) {
+      return res.status(404).json({ message: 'Task not found' });
+    }
+
+    if (task.client.toString() !== req.user.id) {
+      return res.status(403).json({ message: 'Access denied. Only the client can provide feedback.' });
+    }
+
+    // 4. Check if feedback already exists (Now that 'task' is defined)
+    if ((task.rating && task.rating > 0) || task.feedback) {
       return res.status(400).json({ message: 'Feedback has already been provided for this task.' });
     }
-    if (error) return res.status(400).json({ message: 'Score is required' });
 
-    const task = await Task.findById(req.params.id);
-    if (!task || task.client.toString() !== req.user.id) return res.status(403).json({ message: 'Access denied' });
-
+    // 5. Fetch the Student
     const student = await User.findById(task.student);
-    if (!student) return res.status(404).json({ message: 'Student not found' });
+    if (!student) {
+      return res.status(404).json({ message: 'Student assigned to this task not found.' });
+    }
 
+    // 6. Update Task Data
     task.feedback = value.text || '';
     task.score = value.score;
     task.rating = value.score;
     await task.save();
 
+    // 7. Update Student Aggregate Stats
     student.totalScore = (student.totalScore || 0) + value.score;
     student.totalScoreCount = (student.totalScoreCount || 0) + 1;
 
+    // Handle Domain-specific scores
     const taskDomain = task.domain || 'General';
     if (!student.feedbackScores) student.feedbackScores = [];
+    
     let domainEntry = student.feedbackScores.find(d => d.domain === taskDomain);
     if (domainEntry) {
       domainEntry.totalScore += value.score;
       domainEntry.count += 1;
     } else {
-      student.feedbackScores.push({ domain: taskDomain, totalScore: value.score, count: 1 });
+      student.feedbackScores.push({ 
+        domain: taskDomain, 
+        totalScore: value.score, 
+        count: 1 
+      });
     }
 
+    // Add entry to Student's feedback history
     if (!student.feedbackEntries) student.feedbackEntries = [];
-    const client = await User.findById(req.user.id).select('name');
+    
+    // Fetch client name for the history entry
+    const clientUser = await User.findById(req.user.id).select('name');
+    
     student.feedbackEntries.push({
       taskId: task._id,
       taskTitle: task.title,
       clientId: req.user.id,
-      clientName: client?.name || 'Client',
+      clientName: clientUser?.name || 'Client',
       rating: value.score,
       comment: value.text || '',
       domain: taskDomain,
       createdAt: new Date()
     });
 
+    // 8. Update Student's Global Average Rating
+    if (student.totalScoreCount > 0) {
+        student.averageScore = student.totalScore / student.totalScoreCount;
+    }
+
     await student.save();
+
+    // 9. Real-time Notification
     const io = req.app.get('socketio');
     if (io) {
-      io.to(task.student.toString()).emit('feedback_update', { message: 'New feedback received!' });
+      io.to(task.student.toString()).emit('feedback_update', { 
+        message: 'New feedback received!',
+        rating: value.score 
+      });
     }
-    return res.status(201).json({ message: 'Feedback saved' });
-  } catch (err) { return res.status(500).json({ message: 'Error saving feedback' }); }
+
+    return res.status(201).json({ 
+      message: 'Feedback saved successfully',
+      averageScore: student.averageScore 
+    });
+
+  } catch (err) {
+    console.error('Feedback Submission Error:', err);
+    return res.status(500).json({ 
+      message: 'Internal server error while saving feedback',
+      details: err.message 
+    });
+  }
 });
 
 router.post('/:id/accept-request', verifyJWT, async (req, res) => {
