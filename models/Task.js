@@ -14,6 +14,7 @@ function normalizeStringArray(value) {
 
 /**
  * Submission Sub Schema
+ * Tracks work uploaded by the student.
  */
 const submissionSchema = new Schema(
   {
@@ -34,7 +35,7 @@ const submissionSchema = new Schema(
       trim: true,
       maxlength: [2000, 'Submission notes cannot exceed 2000 characters'],
     },
-    // Representing if the Student work is approved by the CLIENT
+    // Approved by Client
     approved: {
       type: Boolean,
       default: false,
@@ -74,7 +75,7 @@ const taskSchema = new Schema(
     },
 
     /**
-     * Guest vs Registered Client Logic
+     * Client Types: Guest (Landing page) vs Registered
      */
     isGuestTask: {
       type: Boolean,
@@ -85,81 +86,19 @@ const taskSchema = new Schema(
     client: {
       type: Schema.Types.ObjectId,
       ref: 'User',
-      required: false, // Optional to support guest tasks
+      required: false,
       index: true,
     },
 
-    // For unlogged-in clients (Emergency Tasks)
+    // For unlogged-in clients (Emergency Task Flow)
     guestInfo: {
       name: { type: String, trim: true },
       mobile: { type: String, trim: true },
       email: { type: String, trim: true },
     },
 
-    clientAgreedToTerms: {
-      type: Boolean,
-      default: false,
-    },
-
     /**
-     * Admin & Assignment
-     */
-    assignedByAdmin: {
-      type: Schema.Types.ObjectId,
-      ref: 'User',
-      default: null,
-      index: true,
-    },
-
-    assignedAt: {
-      type: Date,
-      default: null,
-    },
-
-    requiredSkills: {
-      type: [String],
-      default: [],
-      set: normalizeStringArray,
-    },
-
-    /**
-     * Budget (Now Optional)
-     */
-    budget: {
-      type: Number,
-      required: false, // Requirement: Estimated amount is optional
-      min: [0, 'Budget cannot be negative'],
-    },
-
-    deadline: {
-      type: Date,
-      required: [true, 'Deadline is required'],
-    },
-
-    /**
-     * Filters
-     */
-    location: {
-      type: String,
-      trim: true,
-      default: '',
-    },
-
-    domain: {
-      type: String,
-      trim: true,
-      default: '',
-      index: true,
-    },
-
-    company: {
-      type: String,
-      trim: true,
-      default: '',
-    },
-
-    /**
-     * MODIFIED TASK STATUSES (Removed Payment States)
+     * Admin Control & Workflow
      */
     status: {
       type: String,
@@ -175,17 +114,73 @@ const taskSchema = new Schema(
       index: true,
     },
 
-    /**
-     * Permissions Logic (Admin controlled)
-     */
+    // Admin grants permission for client to view student work
     clientCanViewSubmission: {
       type: Boolean,
       default: false,
     },
 
     /**
-     * Student Info
+     * NEW: Direct Payment Chain Tracking
+     * Client -> Admin -> Student
      */
+    adminReceivedPayment: {
+      type: Boolean,
+      default: false,
+    },
+
+    adminPaidStudent: {
+      type: Boolean,
+      default: false,
+    },
+
+    /**
+     * Budget & Details
+     */
+    budget: {
+      type: Number,
+      required: false, // Optional as per requirement
+      min: [0, 'Budget cannot be negative'],
+    },
+
+    deadline: {
+      type: Date,
+      required: [true, 'Deadline is required'],
+    },
+
+    location: {
+      type: String,
+      trim: true,
+      default: '',
+    },
+
+    domain: {
+      type: String,
+      trim: true,
+      default: '',
+      index: true,
+    },
+
+    requiredSkills: {
+      type: [String],
+      default: [],
+      set: normalizeStringArray,
+    },
+
+    /**
+     * Matching & Assignment
+     */
+    assignedByAdmin: {
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+    },
+
+    assignedAt: {
+      type: Date,
+      default: null,
+    },
+
     student: {
       type: Schema.Types.ObjectId,
       ref: 'User',
@@ -193,15 +188,15 @@ const taskSchema = new Schema(
       index: true,
     },
 
-    assignmentRequestStatus: {
-      type: String,
-      enum: [null, 'request_sent', 'request_rejected'],
-      default: null,
-    },
-
     requestedStudent: {
       type: Schema.Types.ObjectId,
       ref: 'User',
+      default: null,
+    },
+
+    assignmentRequestStatus: {
+      type: String,
+      enum: [null, 'request_sent', 'request_rejected'],
       default: null,
     },
 
@@ -211,19 +206,19 @@ const taskSchema = new Schema(
     },
 
     /**
-     * Submission & Results
+     * Deliverables & Feedback
      */
     submission: {
       type: submissionSchema,
       default: null,
     },
 
+    attemptCount: { type: Number, default: 0 },
+    maxAttempts: { type: Number, default: 3 },
+
     rating: { type: Number, default: 0 },
     feedback: { type: String, default: '', trim: true },
     score: { type: Number, default: 0 },
-
-    attemptCount: { type: Number, default: 0 },
-    maxAttempts: { type: Number, default: 3 },
   },
   {
     timestamps: true,
@@ -239,7 +234,6 @@ taskSchema.pre('validate', function () {
   this.description = String(this.description || '').trim();
   this.location = String(this.location || '').trim();
   this.domain = String(this.domain || '').trim();
-  this.company = String(this.company || '').trim();
 
   if (this.guestInfo) {
     if (this.guestInfo.name) this.guestInfo.name = String(this.guestInfo.name).trim();
@@ -248,28 +242,20 @@ taskSchema.pre('validate', function () {
 });
 
 /**
- * Business-rule validation
+ * Assignment rule validation
  */
 taskSchema.pre('validate', function () {
-  
-  // Requirement: Registered tasks need client ID, Guest tasks need guestInfo
   if (!this.isGuestTask && !this.client) {
     throw new Error('Registered tasks require a client reference');
   }
 
   if (this.isGuestTask && (!this.guestInfo || !this.guestInfo.name || !this.guestInfo.mobile)) {
-    throw new Error('Guest tasks require name and mobile number');
+    throw new Error('Emergency tasks require name and mobile number');
   }
 
-  // Ensure 'student' is null for unassigned tasks
-  if (['open', 'request_sent'].includes(this.status)) {
-    this.student = null;
-  }
-
-  // Validation for active tasks
   if (['assigned', 'under_review', 'completed'].includes(this.status)) {
     if (!this.student) {
-      throw new Error('Assigned student is required for this status');
+      throw new Error('Assigned student is required for active/completed tasks');
     }
   }
 });

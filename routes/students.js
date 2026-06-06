@@ -4,8 +4,11 @@ const router = express.Router();
 const mongoose = require('mongoose');
 
 const User = require('../models/User');
-const Payment = require('../models/Payment');
 const verifyJWT = require('../middleware/authMiddleware');
+
+// =========================================================
+// HELPERS
+// =========================================================
 
 function clean(value) {
   return typeof value === 'string' ? value.trim() : '';
@@ -20,15 +23,14 @@ function isValidObjectId(value) {
   return /^[a-fA-F0-9]{24}$/.test(id);
 }
 
-function toObjectId(value) {
-  return new mongoose.Types.ObjectId(normalizeId(value));
-}
-
 function toNumber(value) {
   const num = Number(value || 0);
   return Number.isFinite(num) ? num : 0;
 }
 
+/**
+ * Formats domain-specific reputation scores for the UI
+ */
 function mapFeedbackDomains(feedbackScores) {
   if (!Array.isArray(feedbackScores)) return [];
 
@@ -40,38 +42,19 @@ function mapFeedbackDomains(feedbackScores) {
       domain: clean(d?.domain),
       totalScore,
       count,
-      averageScore: count > 0 ? totalScore / count : 0,
+      averageScore: count > 0 ? (totalScore / count).toFixed(2) : 0,
     };
   });
 }
 
-async function sumNetToStudentByStatuses(studentId, statuses) {
-  const objectId = toObjectId(studentId);
+// =========================================================
+// ROUTES
+// =========================================================
 
-  const result = await Payment.aggregate([
-    {
-      $match: {
-        student: objectId,
-        status: { $in: statuses },
-      },
-    },
-    {
-      $group: {
-        _id: null,
-        total: {
-          $sum: {
-            $ifNull: ['$netToStudent', 0],
-          },
-        },
-      },
-    },
-  ]);
-
-  return result.length > 0 ? toNumber(result[0].total) : 0;
-}
-
-// GET /api/students/:id/public-profile
-// Returns profile + ratings + payment stats based on Payment.netToStudent
+/**
+ * GET /api/students/:id/public-profile
+ * FIXED: Removed all Payment model logic to resolve 500 Internal Server Error.
+ */
 router.get('/:id/public-profile', verifyJWT, async (req, res) => {
   try {
     const id = normalizeId(req.params.id);
@@ -80,56 +63,47 @@ router.get('/:id/public-profile', verifyJWT, async (req, res) => {
       return res.status(400).json({ message: 'Invalid student id' });
     }
 
+    // Selecting only reputation and bio fields
     const student = await User.findById(id).select(
-      'name email bio skills portfolioUrl totalScore totalScoreCount feedbackScores role'
+      'name email bio skills location portfolioUrl totalScore totalScoreCount feedbackScores role tasksCompleted'
     );
 
     if (!student || student.role !== 'student') {
       return res.status(404).json({ message: 'Student not found' });
     }
 
-    const domains = mapFeedbackDomains(student.feedbackScores).map((d) => ({
-      domain: d.domain,
-      averageScore: d.averageScore,
-      count: d.count,
-    }));
-
+    // Process reputation metrics
+    const domains = mapFeedbackDomains(student.feedbackScores);
     const totalScore = toNumber(student.totalScore);
     const totalScoreCount = toNumber(student.totalScoreCount);
-    const totalAverage = totalScoreCount > 0 ? totalScore / totalScoreCount : 0;
-
-    const [pendingPayments, earnedPayments, acceptedQuoteTotal] =
-      await Promise.all([
-        sumNetToStudentByStatuses(id, ['held']),
-        sumNetToStudentByStatuses(id, ['completed']),
-        sumNetToStudentByStatuses(id, ['held', 'completed']),
-      ]);
+    const totalAverage = totalScoreCount > 0 ? (totalScore / totalScoreCount).toFixed(2) : 0;
 
     return res.json({
       id: student._id,
       name: clean(student.name),
       email: clean(student.email),
       bio: clean(student.bio),
+      location: clean(student.location),
       skills: Array.isArray(student.skills) ? student.skills : [],
       portfolioUrl: clean(student.portfolioUrl),
+      tasksCompleted: toNumber(student.tasksCompleted),
       totalScore,
       totalScoreCount,
       totalAverageScore: totalAverage,
-      domains,
-      pendingPayments,
-      earnedPayments,
-      acceptedQuoteTotal,
+      domains: domains, // Technical domain breakdown
     });
+
   } catch (err) {
-    console.error('Error in GET /api/students/:id/public-profile', err);
+    console.error('Error in GET /api/students/:id/public-profile:', err.message);
     return res.status(500).json({
-      message: 'Error fetching student profile',
-      error: err.message,
+      message: 'Error fetching student profile. Database aggregation failed.',
     });
   }
 });
 
-// GET /api/students/:id/feedback-summary
+/**
+ * GET /api/students/:id/feedback-summary
+ */
 router.get('/:id/feedback-summary', verifyJWT, async (req, res) => {
   try {
     const id = normalizeId(req.params.id);
@@ -148,7 +122,7 @@ router.get('/:id/feedback-summary', verifyJWT, async (req, res) => {
 
     const totalScore = toNumber(student.totalScore);
     const totalScoreCount = toNumber(student.totalScoreCount);
-    const averageScore = totalScoreCount > 0 ? totalScore / totalScoreCount : 0;
+    const averageScore = totalScoreCount > 0 ? (totalScore / totalScoreCount).toFixed(2) : 0;
 
     const domains = mapFeedbackDomains(student.feedbackScores);
 
@@ -160,10 +134,9 @@ router.get('/:id/feedback-summary', verifyJWT, async (req, res) => {
       domains,
     });
   } catch (err) {
-    console.error('Error in GET /api/students/:id/feedback-summary', err);
+    console.error('Error in GET /api/students/:id/feedback-summary:', err.message);
     return res.status(500).json({
       message: 'Error fetching feedback summary',
-      error: err.message,
     });
   }
 });

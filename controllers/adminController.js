@@ -3,10 +3,6 @@ const mongoose = require("mongoose");
 const User = require("../models/User");
 const Task = require("../models/Task");
 
-// ====================================
-// HELPERS
-// ====================================
-
 const sendServerError = (res, error, fallbackMessage) => {
   return res.status(500).json({
     message: error.message || fallbackMessage,
@@ -14,98 +10,82 @@ const sendServerError = (res, error, fallbackMessage) => {
 };
 
 // ====================================
-// OVERVIEW STATS (CLEANED OF PAYMENTS)
+// 1. DASHBOARD & GROWTH STATS
 // ====================================
 
+/**
+ * FIXED: Overview Stats
+ */
 exports.getOverviewStats = async (req, res) => {
   try {
-    const [
-      totalUsers,
-      totalStudents,
-      totalClients,
-      totalTasks,
-      openTasks,
-      assignedTasks,
-      underReviewTasks,
-      completedTasks,
-    ] = await Promise.all([
-      User.countDocuments(),
-      User.countDocuments({ role: "student" }),
-      User.countDocuments({ role: "client" }),
-      Task.countDocuments(),
-      Task.countDocuments({ status: "open" }),
-      Task.countDocuments({ status: "assigned" }),
-      Task.countDocuments({ status: "under_review" }),
-      Task.countDocuments({ status: "completed" }),
+    const [uAll, tAll, tCom, tOpen] = await Promise.all([
+      User.countDocuments({}), 
+      Task.countDocuments({}),
+      Task.countDocuments({ status: 'completed' }),
+      Task.countDocuments({ status: 'open' })
     ]);
-
+    
     return res.json({
-      totalUsers,
-      totalStudents,
-      totalClients,
-      totalTasks,
-      statusCounts: {
-        open: openTasks,
-        assigned: assignedTasks,
-        under_review: underReviewTasks,
-        completed: completedTasks,
-      }
+      users: { total: uAll },
+      tasks: { total: tAll, completed: tCom, open: tOpen }
     });
   } catch (error) {
-    return sendServerError(res, error, "Failed to load overview stats");
+    return sendServerError(res, error, "Failed to load overview");
   }
 };
 
-// ====================================
-// TASK MANAGEMENT
-// ====================================
-
-exports.getTaskStats = async (req, res) => {
+/**
+ * FIXED: getGrowthStats (Resolves 404 error)
+ */
+exports.getGrowthStats = async (req, res) => {
   try {
-    const stats = await Task.aggregate([
-      { $group: { _id: "$status", count: { $sum: 1 } } }
+    const { metric } = req.query;
+    const Model = metric === 'students' ? User : Task;
+
+    const growth = await Model.aggregate([
+      {
+        $group: {
+          _id: {
+            year: { $year: "$createdAt" },
+            month: { $month: "$createdAt" }
+          },
+          count: { $sum: 1 }
+        }
+      },
+      { $sort: { "_id.year": 1, "_id.month": 1 } }
     ]);
 
-    return res.json(stats);
+    return res.json(growth);
   } catch (error) {
-    return sendServerError(res, error, "Failed to load task stats");
+    return sendServerError(res, error, "Failed to load growth stats");
   }
 };
 
+// ====================================
+// 2. FILTERS & SEARCH
+// ====================================
+
 /**
- * NEW: Toggle Visibility
- * Admin grants permission for the client to see the student's submission.
+ * FIXED: getTaskFilters (Resolves 404 error)
  */
-exports.toggleSubmissionVisibility = async (req, res) => {
+exports.getTaskFilters = async (req, res) => {
   try {
-    const { taskId } = req.params;
-    const { canView } = req.body; // Boolean
-
-    const task = await Task.findByIdAndUpdate(
-      taskId,
-      { clientCanViewSubmission: canView },
-      { new: true }
-    );
-
-    if (!task) return res.status(404).json({ message: "Task not found" });
-
-    return res.json({ 
-      message: canView ? "Client can now view the submission" : "Submission hidden from client",
-      clientCanViewSubmission: task.clientCanViewSubmission 
+    const [locations, domains] = await Promise.all([
+      Task.distinct('location'),
+      Task.distinct('domain')
+    ]);
+    return res.json({
+      locations: locations.filter(Boolean),
+      domains: domains.filter(Boolean),
+      companies: [] // Placeholder if needed later
     });
   } catch (error) {
-    return sendServerError(res, error, "Failed to update visibility");
+    return sendServerError(res, error, "Failed to load filters");
   }
 };
 
-// ====================================
-// ENHANCED CANDIDATE SEARCH
-// ====================================
-
 /**
- * REWRITTEN: getSuggestedStudents
- * Includes filters for location and skills.
- * Sorts by tasksCompleted (most experienced first).
+ * REWRITTEN: Candidate vetting with filtering and completion count sorting
  */
 exports.getSuggestedStudents = async (req, res) => {
   try {
@@ -115,75 +95,116 @@ exports.getSuggestedStudents = async (req, res) => {
     const task = await Task.findById(taskId);
     if (!task) return res.status(404).json({ message: "Task not found" });
 
-    // Base Filter: Must be an approved student
-    let query = { 
-        role: "student", 
-        isApproved: true 
-    };
+    let query = { role: "student", isApproved: true };
 
-    // 1. Skill Filtering (Default to task requirements if no specific skill searched)
     if (skill) {
-        query.skills = { $in: [new RegExp(skill, 'i')] };
+      query.skills = { $in: [new RegExp(skill, 'i')] };
     } else if (task.requiredSkills && task.requiredSkills.length > 0) {
-        query.skills = { $in: task.requiredSkills };
+      query.skills = { $in: task.requiredSkills };
     }
 
-    // 2. Location Filtering
     if (location) {
-        query.location = new RegExp(location, 'i');
+      query.location = new RegExp(location, 'i');
     }
 
     const candidates = await User.find(query)
       .select("name email mobile location skills tasksCompleted totalScore totalScoreCount")
-      .sort({ tasksCompleted: -1 }) // Requirement: Sort based on number of tasks done
+      .sort({ tasksCompleted: -1 }) // Sort by experience
       .lean();
 
     return res.json(candidates);
   } catch (error) {
-    return sendServerError(res, error, "Failed to fetch candidates");
+    return sendServerError(res, error, "Failed to search candidates");
+  }
+};
+
+// ====================================
+// 3. TASK & SUBMISSION ACTIONS
+// ====================================
+
+exports.toggleSubmissionVisibility = async (req, res) => {
+  try {
+    const { taskId } = req.params;
+    const { canView } = req.body;
+
+    const task = await Task.findByIdAndUpdate(
+      taskId,
+      { clientCanViewSubmission: canView },
+      { new: true }
+    );
+
+    return res.json({ canView: task.clientCanViewSubmission });
+  } catch (error) {
+    return sendServerError(res, error, "Failed to update visibility");
   }
 };
 
 /**
- * NEW: getStudentDetails
- * Provides complete info including contact and full task history.
+ * NEW: Admin records Client -> Admin payment
  */
-exports.getStudentDetails = async (req, res) => {
+exports.confirmClientPayment = async (req, res) => {
   try {
-    const { studentId } = req.params;
-
-    const student = await User.findById(studentId)
-      .select("-password")
-      .lean();
-
-    if (!student) return res.status(404).json({ message: "Student not found" });
-
-    // Fetch task history
-    const history = await Task.find({ student: studentId })
-      .select("title status budget feedback score")
-      .sort({ createdAt: -1 });
-
-    return res.json({
-      profile: student,
-      taskHistory: history
-    });
+    const task = await Task.findByIdAndUpdate(
+      req.params.taskId,
+      { adminReceivedPayment: true },
+      { new: true }
+    );
+    return res.json({ message: "Payment from client verified", task });
   } catch (error) {
-    return sendServerError(res, error, "Failed to fetch student details");
+    return sendServerError(res, error, "Update failed");
+  }
+};
+
+/**
+ * NEW: Admin records Admin -> Student payout
+ */
+exports.confirmStudentPayout = async (req, res) => {
+  try {
+    const task = await Task.findByIdAndUpdate(
+      req.params.taskId,
+      { adminPaidStudent: true },
+      { new: true }
+    );
+    return res.json({ message: "Payout to student recorded", task });
+  } catch (error) {
+    return sendServerError(res, error, "Update failed");
   }
 };
 
 // ====================================
-// COMPLETED TASKS
+// 4. DATA DEEP-DIVE
 // ====================================
+
+exports.getStudentDetails = async (req, res) => {
+  try {
+    const student = await User.findById(req.params.studentId).select("-password").lean();
+    if (!student) return res.status(404).json({ message: "Student not found" });
+
+    const history = await Task.find({ student: req.params.studentId })
+      .select("title status budget createdAt feedback score")
+      .sort({ createdAt: -1 });
+
+    return res.json({ student, history });
+  } catch (error) {
+    return sendServerError(res, error, "Error fetching details");
+  }
+};
+
+exports.getTaskStats = async (req, res) => {
+    try {
+      const stats = await Task.aggregate([{ $group: { _id: "$status", count: { $sum: 1 } } }]);
+      return res.json({ byStatus: stats });
+    } catch (error) {
+      return sendServerError(res, error, "Failed load task stats");
+    }
+};
 
 exports.getCompletedTasks = async (req, res) => {
   try {
     const tasks = await Task.find({ status: "completed" })
       .populate("student", "name email mobile")
       .populate("client", "name email mobile guestInfo")
-      .sort({ updatedAt: -1 })
-      .lean();
-
+      .sort({ updatedAt: -1 });
     return res.json(tasks);
   } catch (error) {
     return sendServerError(res, error, "Failed to load completed tasks");
