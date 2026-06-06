@@ -1,242 +1,119 @@
 // backend/routes/admin.js
 const express = require('express');
-const mongoose = require('mongoose');
 const router = express.Router();
-const Joi = require('joi');
-
-const User = require('../models/User');
-const Task = require('../models/Task');
-const Message = require('../models/Message');
-
+const adminController = require('../controllers/adminController');
 const verifyJWT = require('../middleware/authMiddleware');
-const { sendNotification } = require('../utils/fcm');
 
-// =========================================================
-// HELPERS
-// =========================================================
-
-function clean(value) {
-  return typeof value === 'string' ? value.trim() : '';
-}
-
-function normalizeId(value) {
-  return clean(value);
-}
-
+/**
+ * Admin Role Guard
+ */
 const ensureAdmin = (req, res, next) => {
   if (!req.user || req.user.role !== 'admin') {
-    return res.status(403).json({ message: 'Admin only' });
+    return res.status(403).json({ message: 'Admin access restricted' });
   }
   next();
 };
 
-// =========================================================
-// JOI SCHEMAS
-// =========================================================
+// Apply Auth and Admin guards to all routes in this file
+router.use(verifyJWT);
+router.use(ensureAdmin);
 
-const approveUserSchema = Joi.object({
-  isApproved: Joi.boolean().required(),
-});
+// =============================================================================
+// 1. STATIC ANALYTICS & FILTERS (MUST BE AT THE TOP TO PREVENT 404)
+// =============================================================================
 
-const visibilitySchema = Joi.object({
-  canView: Joi.boolean().required(),
-});
+// GET /api/admin/stats/overview
+router.get('/stats/overview', adminController.getOverviewStats);
 
-const adminTaskFilterSchema = Joi.object({
-  company: Joi.string().allow('', null),
-  location: Joi.string().allow('', null),
-  domain: Joi.string().allow('', null),
-  status: Joi.string()
-    .valid('open', 'assigned', 'under_review', 'completed', 'declined')
-    .allow('', null),
-});
+// GET /api/admin/stats/growth?metric=tasks
+router.get('/stats/growth', adminController.getGrowthStats);
 
-const assignStudentSchema = Joi.object({
-  studentId: Joi.string().required(),
-});
+// GET /api/admin/tasks/filters
+router.get('/tasks/filters', adminController.getTaskFilters);
 
-// =========================================================
-// 1. DASHBOARD ANALYTICS (CLEANED OF PAYMENTS)
-// =========================================================
+// GET /api/admin/getTopStudents
+router.get('/getTopStudents', adminController.getTopStudents);
 
-router.get('/getTopStudents', verifyJWT, ensureAdmin, async (req, res) => {
-  try {
-    // Requirement: Sorted based on number of tasks done
-    const top = await User.find({ role: 'student' })
-      .select('name email location tasksCompleted averageScore')
-      .sort({ tasksCompleted: -1 })
-      .limit(10);
-    return res.json(top);
-  } catch (err) { return res.status(500).json({ message: 'Error fetching top students' }); }
-});
+// GET /api/admin/getTaskStats
+router.get('/getTaskStats', adminController.getTaskStats);
 
-router.get('/getTaskStats', verifyJWT, ensureAdmin, async (req, res) => {
-  try {
-    const stats = await Task.aggregate([{ $group: { _id: '$status', count: { $sum: 1 } } }]);
-    return res.json({ byStatus: stats });
-  } catch (err) { return res.status(500).json({ message: 'Error fetching stats' }); }
-});
-
-router.get('/stats/overview', verifyJWT, ensureAdmin, async (req, res) => {
-  try {
-    const [uAll, uCli, uStu, tAll, tCom, tOpen] = await Promise.all([
-      User.countDocuments({}), 
-      User.countDocuments({ role: 'client' }),
-      User.countDocuments({ role: 'student' }), 
-      Task.countDocuments({}),
-      Task.countDocuments({ status: 'completed' }),
-      Task.countDocuments({ status: 'open' })
-    ]);
-    
-    return res.json({
-      users: { total: uAll, clients: uCli, students: uStu },
-      tasks: { total: tAll, completed: tCom, open: tOpen }
-    });
-  } catch (err) { return res.status(500).json({ message: 'Error loading overview' }); }
-});
-
-// =========================================================
+// =============================================================================
 // 2. RESOURCE LISTS
-// =========================================================
+// =============================================================================
 
-router.get('/users', verifyJWT, ensureAdmin, async (req, res) => {
-  const { role, location, domain } = req.query;
-  const filter = {};
-  if (role) filter.role = role;
-  if (location) filter.location = new RegExp(location, 'i');
-  if (domain) filter.domain = new RegExp(domain, 'i');
+// GET /api/admin/users?role=student&location=...
+router.get('/users', async (req, res) => {
+    const User = require('../models/User');
+    const { role, location, domain } = req.query;
+    const filter = { role: { $ne: 'admin' } };
+    
+    if (role) filter.role = role;
+    if (location) filter.location = new RegExp(location, 'i');
+    if (domain) filter.skills = { $in: [new RegExp(domain, 'i')] };
 
-  const users = await User.find(filter).select('-password').sort({ createdAt: -1 });
-  return res.json(users);
-});
-
-router.get('/tasks', verifyJWT, ensureAdmin, async (req, res) => {
-  const { error, value } = adminTaskFilterSchema.validate(req.query, { stripUnknown: true });
-  if (error) return res.status(400).json({ message: 'Invalid filters' });
-  
-  const tasks = await Task.find(value)
-    .populate('client', 'name company mobile email guestInfo')
-    .populate('student', 'name email mobile')
-    .sort({ createdAt: -1 });
-  return res.json(tasks);
-});
-
-// =========================================================
-// 3. STUDENT & CANDIDATE MANAGEMENT
-// =========================================================
-
-/**
- * REWRITTEN CANDIDATE SEARCH
- * Logic: Filters by skills/location and sorts by tasksCompleted
- */
-router.get('/tasks/:id/candidates', verifyJWT, ensureAdmin, async (req, res) => {
     try {
-      const taskId = normalizeId(req.params.id);
-      const { location, skill } = req.query;
-      
-      const task = await Task.findById(taskId);
-      if (!task) return res.status(404).json({ message: "Task not found" });
-
-      let query = { role: 'student', isApproved: true };
-
-      // Skill Filtering
-      if (skill) {
-          query.skills = { $in: [new RegExp(skill, 'i')] };
-      } else {
-          query.skills = { $in: task.requiredSkills };
-      }
-
-      // Location Filtering
-      if (location) {
-          query.location = new RegExp(location, 'i');
-      }
-
-      const students = await User.find(query)
-        .select('name email mobile location skills tasksCompleted averageScore totalScoreCount')
-        .sort({ tasksCompleted: -1 }); // Sort by tasks done
-
-      return res.json(students);
+        const users = await User.find(filter).select('-password').sort({ createdAt: -1 });
+        res.json(users);
     } catch (err) {
-        return res.status(500).json({ message: "Failed to fetch candidates" });
+        res.status(500).json({ message: "Error fetching users" });
     }
 });
 
+// GET /api/admin/tasks
+router.get('/tasks', adminController.getCompletedTasks); // Re-using controller logic for list
+
+// =============================================================================
+// 3. PARAMETERIZED ROUTES (MUST BE AT THE BOTTOM)
+// =============================================================================
+
+// GET /api/admin/students/:studentId (Complete profile + History)
+router.get('/students/:studentId', adminController.getStudentDetails);
+
+// GET /api/admin/tasks/:taskId/candidates (Filtered & Sorted)
+router.get('/tasks/:taskId/candidates', adminController.getSuggestedStudents);
+
+// PATCH /api/admin/tasks/:taskId/visibility (Grant client permission)
+router.patch('/tasks/:taskId/visibility', adminController.toggleSubmissionVisibility);
+
 /**
- * COMPLETE STUDENT DETAILS
- * Logic: Fetches full profile and historical tasks
+ * PAYMENT CHAIN STEP 1:
+ * Admin records that the Client has paid them (via QR).
  */
-router.get('/students/:id', verifyJWT, ensureAdmin, async (req, res) => {
+router.patch('/tasks/:taskId/confirm-client-payment', adminController.confirmClientPayment);
+
+/**
+ * PAYMENT CHAIN STEP 2:
+ * Admin records that they have transferred funds to the Student.
+ */
+router.patch('/tasks/:taskId/confirm-student-payout', adminController.confirmStudentPayout);
+
+// POST /api/admin/tasks/:taskId/assign (Invite student)
+router.post('/tasks/:taskId/assign', async (req, res) => {
+  const Task = require('../models/Task');
+  const { sendNotification } = require('../utils/fcm');
+  const { studentId } = req.body;
+
   try {
-    const studentId = normalizeId(req.params.id);
-    const student = await User.findById(studentId).select('-password');
-    if (!student) return res.status(404).json({ message: 'Student not found' });
+    const task = await Task.findById(req.params.taskId);
+    if (!task) return res.status(404).json({ message: "Task not found" });
 
-    const history = await Task.find({ student: studentId })
-      .select('title status budget createdAt feedback score')
-      .sort({ createdAt: -1 });
+    task.requestedStudent = studentId;
+    task.assignmentRequestStatus = 'request_sent';
+    await task.save();
 
-    return res.json({
-      student: student,
-      history: history,
-      totalTasks: history.length,
-      completedTasks: history.filter(t => t.status === 'completed').length
+    await sendNotification(studentId, {
+      title: 'New Opportunity',
+      body: `You have been invited to: ${task.title}`,
+      data: { type: 'task_request', taskId: task._id.toString() }
     });
-  } catch (error) {
-    return res.status(500).json({ message: error.message });
-  }
-});
 
-// =========================================================
-// 4. TASK ACTIONS
-// =========================================================
-
-/**
- * TOGGLE SUBMISSION VISIBILITY
- * Admin grants the client permission to see student work
- */
-router.patch('/tasks/:id/visibility', verifyJWT, ensureAdmin, async (req, res) => {
-  try {
-    const taskId = normalizeId(req.params.id);
-    const { error, value } = visibilitySchema.validate(req.body);
-    if (error) return res.status(400).json({ message: "Invalid visibility value" });
-
-    const task = await Task.findByIdAndUpdate(
-      taskId, 
-      { clientCanViewSubmission: value.canView }, 
-      { new: true }
-    );
-
-    return res.json({ message: 'Visibility updated', canView: task.clientCanViewSubmission });
+    res.json({ message: 'Invitation sent', task });
   } catch (err) {
-    return res.status(500).json({ message: 'Server error' });
+    res.status(500).json({ message: "Assignment failed" });
   }
 });
 
-router.post('/tasks/:id/assign', verifyJWT, ensureAdmin, async (req, res) => {
-  const taskId = normalizeId(req.params.id);
-  const { error, value } = assignStudentSchema.validate(req.body);
-  if (error) return res.status(400).json({ message: 'Student ID required' });
-
-  const task = await Task.findById(taskId);
-  task.requestedStudent = value.studentId;
-  task.assignmentRequestStatus = 'request_sent';
-  await task.save();
-  
-  await sendNotification(value.studentId, { 
-    title: 'New Invitation', 
-    body: `Task: ${task.title}`, 
-    data: { type: 'task_request', taskId: task._id.toString() } 
-  });
-  return res.json({ message: 'Invitation sent', task });
-});
-
-router.patch('/users/:id/approve', verifyJWT, ensureAdmin, async (req, res) => {
-  const targetId = normalizeId(req.params.id);
-  const { error, value } = approveUserSchema.validate(req.body);
-  if (error) return res.status(400).json({ message: 'Validation failed' });
-  
-  const user = await User.findByIdAndUpdate(targetId, { isApproved: value.isApproved }, { new: true });
-  return res.json({ message: 'Status updated', user });
-});
+// PATCH /api/admin/users/:id/approve (Ban/Activate)
+router.patch('/users/:id/approve', adminController.updateUserApproval);
 
 module.exports = router;
