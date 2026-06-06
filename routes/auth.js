@@ -5,7 +5,7 @@ const User = require('../models/User');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const Joi = require('joi');
-const nodemailer = require('nodemailer'); // Added for Email
+const nodemailer = require('nodemailer');
 const verifyJWT = require('../middleware/authMiddleware');
 
 // =========================================================
@@ -15,7 +15,7 @@ const transporter = nodemailer.createTransport({
   service: 'gmail',
   auth: {
     user: 'krrinnovations@gmail.com',
-    pass: process.env.GMAIL_APP_PASSWORD, // Must be a 16-character App Password
+    pass: process.env.GMAIL_APP_PASSWORD,
   },
 });
 
@@ -34,11 +34,11 @@ function clean(value) {
 const signupSchema = Joi.object({
   name: Joi.string().min(2).max(100).required(),
   email: Joi.string().email().max(200).required(),
-  mobile: Joi.string().min(10).max(15).required(), // Added mobile
+  mobile: Joi.string().min(10).max(15).required(),
   password: Joi.string().min(6).max(128).required(),
   role: Joi.string().valid('student', 'client', 'admin').required(),
   company: Joi.string().max(200).allow('', null),
-  location: Joi.string().max(200).allow('', null),
+  location: Joi.string().max(200).allow('', null), // Requirement: Now used for Students too
   domain: Joi.string().max(200).allow('', null),
   skills: Joi.array().items(Joi.string().max(100)).default([]),
   bankAccountHolderName: Joi.string().max(200).allow('', null),
@@ -56,7 +56,6 @@ const registerFcmSchema = Joi.object({
   fcmToken: Joi.string().max(1000).required(),
 });
 
-// NEW: Password Reset Schemas
 const forgotPasswordSchema = Joi.object({
   email: Joi.string().email().required(),
 });
@@ -85,33 +84,29 @@ router.post('/signup', async (req, res) => {
       });
     }
 
-    const name = clean(value.name);
     const email = clean(value.email).toLowerCase();
-    const password = value.password;
-    const role = value.role;
-
     const existing = await User.findOne({ email });
     if (existing) {
       return res.status(400).json({ message: 'Email already registered' });
     }
 
-    const hashed = await bcrypt.hash(password, 10);
+    const hashed = await bcrypt.hash(value.password, 10);
 
     const userPayload = {
-      name,
+      name: clean(value.name),
       email,
-      mobile: value.mobile,
+      mobile: clean(value.mobile),
       password: hashed,
-      role,
+      role: value.role,
+      location: clean(value.location) || '', // Saved for both roles now
     };
 
-    if (role === 'client') {
+    if (value.role === 'client') {
       userPayload.company = clean(value.company) || '';
-      userPayload.location = clean(value.location) || '';
       userPayload.domain = clean(value.domain) || '';
     }
 
-    if (role === 'student') {
+    if (value.role === 'student') {
       userPayload.skills = [...new Set(value.skills || [])];
       userPayload.bankAccountHolderName = clean(value.bankAccountHolderName) || '';
       userPayload.bankName = clean(value.bankName) || '';
@@ -162,7 +157,7 @@ router.post('/login', async (req, res) => {
 });
 
 ////////////////////////////////////////////////////////////
-/// FORGOT PASSWORD (NEW)
+/// FORGOT PASSWORD
 ////////////////////////////////////////////////////////////
 
 router.post('/forgot-password', async (req, res) => {
@@ -177,15 +172,11 @@ router.post('/forgot-password', async (req, res) => {
       return res.status(404).json({ message: "No account found with this email." });
     }
 
-    // Generate 6-digit OTP
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    
-    // Save to user with 10-minute expiry
     user.resetPasswordOTP = otp;
     user.resetPasswordExpires = Date.now() + 600000; 
     await user.save();
 
-    // Send the email
     await transporter.sendMail({
       from: '"SKILEN Support" <krrinnovations@gmail.com>',
       to: email,
@@ -198,7 +189,7 @@ router.post('/forgot-password', async (req, res) => {
           <div style="background: #f4f4f4; padding: 15px; font-size: 24px; font-weight: bold; text-align: center; letter-spacing: 5px;">
             ${otp}
           </div>
-          <p>This code is valid for 10 minutes. If you did not request this, please ignore this email.</p>
+          <p>This code is valid for 10 minutes.</p>
           <br>
           <p>Regards,<br>SKILEN Team</p>
         </div>
@@ -206,15 +197,13 @@ router.post('/forgot-password', async (req, res) => {
     });
 
     return res.json({ success: true, message: "OTP sent to your email address." });
-
   } catch (err) {
-    console.error('Forgot Password error:', err);
     return res.status(500).json({ message: "Failed to send OTP", error: err.message });
   }
 });
 
 ////////////////////////////////////////////////////////////
-/// RESET PASSWORD (NEW)
+/// RESET PASSWORD
 ////////////////////////////////////////////////////////////
 
 router.post('/reset-password', async (req, res) => {
@@ -233,18 +222,13 @@ router.post('/reset-password', async (req, res) => {
       return res.status(400).json({ message: "Invalid or expired OTP code." });
     }
 
-    // Update password
     user.password = await bcrypt.hash(value.newPassword, 10);
-    
-    // Clear reset fields
     user.resetPasswordOTP = undefined;
     user.resetPasswordExpires = undefined;
     await user.save();
 
-    return res.json({ success: true, message: "Password updated successfully. You can now login." });
-
+    return res.json({ success: true, message: "Password updated successfully." });
   } catch (err) {
-    console.error('Reset Password error:', err);
     return res.status(500).json({ message: "Failed to reset password", error: err.message });
   }
 });

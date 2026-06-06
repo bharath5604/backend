@@ -2,7 +2,7 @@
 const mongoose = require('mongoose');
 
 ////////////////////////////////////////////////////
-/// Feedback Score Schema
+/// Feedback Score Schema (Used for Domain Sorting)
 ////////////////////////////////////////////////////
 
 const feedbackScoreSchema = new mongoose.Schema(
@@ -15,7 +15,7 @@ const feedbackScoreSchema = new mongoose.Schema(
 );
 
 ////////////////////////////////////////////////////
-/// Feedback Entry Schema
+/// Feedback Entry Schema (Historical records)
 ////////////////////////////////////////////////////
 
 const feedbackEntrySchema = new mongoose.Schema(
@@ -61,12 +61,15 @@ const userSchema = new mongoose.Schema(
     name: {
       type: String,
       required: true,
+      trim: true
     },
 
     email: {
       type: String,
       unique: true,
       required: true,
+      trim: true,
+      lowercase: true
     },
 
     mobile: {
@@ -86,8 +89,15 @@ const userSchema = new mongoose.Schema(
       required: true,
     },
 
+    // Used by both Students (New Requirement) and Clients
+    location: {
+      type: String,
+      trim: true,
+      default: ''
+    },
+
     ////////////////////////////////////////////////////
-    /// AUTHENTICATION / PASSWORD RESET (NEW)
+    /// AUTHENTICATION / PASSWORD RESET
     ////////////////////////////////////////////////////
 
     resetPasswordOTP: {
@@ -101,36 +111,46 @@ const userSchema = new mongoose.Schema(
     },
 
     ////////////////////////////////////////////////////
-    /// WALLET
-    ////////////////////////////////////////////////////
-
-    wallet: {
-      type: Number,
-      default: 0,
-    },
-
-    ////////////////////////////////////////////////////
     /// CLIENT FIELDS
     ////////////////////////////////////////////////////
 
-    company: String,
-    location: String,
-    domain: String,
-    description: String,
+    company: {
+      type: String,
+      trim: true,
+      default: ''
+    },
+    domain: {
+      type: String,
+      trim: true,
+      default: ''
+    },
+    description: {
+      type: String,
+      trim: true,
+      default: ''
+    },
 
     ////////////////////////////////////////////////////
     /// STUDENT FIELDS
     ////////////////////////////////////////////////////
 
-    bio: String,
+    bio: {
+      type: String,
+      trim: true,
+      default: ''
+    },
     skills: {
       type: [String],
       default: [],
     },
-    portfolioUrl: String,
+    portfolioUrl: {
+      type: String,
+      trim: true,
+      default: ''
+    },
 
     ////////////////////////////////////////////////////
-    /// BANK DETAILS (FLAT FIELDS)
+    /// BANK DETAILS (Kept for Admin view in "Complete Details")
     ////////////////////////////////////////////////////
 
     bankAccountHolderName: {
@@ -155,33 +175,20 @@ const userSchema = new mongoose.Schema(
     },
 
     ////////////////////////////////////////////////////
-    /// FEEDBACK / TASK / EARNINGS STATS
+    /// REPUTATION & EXPERIENCE (Used for Admin Sorting)
     ////////////////////////////////////////////////////
 
-    // number of tasks the student has completed
+    // Used for sorting students based on experience
     tasksCompleted: {
       type: Number,
       default: 0,
     },
 
-    // cumulative rating totals
     totalScore: {
       type: Number,
       default: 0,
     },
     totalScoreCount: {
-      type: Number,
-      default: 0,
-    },
-
-    // sum of accepted quotes not yet released (held payments)
-    pendingEarnings: {
-      type: Number,
-      default: 0,
-    },
-
-    // sum of all released payments to this student
-    totalEarningsReleased: {
       type: Number,
       default: 0,
     },
@@ -196,14 +203,10 @@ const userSchema = new mongoose.Schema(
     },
 
     ////////////////////////////////////////////////////
-    /// NOTIFICATIONS
+    /// NOTIFICATIONS & LOGS
     ////////////////////////////////////////////////////
 
     fcmToken: String,
-
-    ////////////////////////////////////////////////////
-    /// LOGIN TRACK
-    ////////////////////////////////////////////////////
 
     lastLoginAt: {
       type: Date,
@@ -217,27 +220,27 @@ const userSchema = new mongoose.Schema(
       type: Boolean,
       default: function () {
         if (this.role === 'student') return true;
-        if (this.role === 'client') return false;
+        if (this.role === 'client') return false; // Clients still require admin approval
         if (this.role === 'admin') return true;
         return false;
       },
     },
   },
-  { timestamps: true }
+  { 
+    timestamps: true,
+    toJSON: { virtuals: true },
+    toObject: { virtuals: true }
+  }
 );
 
 ////////////////////////////////////////////////////
 /// VIRTUALS
 ////////////////////////////////////////////////////
 
+// Calculates average rating for display in Admin's student list
 userSchema.virtual('averageScore').get(function () {
-  if (!this.totalScoreCount) return 0;
-  return this.totalScore / this.totalScoreCount;
-});
-
-// total accepted earnings (pending + released)
-userSchema.virtual('totalAcceptedEarnings').get(function () {
-  return (this.pendingEarnings || 0) + (this.totalEarningsReleased || 0);
+  if (!this.totalScoreCount || this.totalScoreCount === 0) return 0;
+  return (this.totalScore / this.totalScoreCount).toFixed(1);
 });
 
 module.exports = mongoose.model('User', userSchema);
