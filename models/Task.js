@@ -14,7 +14,7 @@ function normalizeStringArray(value) {
 
 /**
  * Submission Sub Schema
- * Tracks work uploaded by the student.
+ * Tracks the work uploaded by the student.
  */
 const submissionSchema = new Schema(
   {
@@ -35,7 +35,7 @@ const submissionSchema = new Schema(
       trim: true,
       maxlength: [2000, 'Submission notes cannot exceed 2000 characters'],
     },
-    // Approved by Client
+    // Approved by Client (This triggers the QR code visibility)
     approved: {
       type: Boolean,
       default: false,
@@ -75,14 +75,14 @@ const taskSchema = new Schema(
     },
 
     /**
-     * Client Types: Guest (Landing page) vs Registered
+     * Client Logic: Registered vs Guest (Emergency Task)
      */
     isGuestTask: {
       type: Boolean,
       default: false,
     },
 
-    // For registered clients
+    // Optional for Guest Tasks; Required for Registered Tasks
     client: {
       type: Schema.Types.ObjectId,
       ref: 'User',
@@ -90,7 +90,7 @@ const taskSchema = new Schema(
       index: true,
     },
 
-    // For unlogged-in clients (Emergency Task Flow)
+    // Stores contact details for Guest/Emergency clients
     guestInfo: {
       name: { type: String, trim: true },
       mobile: { type: String, trim: true },
@@ -98,7 +98,13 @@ const taskSchema = new Schema(
     },
 
     /**
-     * Admin Control & Workflow
+     * Workflow Statuses
+     * open         - Just created
+     * request_sent - Admin invited a student
+     * assigned     - Student is working
+     * under_review - Student submitted work
+     * completed    - Deliverables approved and project finalized
+     * declined     - Rejected or cancelled
      */
     status: {
       type: String,
@@ -114,15 +120,18 @@ const taskSchema = new Schema(
       index: true,
     },
 
-    // Admin grants permission for client to view student work
+    /**
+     * Requirement: Admin Vetting Control
+     * Submission is hidden from Client until Admin toggles this to true.
+     */
     clientCanViewSubmission: {
       type: Boolean,
       default: false,
     },
 
     /**
-     * NEW: Direct Payment Chain Tracking
-     * Client -> Admin -> Student
+     * Requirement: Manual Payment Chain Tracking
+     * (Client -> Admin -> Student)
      */
     adminReceivedPayment: {
       type: Boolean,
@@ -135,11 +144,11 @@ const taskSchema = new Schema(
     },
 
     /**
-     * Budget & Details
+     * Project Parameters
      */
     budget: {
       type: Number,
-      required: false, // Optional as per requirement
+      required: false, // Requirement: Estimated amount is optional
       min: [0, 'Budget cannot be negative'],
     },
 
@@ -168,7 +177,7 @@ const taskSchema = new Schema(
     },
 
     /**
-     * Matching & Assignment
+     * Matching & Accountability
      */
     assignedByAdmin: {
       type: Schema.Types.ObjectId,
@@ -227,7 +236,7 @@ const taskSchema = new Schema(
 );
 
 /**
- * Pre-validation cleanup
+ * Pre-validation cleanup logic
  */
 taskSchema.pre('validate', function () {
   this.title = String(this.title || '').trim();
@@ -235,27 +244,34 @@ taskSchema.pre('validate', function () {
   this.location = String(this.location || '').trim();
   this.domain = String(this.domain || '').trim();
 
-  if (this.guestInfo) {
+  if (this.isGuestTask && this.guestInfo) {
     if (this.guestInfo.name) this.guestInfo.name = String(this.guestInfo.name).trim();
     if (this.guestInfo.mobile) this.guestInfo.mobile = String(this.guestInfo.mobile).trim();
+    if (this.guestInfo.email) this.guestInfo.email = String(this.guestInfo.email).trim().toLowerCase();
   }
 });
 
 /**
- * Assignment rule validation
+ * Business rule enforcement
  */
 taskSchema.pre('validate', function () {
+  // Logic: Registered tasks need client ID, Guest tasks need guestInfo
   if (!this.isGuestTask && !this.client) {
-    throw new Error('Registered tasks require a client reference');
+    throw new Error('Non-emergency tasks require a registered client account');
   }
 
   if (this.isGuestTask && (!this.guestInfo || !this.guestInfo.name || !this.guestInfo.mobile)) {
-    throw new Error('Emergency tasks require name and mobile number');
+    throw new Error('Emergency tasks require at least a name and mobile number');
+  }
+
+  // Logic: Ensure 'student' is only populated when assigned or beyond
+  if (['open', 'request_sent'].includes(this.status)) {
+    this.student = null;
   }
 
   if (['assigned', 'under_review', 'completed'].includes(this.status)) {
     if (!this.student) {
-      throw new Error('Assigned student is required for active/completed tasks');
+      throw new Error('An assigned student is required for active or completed projects');
     }
   }
 });
