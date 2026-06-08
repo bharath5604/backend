@@ -242,12 +242,15 @@ exports.confirmStudentPayout = async (req, res) => {
 // 5. RESOURCE LISTS
 // =============================================================================
 
+// backend/controllers/adminController.js
+
 exports.getAllTasks = async (req, res) => {
   try {
     const tasks = await Task.find({})
-      .populate("client", "name mobile guestInfo")
-      .populate("student", "name mobile")
+      .populate("client", "name email mobile company") // Registered client
+      .populate("student", "name email mobile")
       .sort({ createdAt: -1 });
+
     return res.json(tasks);
   } catch (error) {
     return sendServerError(res, error, "Failed to load master task list");

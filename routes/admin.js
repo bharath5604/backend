@@ -60,7 +60,7 @@ router.get('/users', async (req, res) => {
 });
 
 // GET /api/admin/tasks
-router.get('/tasks', adminController.getCompletedTasks); // Re-using controller logic for list
+router.get('/tasks', adminController.getAllTasks); // Re-using controller logic for list
 
 // =============================================================================
 // 3. PARAMETERIZED ROUTES (MUST BE AT THE BOTTOM)
