@@ -3,11 +3,10 @@ const express = require('express');
 const router = express.Router();
 const adminController = require('../controllers/adminController');
 const verifyJWT = require('../middleware/authMiddleware');
+const User = require('../models/User');
 
 /**
  * Admin Role Guard 
- * Ensures that even with a valid JWT, only accounts with the 'admin' 
- * role can access these sensitive management endpoints.
  */
 const ensureAdmin = (req, res, next) => {
   if (!req.user || req.user.role !== 'admin') {
@@ -21,8 +20,7 @@ router.use(verifyJWT);
 router.use(ensureAdmin);
 
 // =============================================================================
-// 1. STATIC ANALYTICS & GLOBAL FILTERS (TOP PRIORITY)
-// These routes must be defined first to avoid being captured by /:taskId
+// 1. STATIC ANALYTICS & GLOBAL FILTERS (TOP PRIORITY - PREVENTS 404)
 // =============================================================================
 
 // GET /api/admin/stats/overview
@@ -31,27 +29,28 @@ router.get('/stats/overview', adminController.getOverviewStats);
 // GET /api/admin/stats/growth?metric=tasks
 router.get('/stats/growth', adminController.getGrowthStats);
 
-// GET /api/admin/tasks/filters (For the main tasks screen)
+// GET /api/admin/tasks/filters (For the main tasks registry page)
 router.get('/tasks/filters', adminController.getTaskFilters);
 
 /**
- * FIXED: GET /api/admin/student-filters
- * Logic: Returns unique technical skills and locations from all students.
- * Used to populate the Vetting Dropdowns in the Flutter UI.
+ * REQUIREMENT: GET /api/admin/student-filters
+ * Logic: Returns unique technical skills from students and 
+ * UNIQUE LOCATIONS FROM ALL USERS (Students and Clients).
+ * This fixes the dropdowns in your candidate vetting UI.
  */
 router.get('/student-filters', async (req, res) => {
-    const User = require('../models/User');
     try {
-        const [locs, skills] = await Promise.all([
-            User.distinct('location', { role: 'student' }),
-            User.distinct('skills', { role: 'student' })
+        const [allLocations, studentSkills] = await Promise.all([
+            User.distinct('location'), // Unique locations from everyone in DB
+            User.distinct('skills', { role: 'student' }) // Technical skills from students
         ]);
+        
         res.json({ 
-            locations: locs.filter(Boolean).sort(), 
-            skills: skills.filter(Boolean).sort() 
+            locations: allLocations.filter(Boolean).sort(), 
+            skills: studentSkills.filter(Boolean).sort() 
         });
     } catch (err) {
-        res.status(500).json({ message: "Error loading vetting options" });
+        res.status(500).json({ message: "Error loading vetting filter options" });
     }
 });
 
@@ -80,7 +79,6 @@ router.post('/tasks/:taskId/chat/student/messages', adminController.sendStudentT
 
 // GET /api/admin/users?role=student
 router.get('/users', async (req, res) => {
-    const User = require('../models/User');
     const { role } = req.query;
     const filter = { role: { $ne: 'admin' } };
     if (role) filter.role = role;
@@ -94,6 +92,7 @@ router.get('/users', async (req, res) => {
 });
 
 // GET /api/admin/tasks (Master registry including Emergency Guest tasks)
+// Pointed to getAllTasks to ensure visibility in dashboard
 router.get('/tasks', adminController.getAllTasks);
 
 // =============================================================================
@@ -111,19 +110,18 @@ router.patch('/tasks/:taskId/visibility', adminController.toggleSubmissionVisibi
 
 /**
  * MANUAL PAYMENT CHAIN STEP 1:
- * Admin verifies that the Client has scanned the QR and paid the Admin.
+ * Admin verifies that the Client has paid the Admin.
  */
 router.patch('/tasks/:taskId/confirm-client-payment', adminController.confirmClientPayment);
 
 /**
  * MANUAL PAYMENT CHAIN STEP 2:
- * Admin verifies that they have transferred the funds to the Student.
+ * Admin verifies that the Admin has paid the Student.
  */
 router.patch('/tasks/:taskId/confirm-student-payout', adminController.confirmStudentPayout);
 
 /**
  * Formal Task Invitation
- * Transitions task from 'open' to 'request_sent'
  */
 router.post('/tasks/:taskId/assign', async (req, res) => {
   const Task = require('../models/Task');
@@ -139,7 +137,7 @@ router.post('/tasks/:taskId/assign', async (req, res) => {
     await task.save();
 
     await sendNotification(studentId, {
-      title: 'New Vetting Invitation',
+      title: 'New Assignment Invitation',
       body: `Admin invited you to discuss: ${task.title}`,
       data: { type: 'task_request', taskId: task._id.toString() }
     });
@@ -150,10 +148,10 @@ router.post('/tasks/:taskId/assign', async (req, res) => {
   }
 });
 
-// Generic Task Retrieval (Should be near the bottom)
+// Generic Task Retrieval
 router.get('/tasks/:taskId', adminController.getTaskById);
 
-// PATCH /api/admin/users/:id/approve (Enable or Disable account)
+// PATCH /api/admin/users/:id/approve (Ban or Activate accounts)
 router.patch('/users/:id/approve', adminController.updateUserApproval);
 
 module.exports = router;
