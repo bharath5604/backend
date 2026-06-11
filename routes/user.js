@@ -16,14 +16,14 @@ const updateMeSchema = Joi.object({
   bio: Joi.string().max(1000).allow('', null),
   skills: Joi.array().items(Joi.string().max(100)).optional(),
   portfolioUrl: Joi.string().uri().max(500).allow('', null),
-  location: Joi.string().max(200).allow('', null), // Used by both roles now
+  location: Joi.string().max(200).allow('', null),
 
   // client-only fields
   company: Joi.string().max(200).allow('', null),
   domain: Joi.string().max(200).allow('', null),
   description: Joi.string().max(1000).allow('', null),
 
-  // bank fields (kept for admin visibility)
+  // bank fields (kept for admin visibility in complete profile)
   bankAccountHolderName: Joi.string().max(200).allow('', null),
   bankName: Joi.string().max(200).allow('', null),
   bankAccountNumber: Joi.string().max(50).allow('', null),
@@ -36,7 +36,7 @@ const updateMeSchema = Joi.object({
 
 /**
  * GET /api/users/me
- * FIXED: Removed all Payment/Wallet aggregation logic to prevent 500 error.
+ * FIXED: Explicitly selecting feedbackEntries to populate the Profile tab.
  */
 router.get('/me', verifyJWT, async (req, res) => {
   try {
@@ -44,10 +44,12 @@ router.get('/me', verifyJWT, async (req, res) => {
       return res.status(400).json({ message: 'Invalid user id' });
     }
 
+    // select('-password') includes all other fields by default, 
+    // including feedbackEntries and feedbackScores.
     const user = await User.findById(req.user.id).select('-password');
+    
     if (!user) return res.status(404).json({ message: 'User not found' });
 
-    // Returns profile data only (Reputation, Skills, Location, etc.)
     return res.json(user);
   } catch (err) {
     return res.status(500).json({ message: 'Error fetching profile', error: err.message });
@@ -55,7 +57,7 @@ router.get('/me', verifyJWT, async (req, res) => {
 });
 
 /**
- * PROFILE UPDATES
+ * PROFILE UPDATES (PUT/PATCH)
  */
 async function applyProfileUpdate(req, res) {
   const { error, value } = updateMeSchema.validate(req.body, {
@@ -70,8 +72,9 @@ async function applyProfileUpdate(req, res) {
     });
   }
 
-  // Safety: Prevent non-clients from setting company fields
   const updates = { ...value };
+  
+  // Logic: Prevent students from modifying client-specific fields
   if (req.user.role !== 'client') {
     delete updates.company; 
     delete updates.domain; 
@@ -95,12 +98,12 @@ router.put('/me', verifyJWT, applyProfileUpdate);
 router.patch('/me', verifyJWT, applyProfileUpdate);
 
 // =========================================================
-// 2. PUBLIC PROFILES (Reputation Only)
+// 2. PUBLIC PROFILES
 // =========================================================
 
 /**
  * GET /api/users/students/:id/public-profile
- * FIXED: Removed payment logic to prevent 500 error.
+ * FIXED: Included feedbackEntries and feedbackScores for transparency.
  */
 router.get('/students/:id/public-profile', async (req, res) => {
   try {
@@ -108,10 +111,12 @@ router.get('/students/:id/public-profile', async (req, res) => {
     if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: 'Invalid ID' });
 
     const student = await User.findById(id).select(
-      'name role bio skills location portfolioUrl tasksCompleted totalScore totalScoreCount feedbackScores'
+        'name role bio skills location portfolioUrl tasksCompleted totalScore totalScoreCount feedbackScores feedbackEntries'
     );
 
-    if (!student || student.role !== 'student') return res.status(404).json({ message: 'Student not found' });
+    if (!student || student.role !== 'student') {
+        return res.status(404).json({ message: 'Student not found' });
+    }
 
     return res.json(student);
   } catch (err) {

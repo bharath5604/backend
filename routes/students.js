@@ -29,7 +29,8 @@ function toNumber(value) {
 }
 
 /**
- * Formats domain-specific reputation scores for the UI
+ * Formats domain-specific reputation scores for the Flutter UI.
+ * Rounds averages to 1 decimal place for visual consistency.
  */
 function mapFeedbackDomains(feedbackScores) {
   if (!Array.isArray(feedbackScores)) return [];
@@ -42,7 +43,7 @@ function mapFeedbackDomains(feedbackScores) {
       domain: clean(d?.domain),
       totalScore,
       count,
-      averageScore: count > 0 ? (totalScore / count).toFixed(2) : 0,
+      averageScore: count > 0 ? (totalScore / count).toFixed(1) : "0.0",
     };
   });
 }
@@ -53,30 +54,30 @@ function mapFeedbackDomains(feedbackScores) {
 
 /**
  * GET /api/students/:id/public-profile
- * FIXED: Removed all Payment model logic to resolve 500 Internal Server Error.
+ * Logic: Returns full profile including Bio, Skills, and RECENT FEEDBACK.
+ * This route is used by the Profile Tab in the Student App.
  */
 router.get('/:id/public-profile', verifyJWT, async (req, res) => {
   try {
     const id = normalizeId(req.params.id);
 
     if (!isValidObjectId(id)) {
-      return res.status(400).json({ message: 'Invalid student id' });
+      return res.status(400).json({ message: 'Invalid student ID provided.' });
     }
 
-    // Selecting only reputation and bio fields
+    // Explicitly select feedbackEntries to populate the Profile history list
     const student = await User.findById(id).select(
-      'name email bio skills location portfolioUrl totalScore totalScoreCount feedbackScores role tasksCompleted'
+      'name email bio skills location portfolioUrl totalScore totalScoreCount feedbackScores feedbackEntries role tasksCompleted'
     );
 
     if (!student || student.role !== 'student') {
-      return res.status(404).json({ message: 'Student not found' });
+      return res.status(404).json({ message: 'Student profile not found.' });
     }
 
-    // Process reputation metrics
     const domains = mapFeedbackDomains(student.feedbackScores);
     const totalScore = toNumber(student.totalScore);
     const totalScoreCount = toNumber(student.totalScoreCount);
-    const totalAverage = totalScoreCount > 0 ? (totalScore / totalScoreCount).toFixed(2) : 0;
+    const totalAverage = totalScoreCount > 0 ? (totalScore / totalScoreCount).toFixed(1) : "0.0";
 
     return res.json({
       id: student._id,
@@ -86,43 +87,47 @@ router.get('/:id/public-profile', verifyJWT, async (req, res) => {
       location: clean(student.location),
       skills: Array.isArray(student.skills) ? student.skills : [],
       portfolioUrl: clean(student.portfolioUrl),
-      tasksCompleted: toNumber(student.tasksCompleted),
+      tasksCompleted: toNumber(student.tasksCompleted), // Ensure count is sent to UI
       totalScore,
       totalScoreCount,
       totalAverageScore: totalAverage,
-      domains: domains, // Technical domain breakdown
+      domains: domains,
+      feedbackEntries: student.feedbackEntries || [] // Fix: Included history list
     });
 
   } catch (err) {
-    console.error('Error in GET /api/students/:id/public-profile:', err.message);
+    console.error('Error in GET /public-profile:', err.message);
     return res.status(500).json({
-      message: 'Error fetching student profile. Database aggregation failed.',
+      message: 'Failed to retrieve student profile.',
     });
   }
 });
 
 /**
  * GET /api/students/:id/feedback-summary
+ * Logic: Returns statistical breakdown and RECENT CLIENT FEEDBACK.
+ * This route is used by the Earnings & Feedback Tab in the Student App.
  */
 router.get('/:id/feedback-summary', verifyJWT, async (req, res) => {
   try {
     const id = normalizeId(req.params.id);
 
     if (!isValidObjectId(id)) {
-      return res.status(400).json({ message: 'Invalid student id' });
+      return res.status(400).json({ message: 'Invalid student ID provided.' });
     }
 
+    // Explicitly select feedbackEntries so the reputation list can be built
     const student = await User.findById(id).select(
-      'totalScore totalScoreCount feedbackScores role'
+      'totalScore totalScoreCount feedbackScores feedbackEntries role'
     );
 
     if (!student || student.role !== 'student') {
-      return res.status(404).json({ message: 'Student not found' });
+      return res.status(404).json({ message: 'Student feedback summary not found.' });
     }
 
     const totalScore = toNumber(student.totalScore);
     const totalScoreCount = toNumber(student.totalScoreCount);
-    const averageScore = totalScoreCount > 0 ? (totalScore / totalScoreCount).toFixed(2) : 0;
+    const averageScore = totalScoreCount > 0 ? (totalScore / totalScoreCount).toFixed(1) : "0.0";
 
     const domains = mapFeedbackDomains(student.feedbackScores);
 
@@ -132,11 +137,12 @@ router.get('/:id/feedback-summary', verifyJWT, async (req, res) => {
       totalScoreCount,
       averageScore,
       domains,
+      feedbackEntries: student.feedbackEntries || [] // Fix: Included history list
     });
   } catch (err) {
-    console.error('Error in GET /api/students/:id/feedback-summary:', err.message);
+    console.error('Error in GET /feedback-summary:', err.message);
     return res.status(500).json({
-      message: 'Error fetching feedback summary',
+      message: 'Failed to retrieve feedback metrics.',
     });
   }
 });
