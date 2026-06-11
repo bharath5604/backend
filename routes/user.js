@@ -11,19 +11,25 @@ const verifyJWT = require('../middleware/authMiddleware');
 // JOI SCHEMAS
 // =========================================================
 
+/**
+ * Validation schema for profile updates.
+ * Requirement: Students must be able to edit all details including bank info.
+ */
 const updateMeSchema = Joi.object({
   name: Joi.string().min(2).max(100).optional(),
+  email: Joi.string().email().max(200).optional(), // Optional email change support
+  mobile: Joi.string().max(20).allow('', null),    // Requirement: Edit contact
   bio: Joi.string().max(1000).allow('', null),
   skills: Joi.array().items(Joi.string().max(100)).optional(),
   portfolioUrl: Joi.string().uri().max(500).allow('', null),
-  location: Joi.string().max(200).allow('', null),
+  location: Joi.string().max(200).allow('', null), // Fixed location storage
 
-  // client-only fields
+  // Client-specific business fields
   company: Joi.string().max(200).allow('', null),
   domain: Joi.string().max(200).allow('', null),
   description: Joi.string().max(1000).allow('', null),
 
-  // bank fields (kept for admin visibility in complete profile)
+  // Requirement: Full bank detail editability for students
   bankAccountHolderName: Joi.string().max(200).allow('', null),
   bankName: Joi.string().max(200).allow('', null),
   bankAccountNumber: Joi.string().max(50).allow('', null),
@@ -36,28 +42,29 @@ const updateMeSchema = Joi.object({
 
 /**
  * GET /api/users/me
- * FIXED: Explicitly selecting feedbackEntries to populate the Profile tab.
+ * Logic: Returns the private profile of the logged-in user.
+ * Included: All details, reputation metrics, and feedback history.
  */
 router.get('/me', verifyJWT, async (req, res) => {
   try {
     if (!mongoose.Types.ObjectId.isValid(req.user.id)) {
-      return res.status(400).json({ message: 'Invalid user id' });
+      return res.status(400).json({ message: 'Invalid session ID' });
     }
 
-    // select('-password') includes all other fields by default, 
-    // including feedbackEntries and feedbackScores.
+    // select('-password') retrieves every field in the User model except the hash
     const user = await User.findById(req.user.id).select('-password');
     
-    if (!user) return res.status(404).json({ message: 'User not found' });
+    if (!user) return res.status(404).json({ message: 'User profile not found' });
 
     return res.json(user);
   } catch (err) {
-    return res.status(500).json({ message: 'Error fetching profile', error: err.message });
+    return res.status(500).json({ message: 'Error fetching profile data', error: err.message });
   }
 });
 
 /**
  * PROFILE UPDATES (PUT/PATCH)
+ * Requirement: Logic to handle full profile editing including bank info.
  */
 async function applyProfileUpdate(req, res) {
   const { error, value } = updateMeSchema.validate(req.body, {
@@ -74,7 +81,7 @@ async function applyProfileUpdate(req, res) {
 
   const updates = { ...value };
   
-  // Logic: Prevent students from modifying client-specific fields
+  // Logic: Prevent Students/Admins from hijacking Client business profiles
   if (req.user.role !== 'client') {
     delete updates.company; 
     delete updates.domain; 
@@ -88,9 +95,16 @@ async function applyProfileUpdate(req, res) {
     }).select('-password');
 
     if (!user) return res.status(404).json({ message: 'User not found' });
-    return res.json({ message: 'Profile updated', user });
+    
+    return res.json({ 
+        message: 'Profile updated successfully', 
+        user 
+    });
   } catch (err) {
-    return res.status(400).json({ message: 'Error updating profile', error: err.message });
+    return res.status(400).json({ 
+        message: 'Failed to save profile changes', 
+        error: err.message 
+    });
   }
 }
 
@@ -103,7 +117,7 @@ router.patch('/me', verifyJWT, applyProfileUpdate);
 
 /**
  * GET /api/users/students/:id/public-profile
- * FIXED: Included feedbackEntries and feedbackScores for transparency.
+ * Logic: Used by Admins/Clients to view student credentials.
  */
 router.get('/students/:id/public-profile', async (req, res) => {
   try {
@@ -111,7 +125,7 @@ router.get('/students/:id/public-profile', async (req, res) => {
     if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: 'Invalid ID' });
 
     const student = await User.findById(id).select(
-        'name role bio skills location portfolioUrl tasksCompleted totalScore totalScoreCount feedbackScores feedbackEntries'
+        'name role bio skills location portfolioUrl tasksCompleted totalScore totalScoreCount feedbackScores feedbackEntries mobile'
     );
 
     if (!student || student.role !== 'student') {
@@ -120,7 +134,7 @@ router.get('/students/:id/public-profile', async (req, res) => {
 
     return res.json(student);
   } catch (err) {
-    return res.status(500).json({ message: 'Error fetching student profile' });
+    return res.status(500).json({ message: 'Error retrieving public profile' });
   }
 });
 
@@ -132,12 +146,12 @@ router.get('/clients/:id/public-profile', async (req, res) => {
     const { id } = req.params;
     if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: 'Invalid ID' });
 
-    const client = await User.findById(id).select('name role company location domain description');
+    const client = await User.findById(id).select('name role company location domain description mobile');
     if (!client || client.role !== 'client') return res.status(404).json({ message: 'Client not found' });
 
     return res.json(client);
   } catch (err) {
-    return res.status(500).json({ message: 'Error fetching client profile' });
+    return res.status(500).json({ message: 'Error retrieving client profile' });
   }
 });
 
