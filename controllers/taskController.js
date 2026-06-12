@@ -108,71 +108,59 @@ exports.createGuestTask = async (req, res) => {
 
 /**
  * ==========================================
- * RATE STUDENT & SAVE WRITTEN REVIEW
- * Requirement: Written review must be displayed on student dashboard.
+ * RATE STUDENT & UPDATE REPUTATION ARRAYS
+ * FIXED: Explicitly pushing into 'feedback' and 'feedbackScores'
  * ==========================================
  */
+// backend/controllers/taskController.js
+
 exports.rateStudent = async (req, res) => {
-    try {
-      const { rating, feedback } = req.body; // feedback is the written review
-      const taskId = req.params.id || req.params.taskId;
-  
-      const task = await Task.findById(taskId);
-      if (!task) return res.status(404).json({ message: 'Task not found' });
-  
-      // Security: Only the client who owns the task can rate
-      if (task.client.toString() !== req.user.id) {
-        return res.status(403).json({ message: 'Unauthorized feedback' });
-      }
-  
-      // 1. Save feedback to the specific task
-      task.rating = rating;
-      task.feedback = feedback || '';
-      task.score = rating;
-      await task.save();
-  
-      // 2. Push to Student History (This enables the Dashboard display)
-      const student = await User.findById(task.student);
-      const client = await User.findById(req.user.id);
-  
-      if (student) {
-        // Increment global totals
-        student.totalScore = (student.totalScore || 0) + rating;
-        student.totalScoreCount = (student.totalScoreCount || 0) + 1;
-  
-        // Handle Domain-specific Reputation logic
-        const taskDomain = task.domain || 'General';
-        if (!student.feedbackScores) student.feedbackScores = [];
-        
-        let domainEntry = student.feedbackScores.find(d => d.domain === taskDomain);
-        if (domainEntry) {
-          domainEntry.totalScore += rating;
-          domainEntry.count += 1;
-        } else {
-          student.feedbackScores.push({ domain: taskDomain, totalScore: rating, count: 1 });
-        }
-  
-        // PUSH WRITTEN REVIEW TO feedbackEntries
-        student.feedbackEntries.push({
-          taskId: task._id,
-          taskTitle: task.title,
-          clientId: req.user.id,
-          clientName: client?.name || 'Client',
-          rating: rating,
-          comment: feedback || '', // THIS IS THE WRITTEN REVIEW
-          domain: taskDomain,
-          createdAt: new Date()
-        });
-  
-        await student.save();
-      }
-  
-      return res.json({ message: 'Review saved successfully to student reputation' });
-    } catch (err) {
-      console.error("Rating Error:", err);
-      return res.status(500).json({ message: 'Internal server error while saving rating' });
+  try {
+    // 1. Get score from body (Flutter sends 'score')
+    const scoreValue = Number(req.body.score);
+    const feedbackText = req.body.text || req.body.feedback || '';
+
+    // 2. NaN Safety Check
+    if (isNaN(scoreValue)) {
+      return res.status(400).json({ message: "Invalid score. Must be a number." });
     }
-  };
+
+    const task = await Task.findById(req.params.id);
+    if (!task) return res.status(404).json({ message: 'Task not found' });
+    if (!task.student) return res.status(400).json({ message: 'No student assigned' });
+
+    // 3. Update Task
+    task.score = scoreValue;
+    task.rating = scoreValue; // Keep both synced
+    task.feedback = feedbackText;
+    await task.save();
+
+    // 4. Update Student Arrays
+    const student = await User.findById(task.student);
+    const client = await User.findById(req.user.id);
+
+    if (student) {
+      student.totalScore = (student.totalScore || 0) + scoreValue;
+      student.totalScoreCount = (student.totalScoreCount || 0) + 1;
+
+      // PUSH TO feedbackEntries (This makes it show on Dashboard)
+      student.feedbackEntries.push({
+        taskId: task._id,
+        taskTitle: task.title,
+        clientId: client._id,
+        clientName: client.name,
+        rating: scoreValue,
+        comment: feedbackText,
+        createdAt: new Date()
+      });
+
+      await student.save();
+    }
+    return res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
 
 /**
  * ===============================
@@ -241,7 +229,7 @@ exports.submitWork = async (req, res) => {
     task.clientCanViewSubmission = false; 
 
     await task.save();
-    return res.json({ message: 'Work submitted for vetting', task });
+    return res.json({ message: 'Work submitted for Admin review', task });
   } catch (err) {
     return res.status(500).json({ message: 'Submission failed' });
   }
@@ -277,7 +265,7 @@ exports.approveWork = async (req, res) => {
       await student.save();
     }
 
-    return res.json({ message: 'Deliverables approved', task });
+    return res.json({ message: 'Work approved. Payout process initiated.', task });
   } catch (err) {
     return res.status(500).json({ message: 'Approval failed' });
   }

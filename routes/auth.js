@@ -102,7 +102,7 @@ router.post('/signup', async (req, res) => {
       mobile,
       password: hashed,
       role: value.role,
-      location: location || '', // FIX: Explicitly ensuring location is stored for Students and Clients
+      location: clean(value.location) || '', // FIX: Explicitly ensuring location is stored for Students and Clients
     };
 
     // Role-specific field assignment

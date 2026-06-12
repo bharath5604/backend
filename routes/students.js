@@ -110,40 +110,21 @@ router.get('/:id/public-profile', verifyJWT, async (req, res) => {
  */
 router.get('/:id/feedback-summary', verifyJWT, async (req, res) => {
   try {
-    const id = normalizeId(req.params.id);
+    const student = await User.findById(req.params.id)
+      .select('totalScore totalScoreCount feedbackScores feedbackEntries role');
 
-    if (!isValidObjectId(id)) {
-      return res.status(400).json({ message: 'Invalid student ID provided.' });
-    }
-
-    // Explicitly select feedbackEntries so the reputation list can be built
-    const student = await User.findById(id).select(
-      'totalScore totalScoreCount feedbackScores feedbackEntries role'
-    );
-
-    if (!student || student.role !== 'student') {
-      return res.status(404).json({ message: 'Student feedback summary not found.' });
-    }
-
-    const totalScore = toNumber(student.totalScore);
-    const totalScoreCount = toNumber(student.totalScoreCount);
-    const averageScore = totalScoreCount > 0 ? (totalScore / totalScoreCount).toFixed(1) : "0.0";
-
-    const domains = mapFeedbackDomains(student.feedbackScores);
+    if (!student) return res.status(404).json({ message: 'Student not found' });
 
     return res.json({
       studentId: student._id,
-      totalScore,
-      totalScoreCount,
-      averageScore,
-      domains,
-      feedbackEntries: student.feedbackEntries || [] // Fix: Included history list
+      totalScore: student.totalScore,
+      totalScoreCount: student.totalScoreCount,
+      averageScore: student.totalScoreCount > 0 ? (student.totalScore / student.totalScoreCount).toFixed(1) : 0,
+      domains: student.feedbackScores || [],
+      feedbackEntries: student.feedbackEntries || [] // Send the list of reviews
     });
   } catch (err) {
-    console.error('Error in GET /feedback-summary:', err.message);
-    return res.status(500).json({
-      message: 'Failed to retrieve feedback metrics.',
-    });
+    res.status(500).json({ message: 'Server error' });
   }
 });
 

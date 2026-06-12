@@ -5,6 +5,7 @@ const Task = require('../models/Task');
 const User = require('../models/User');
 const Message = require('../models/Message');
 const verifyJWT = require('../middleware/authMiddleware');
+const taskController = require('../controllers/taskController');
 const Joi = require('joi');
 const { sendNotification } = require('../utils/fcm');
 
@@ -44,6 +45,7 @@ const submissionSchema = Joi.object({
 });
 
 const feedbackSchema = Joi.object({
+  feedback: Joi.string().max(2000).allow('', null), 
   text: Joi.string().max(2000).allow('', null),
   score: Joi.number().integer().min(1).max(5).required(),
 });
@@ -56,6 +58,21 @@ const feedbackSchema = Joi.object({
  * GET /api/tasks/assigned
  * Returns tasks currently active or under review for the student
  */
+router.get('/filters', verifyJWT, async (req, res) => {
+    try {
+        const [locations, domains] = await Promise.all([
+            Task.distinct("location"),
+            Task.distinct("domain")
+        ]);
+        res.json({
+            locations: locations.filter(Boolean).sort(),
+            domains: domains.filter(Boolean).sort()
+        });
+    } catch (err) {
+        res.status(500).json({ message: "Failed to load project filters" });
+    }
+});
+
 router.get('/assigned', verifyJWT, async (req, res) => {
   try {
     const tasks = await Task.find({
@@ -251,27 +268,32 @@ router.post('/:id/decline', verifyJWT, async (req, res) => {
 /**
  * Requirement: Provide Feedback/Rating
  */
-router.post('/:id/feedback', verifyJWT, async (req, res) => {
-  try {
-    const { error, value } = feedbackSchema.validate(req.body);
-    if (error) return res.status(400).json({ message: "Invalid feedback data" });
+// router.post('/:id/feedback', verifyJWT, async (req, res) => {
+//   try {
+//     const { error, value } = feedbackSchema.validate(req.body);
+//     if (error) return res.status(400).json({ message: "Invalid feedback data" });
 
-    const task = await Task.findById(req.params.id);
-    if (!task || task.client?.toString() !== req.user.id) return res.status(403).json({ message: 'Denied' });
+//     const task = await Task.findById(req.params.id);
+//     if (!task || task.client?.toString() !== req.user.id) return res.status(403).json({ message: 'Denied' });
 
-    task.feedback = value.text;
-    task.score = value.score;
-    task.rating = value.score;
-    await task.save();
+//     task.feedback = value.text;
+//     task.score = value.score;
+//     task.rating = value.score;
+//     await task.save();
 
-    // Aggregates for student
-    const student = await User.findById(task.student);
-    student.totalScore += value.score;
-    student.totalScoreCount += 1;
-    await student.save();
+//     // Aggregates for student
+//     const student = await User.findById(task.student);
+//     student.totalScore += value.score;
+//     student.totalScoreCount += 1;
+//     await student.save();
 
-    res.json({ message: 'Feedback saved' });
-  } catch (err) { res.status(500).json({ message: 'Failed to save feedback' }); }
+//     res.json({ message: 'Feedback saved' });
+//   } catch (err) { res.status(500).json({ message: 'Failed to save feedback' }); }
+// });
+router.post('/:id/feedback', verifyJWT, async (req, res, next) => {
+  const { error } = feedbackSchema.validate(req.body);
+  if (error) return res.status(400).json({ message: error.details[0].message });
+  return taskController.rateStudent(req, res);
 });
 
 // =========================================================
