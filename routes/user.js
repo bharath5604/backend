@@ -31,7 +31,6 @@ const updateMeSchema = Joi.object({
 
   // Requirement: Full bank detail editability for students
   bankAccountHolderName: Joi.string().max(200).allow('', null),
-  bankName: Joi.string().max(200).allow('', null),
   bankAccountNumber: Joi.string().max(50).allow('', null),
   ifscCode: Joi.string().max(50).allow('', null),
 });

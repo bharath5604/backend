@@ -43,7 +43,6 @@ const signupSchema = Joi.object({
   domain: Joi.string().max(200).allow('', null),
   skills: Joi.array().items(Joi.string().max(100)).default([]),
   bankAccountHolderName: Joi.string().max(200).allow('', null),
-  bankName: Joi.string().max(200).allow('', null),
   bankAccountNumber: Joi.string().max(50).allow('', null),
   ifscCode: Joi.string().max(50).allow('', null),
 });
@@ -115,7 +114,6 @@ router.post('/signup', async (req, res) => {
     if (value.role === 'student') {
       userPayload.skills = [...new Set(value.skills || [])];
       userPayload.bankAccountHolderName = clean(value.bankAccountHolderName) || '';
-      userPayload.bankName = clean(value.bankName) || '';
       userPayload.bankAccountNumber = clean(value.bankAccountNumber) || '';
       userPayload.ifscCode = clean(value.ifscCode) || '';
     }

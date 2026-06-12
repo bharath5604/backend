@@ -52,7 +52,6 @@ exports.signup = async (req, res) => {
       // student
       skills,
       bankAccountHolderName,
-      bankName,
       bankAccountNumber,
       ifscCode,
 
@@ -110,7 +109,6 @@ exports.signup = async (req, res) => {
       // student
       skills: sanitizeArray(skills),
       bankAccountHolderName: sanitizeString(bankAccountHolderName),
-      bankName: sanitizeString(bankName),
       bankAccountNumber: sanitizeString(bankAccountNumber),
       ifscCode: sanitizeString(ifscCode),
 

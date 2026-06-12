@@ -134,11 +134,6 @@ const userSchema = new mongoose.Schema(
     /// STUDENT FIELDS
     ////////////////////////////////////////////////////
 
-    bio: {
-      type: String,
-      trim: true,
-      default: ''
-    },
     skills: {
       type: [String],
       default: [],
@@ -154,11 +149,6 @@ const userSchema = new mongoose.Schema(
     ////////////////////////////////////////////////////
 
     bankAccountHolderName: {
-      type: String,
-      default: '',
-      trim: true,
-    },
-    bankName: {
       type: String,
       default: '',
       trim: true,
