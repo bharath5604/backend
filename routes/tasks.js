@@ -23,6 +23,7 @@ const createTaskSchema = Joi.object({
   company: Joi.string().max(200).allow('', null),
   attachments: Joi.array().items(Joi.string().uri()).default([]),
   attachmentNames: Joi.array().items(Joi.string()).default([]),
+  clientAgreedToTerms: Joi.boolean().valid(true).required() ,
 });
 
 const guestTaskSchema = Joi.object({
