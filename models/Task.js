@@ -35,7 +35,7 @@ const submissionSchema = new Schema(
       trim: true,
       maxlength: [2000, 'Submission notes cannot exceed 2000 characters'],
     },
-    // Approved by Client (This triggers the QR code visibility)
+    // Approved by Client (This triggers the final status)
     approved: {
       type: Boolean,
       default: false,
@@ -99,12 +99,6 @@ const taskSchema = new Schema(
 
     /**
      * Workflow Statuses
-     * open         - Just created
-     * request_sent - Admin invited a student
-     * assigned     - Student is working
-     * under_review - Student submitted work
-     * completed    - Deliverables approved and project finalized
-     * declined     - Rejected or cancelled
      */
     status: {
       type: String,
@@ -121,16 +115,21 @@ const taskSchema = new Schema(
     },
 
     /**
-     * Requirement: Admin Vetting Control
-     * Submission is hidden from Client until Admin toggles this to true.
+     * REQUIREMENT: Gated Access Control
      */
+    
+    // Defaulted to true: Client can see that work was submitted immediately
     clientCanViewSubmission: {
       type: Boolean,
       default: true,
     },
+
+    // Defaulted to false: Client cannot download/save the file until Admin allows it
     clientCanDownload: { 
       type: Boolean, 
-      default: false },
+      default: false 
+    },
+
     /**
      * Requirement: Manual Payment Chain Tracking
      * (Client -> Admin -> Student)
@@ -150,7 +149,7 @@ const taskSchema = new Schema(
      */
     budget: {
       type: Number,
-      required: false, // Requirement: Estimated amount is optional
+      required: false, // Optional
       min: [0, 'Budget cannot be negative'],
     },
 
@@ -238,7 +237,7 @@ const taskSchema = new Schema(
 );
 
 /**
- * Pre-validation cleanup logic
+ * Pre-validation cleanup
  */
 taskSchema.pre('validate', function () {
   this.title = String(this.title || '').trim();
@@ -249,7 +248,6 @@ taskSchema.pre('validate', function () {
   if (this.isGuestTask && this.guestInfo) {
     if (this.guestInfo.name) this.guestInfo.name = String(this.guestInfo.name).trim();
     if (this.guestInfo.mobile) this.guestInfo.mobile = String(this.guestInfo.mobile).trim();
-    if (this.guestInfo.email) this.guestInfo.email = String(this.guestInfo.email).trim().toLowerCase();
   }
 });
 
@@ -257,23 +255,17 @@ taskSchema.pre('validate', function () {
  * Business rule enforcement
  */
 taskSchema.pre('validate', function () {
-  // Logic: Registered tasks need client ID, Guest tasks need guestInfo
   if (!this.isGuestTask && !this.client) {
-    throw new Error('Non-emergency tasks require a registered client account');
+    throw new Error('Registered tasks require a client reference');
   }
 
   if (this.isGuestTask && (!this.guestInfo || !this.guestInfo.name || !this.guestInfo.mobile)) {
-    throw new Error('Emergency tasks require at least a name and mobile number');
-  }
-
-  // Logic: Ensure 'student' is only populated when assigned or beyond
-  if (['open', 'request_sent'].includes(this.status)) {
-    this.student = null;
+    throw new Error('Emergency tasks require name and mobile number');
   }
 
   if (['assigned', 'under_review', 'completed'].includes(this.status)) {
     if (!this.student) {
-      throw new Error('An assigned student is required for active or completed projects');
+      throw new Error('Assigned student is required for active or completed projects');
     }
   }
 });
