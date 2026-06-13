@@ -268,11 +268,35 @@ exports.rateStudent = async (req, res) => {
 // 6. TASK ACTIONS & VISIBILITY
 // =============================================================================
 
+// backend/controllers/adminController.js -> exports.toggleSubmissionVisibility
+
 exports.toggleSubmissionVisibility = async (req, res) => {
   try {
-    const task = await Task.findByIdAndUpdate(req.params.taskId, { clientCanViewSubmission: req.body.canView }, { new: true });
-    return res.json({ canView: task.clientCanViewSubmission });
-  } catch (error) { return sendServerError(res, error, "Visibility update failed"); }
+    const { taskId } = req.params;
+    const { canView } = req.body; // This is the boolean from Flutter
+
+    const task = await Task.findByIdAndUpdate(
+      taskId,
+      { clientCanDownload: canView }, // Use the specific field
+      { new: true }
+    );
+
+    if (!task) return res.status(404).json({ message: "Task not found" });
+
+    // --- DYNAMIC BROADCAST ---
+    const io = req.app.get('socketio');
+    if (io) {
+      io.to(taskId).emit('task_update', { taskId: taskId });
+    }
+
+    // Return the specific field name so the frontend can map it easily
+    return res.json({ 
+        success: true, 
+        clientCanDownload: task.clientCanDownload 
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
 };
 
 exports.confirmClientPayment = async (req, res) => {
