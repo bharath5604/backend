@@ -226,7 +226,8 @@ exports.submitWork = async (req, res) => {
     };
 
     task.status = 'under_review';
-    task.clientCanViewSubmission = false; 
+     task.clientCanViewSubmission = true; 
+     task.clientCanDownload = false;  
 
     await task.save();
     return res.json({ message: 'Work submitted for Admin review', task });

@@ -126,9 +126,11 @@ const taskSchema = new Schema(
      */
     clientCanViewSubmission: {
       type: Boolean,
-      default: false,
+      default: true,
     },
-
+    clientCanDownload: { 
+      type: Boolean, 
+      default: false },
     /**
      * Requirement: Manual Payment Chain Tracking
      * (Client -> Admin -> Student)
