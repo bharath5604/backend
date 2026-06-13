@@ -78,16 +78,39 @@ router.post('/tasks/:taskId/chat/student/messages', adminController.sendStudentT
 // =============================================================================
 
 // GET /api/admin/users?role=student
+// backend/routes/admin.js -> Update the GET /users route
+
 router.get('/users', async (req, res) => {
-    const { role } = req.query;
+    const User = require('../models/User');
+    // 1. Extract query params
+    const { role, location, company, domain } = req.query;
+    
+    // 2. Build the filter object (Hide admins by default)
     const filter = { role: { $ne: 'admin' } };
-    if (role) filter.role = role;
+    
+    // 3. Add filters if provided (using Regex for partial matching)
+    if (role && role !== 'All') {
+        filter.role = role;
+    }
+    if (location) {
+        filter.location = new RegExp(location, 'i');
+    }
+    if (company) {
+        filter.company = new RegExp(company, 'i');
+    }
+    if (domain) {
+        // Search in the skills array for students or domain field for clients
+        filter.$or = [
+            { skills: { $in: [new RegExp(domain, 'i')] } },
+            { domain: new RegExp(domain, 'i') }
+        ];
+    }
 
     try {
         const users = await User.find(filter).select('-password').sort({ createdAt: -1 });
         res.json(users);
     } catch (err) {
-        res.status(500).json({ message: "Error fetching user registry" });
+        res.status(500).json({ message: "Error fetching user list" });
     }
 });
 
