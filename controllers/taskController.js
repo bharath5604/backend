@@ -1,3 +1,4 @@
+// backend/controllers/taskController.js
 const Task = require('../models/Task');
 const User = require('../models/User');
 
@@ -5,6 +6,19 @@ const User = require('../models/User');
 const asNumber = (val) => {
   const n = Number(val);
   return Number.isFinite(n) ? n : null;
+};
+
+/**
+ * Global Real-time Broadcast Helper
+ * Signals the frontend to refresh specific UI components
+ */
+const emitUpdate = (req, room, event, data) => {
+  const io = req.app.get('socketio');
+  if (io) {
+    io.to(room).emit(event, data);
+    // Signal admin dashboard to refresh counters (Total Tasks, Open Tasks, etc)
+    io.emit('admin_stats_update', { timestamp: new Date() });
+  }
 };
 
 /**
@@ -50,6 +64,9 @@ exports.createTask = async (req, res) => {
       isGuestTask: false,
       status: 'open'
     });
+
+    // DYNAMIC EMIT: Update Admin's "Task Registry" and Dashboard live
+    emitUpdate(req, 'admin_room', 'task_created', { taskId: task._id });
 
     return res.status(201).json({ message: 'Task created successfully', task });
   } catch (err) {
@@ -97,6 +114,9 @@ exports.createGuestTask = async (req, res) => {
       status: 'open'
     });
 
+    // DYNAMIC EMIT: Alert Admin that an Emergency Post needs matching
+    emitUpdate(req, 'admin_room', 'emergency_task_created', { taskId: task._id });
+
     return res.status(201).json({
       message: 'Emergency task submitted. Admin will contact you shortly.',
       task
@@ -109,18 +129,13 @@ exports.createGuestTask = async (req, res) => {
 /**
  * ==========================================
  * RATE STUDENT & UPDATE REPUTATION ARRAYS
- * FIXED: Explicitly pushing into 'feedback' and 'feedbackScores'
  * ==========================================
  */
-// backend/controllers/taskController.js
-
 exports.rateStudent = async (req, res) => {
   try {
-    // 1. Get score from body (Flutter sends 'score')
     const scoreValue = Number(req.body.score);
     const feedbackText = req.body.text || req.body.feedback || '';
 
-    // 2. NaN Safety Check
     if (isNaN(scoreValue)) {
       return res.status(400).json({ message: "Invalid score. Must be a number." });
     }
@@ -129,13 +144,11 @@ exports.rateStudent = async (req, res) => {
     if (!task) return res.status(404).json({ message: 'Task not found' });
     if (!task.student) return res.status(400).json({ message: 'No student assigned' });
 
-    // 3. Update Task
     task.score = scoreValue;
-    task.rating = scoreValue; // Keep both synced
+    task.rating = scoreValue;
     task.feedback = feedbackText;
     await task.save();
 
-    // 4. Update Student Arrays
     const student = await User.findById(task.student);
     const client = await User.findById(req.user.id);
 
@@ -143,7 +156,6 @@ exports.rateStudent = async (req, res) => {
       student.totalScore = (student.totalScore || 0) + scoreValue;
       student.totalScoreCount = (student.totalScoreCount || 0) + 1;
 
-      // PUSH TO feedbackEntries (This makes it show on Dashboard)
       student.feedbackEntries.push({
         taskId: task._id,
         taskTitle: task.title,
@@ -155,6 +167,9 @@ exports.rateStudent = async (req, res) => {
       });
 
       await student.save();
+
+      // DYNAMIC EMIT: Update student's dashboard and wallet immediately
+      emitUpdate(req, student._id.toString(), 'feedback_update', { score: scoreValue });
     }
     return res.json({ success: true });
   } catch (err) {
@@ -226,10 +241,14 @@ exports.submitWork = async (req, res) => {
     };
 
     task.status = 'under_review';
-     task.clientCanViewSubmission = true; 
-     task.clientCanDownload = false;  
+    task.clientCanViewSubmission = true; 
+    task.clientCanDownload = false;  // Gate is locked by default
 
     await task.save();
+
+    // DYNAMIC EMIT: Signal the Client and Admin that work is ready for review
+    emitUpdate(req, task._id.toString(), 'task_update', { taskId: task._id, status: 'under_review' });
+
     return res.json({ message: 'Work submitted for Admin review', task });
   } catch (err) {
     return res.status(500).json({ message: 'Submission failed' });
@@ -259,12 +278,17 @@ exports.approveWork = async (req, res) => {
 
     await task.save();
 
-    // REQUIREMENT: Increment student completion counter
     const student = await User.findById(task.student);
     if (student) {
       student.tasksCompleted = (student.tasksCompleted || 0) + 1;
       await student.save();
+      
+      // DYNAMIC EMIT: Signal the Student that their work is approved (triggers success UI)
+      emitUpdate(req, student._id.toString(), 'task_approved', { taskId: task._id });
     }
+
+    // Update global task room (triggers QR visibility in Client app)
+    emitUpdate(req, task._id.toString(), 'task_update', { taskId: task._id, status: 'completed' });
 
     return res.json({ message: 'Work approved. Payout process initiated.', task });
   } catch (err) {
@@ -295,6 +319,13 @@ exports.declineWork = async (req, res) => {
     }
 
     await task.save();
+
+    // DYNAMIC EMIT: Tell the student they need to modify their work immediately
+    if (task.student) {
+      emitUpdate(req, task.student.toString(), 'task_status_changed', { taskId: task._id, status: task.status });
+    }
+    emitUpdate(req, task._id.toString(), 'task_update', { taskId: task._id });
+
     return res.json({ message: 'Revision requested', task });
   } catch (err) {
     return res.status(500).json({ message: 'Request failed' });

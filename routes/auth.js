@@ -2,7 +2,7 @@
 const express = require('express');
 const router = express.Router();
 const User = require('../models/User');
-const Task = require('../models/Task'); // Logic added to handle guest task claiming
+const Task = require('../models/Task'); 
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const Joi = require('joi');
@@ -28,6 +28,18 @@ function clean(value) {
   return typeof value === 'string' ? value.trim() : '';
 }
 
+/**
+ * Real-time Broadcast Helper
+ */
+const emitAuthUpdate = (req, event, data) => {
+  const io = req.app.get('socketio');
+  if (io) {
+    io.emit(event, data);
+    // Refresh admin dashboard stats (Total Users counter)
+    io.emit('admin_stats_update', { timestamp: new Date() });
+  }
+};
+
 ////////////////////////////////////////////////////////////
 /// Joi schemas
 ////////////////////////////////////////////////////////////
@@ -38,7 +50,7 @@ const signupSchema = Joi.object({
   mobile: Joi.string().min(10).max(15).required(),
   password: Joi.string().min(6).max(128).required(),
   role: Joi.string().valid('student', 'client', 'admin').required(),
-  location: Joi.string().max(200).allow('', null), // Used for all roles
+  location: Joi.string().max(200).allow('', null), 
   company: Joi.string().max(200).allow('', null),
   domain: Joi.string().max(200).allow('', null),
   skills: Joi.array().items(Joi.string().max(100)).default([]),
@@ -86,7 +98,6 @@ router.post('/signup', async (req, res) => {
 
     const email = clean(value.email).toLowerCase();
     const mobile = clean(value.mobile);
-    const location = clean(value.location);
 
     const existing = await User.findOne({ email });
     if (existing) {
@@ -95,17 +106,15 @@ router.post('/signup', async (req, res) => {
 
     const hashed = await bcrypt.hash(value.password, 10);
 
-    // Assembly of the user object
     const userPayload = {
       name: clean(value.name),
       email,
       mobile,
       password: hashed,
       role: value.role,
-      location: clean(value.location) || '', // FIX: Explicitly ensuring location is stored for Students and Clients
+      location: clean(value.location) || '', 
     };
 
-    // Role-specific field assignment
     if (value.role === 'client') {
       userPayload.company = clean(value.company) || '';
       userPayload.domain = clean(value.domain) || '';
@@ -120,27 +129,39 @@ router.post('/signup', async (req, res) => {
 
     const user = await User.create(userPayload);
 
+    // DYNAMIC EMIT: Let Admin see the new user in their "Manage Users" list immediately
+    emitAuthUpdate(req, 'user_registered', { userId: user._id, role: user.role });
+
     /**
      * REQUIREMENT: Linking Emergency Guest Tasks to Real Account
-     * Find any tasks that were posted by a guest using this mobile number
-     * and transfer ownership to the new registered user.
      */
     if (user.role === 'client') {
       try {
-        await Task.updateMany(
-          { 
-            isGuestTask: true, 
-            'guestInfo.mobile': mobile 
-          },
-          { 
-            $set: { 
-              client: user._id, 
-              isGuestTask: false,
-              company: user.company || ''
-            },
-            $unset: { guestInfo: 1 } 
+        // Find tasks posted by this mobile as a guest
+        const tasksToLink = await Task.find({ isGuestTask: true, 'guestInfo.mobile': mobile });
+        
+        if (tasksToLink.length > 0) {
+          await Task.updateMany(
+            { isGuestTask: true, 'guestInfo.mobile': mobile },
+            { 
+              $set: { 
+                client: user._id, 
+                isGuestTask: false,
+                company: user.company || ''
+              },
+              $unset: { guestInfo: 1 } 
+            }
+          );
+
+          // DYNAMIC EMIT: For each task that was just linked, tell the Admin app 
+          // to refresh that specific task detail view (from "Guest" to "Registered User")
+          const io = req.app.get('socketio');
+          if (io) {
+            tasksToLink.forEach(t => {
+              io.to(t._id.toString()).emit('task_update', { taskId: t._id, linkedToAccount: true });
+            });
           }
-        );
+        }
       } catch (linkErr) {
         console.error('Task linking failed during signup:', linkErr.message);
       }
@@ -220,7 +241,7 @@ router.post('/forgot-password', async (req, res) => {
 
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
     user.resetPasswordOTP = otp;
-    user.resetPasswordExpires = Date.now() + 600000; // 10 mins
+    user.resetPasswordExpires = Date.now() + 600000; 
     await user.save();
 
     await transporter.sendMail({

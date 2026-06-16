@@ -21,11 +21,6 @@ const key_secret = process.env.RAZORPAY_KEY_SECRET;
 let razorpay = null;
 let isRazorpayActive = false;
 
-/**
- * We only initialize the SDK if real keys are provided.
- * This prevents the "Error: key_id is mandatory" crash on environments 
- * where keys are not yet configured (like a fresh Render deploy).
- */
 if (key_id && key_secret && key_id !== 'PLACEHOLDER' && key_secret !== 'PLACEHOLDER') {
   try {
     razorpay = new Razorpay({
@@ -42,16 +37,26 @@ if (key_id && key_secret && key_id !== 'PLACEHOLDER' && key_secret !== 'PLACEHOL
 }
 
 /**
+ * Real-time Broadcast Helper
+ */
+const emitPaymentUpdate = (req, room, event, data) => {
+  const io = req.app.get('socketio');
+  if (io) {
+    io.to(room).emit(event, data);
+    // Refresh stats for Admin Dashboard
+    io.emit('admin_stats_update', { timestamp: new Date() });
+  }
+};
+
+/**
  * POST /api/payments/create-order
  * Triggered by Client App to start a payment session.
- * body: { taskId, type: 'advance' | 'final' }
  */
 router.post('/create-order', verifyJWT, async (req, res) => {
   try {
-    // FAIL-SAFE: If Razorpay isn't configured, prevent the crash and inform the user
     if (!isRazorpayActive || !razorpay) {
       return res.status(503).json({ 
-        message: 'Automatic payment gateway is currently unavailable. Please contact Admin for manual payment details (UPI/Bank Transfer).' 
+        message: 'Automatic payment gateway is currently unavailable. Please contact Admin for manual payment details.' 
       });
     }
 
@@ -64,8 +69,6 @@ router.post('/create-order', verifyJWT, async (req, res) => {
     const task = await Task.findById(taskId);
     if (!task) return res.status(404).json({ message: 'Task not found' });
 
-    // Calculate amount based on phase (20% or 80%)
-    // Note: Razorpay expects amount in PAISE (₹1 = 100 paise)
     const amount = type === 'advance' ? (task.budget * 0.20) : (task.budget * 0.80);
     
     const options = {
@@ -76,7 +79,6 @@ router.post('/create-order', verifyJWT, async (req, res) => {
 
     const order = await razorpay.orders.create(options);
 
-    // Update the Payment Ledger in MongoDB
     let paymentRecord = await Payment.findOne({ task: taskId });
     
     if (!paymentRecord) {
@@ -86,7 +88,6 @@ router.post('/create-order', verifyJWT, async (req, res) => {
     if (type === 'advance') {
       paymentRecord.advance.amount = amount;
       paymentRecord.advance.orderId = order.id;
-      // We don't change task status yet; that happens after payment success
     } else {
       paymentRecord.final.amount = amount;
       paymentRecord.final.orderId = order.id;
@@ -98,7 +99,7 @@ router.post('/create-order', verifyJWT, async (req, res) => {
       orderId: order.id,
       amount: order.amount,
       currency: order.currency,
-      keyId: process.env.RAZORPAY_KEY_ID // Required by Flutter SDK
+      keyId: process.env.RAZORPAY_KEY_ID 
     });
 
   } catch (err) {
@@ -110,24 +111,16 @@ router.post('/create-order', verifyJWT, async (req, res) => {
 /**
  * POST /api/payments/webhook
  * AUTOMATIC: Hit by Razorpay servers instantly when payment is successful.
- * This manages the automated workflow transitions.
  */
 router.post('/webhook', async (req, res) => {
   const secret = process.env.RAZORPAY_WEBHOOK_SECRET;
   const signature = req.headers['x-razorpay-signature'];
 
-  // FAIL-SAFE: If no secret is set, ignore webhooks to prevent processing errors
   if (!secret || !signature) {
     return res.status(200).json({ status: 'ignored', message: 'Webhook secret not configured' });
   }
 
   try {
-    /**
-     * Verification Logic:
-     * We use the raw request body to verify the signature.
-     * Note: This assumes app.use(express.raw) or similar is used in server.js 
-     * specifically for this route to preserve the original string formatting.
-     */
     const shasum = crypto.createHmac('sha256', secret);
     shasum.update(JSON.stringify(req.body));
     const digest = shasum.digest('hex');
@@ -139,11 +132,9 @@ router.post('/webhook', async (req, res) => {
     const event = req.body.event;
     const payload = req.body.payload.payment.entity;
 
-    // We react to captured payments
     if (event === 'payment.captured') {
       const orderId = payload.order_id;
       
-      // Find the specific ledger phase (Advance or Final) associated with this Order ID
       const paymentRecord = await Payment.findOne({
         $or: [{ 'advance.orderId': orderId }, { 'final.orderId': orderId }]
       });
@@ -160,8 +151,14 @@ router.post('/webhook', async (req, res) => {
           paymentRecord.advance.method = 'razorpay';
           paymentRecord.status = 'partially_paid';
           
-          // Work can now begin
           task.status = 'assigned';
+
+          // DYNAMIC EMIT: Tell the Student and Client that the task is now ACTIVE
+          emitPaymentUpdate(req, task._id.toString(), 'task_update', { 
+            taskId: task._id, 
+            status: 'assigned',
+            paymentPhase: 'advance'
+          });
 
           await sendNotification(student._id, {
             title: 'Task Activated',
@@ -177,15 +174,23 @@ router.post('/webhook', async (req, res) => {
           paymentRecord.final.method = 'razorpay';
           paymentRecord.status = 'completed';
           
-          // Project is officially finished
           task.status = 'completed';
 
-          // AUTOMATIC STUDENT WALLET CREDIT
-          // Credit the 'netToStudent' amount (usually task budget minus SKILEN platform fees)
           const amountToCredit = paymentRecord.netToStudent || task.budget;
           student.wallet += amountToCredit;
           student.tasksCompleted += 1;
           await student.save();
+
+          // DYNAMIC EMIT: Update student's wallet and task status instantly
+          emitPaymentUpdate(req, student._id.toString(), 'feedback_update', { 
+             walletBalance: student.wallet 
+          });
+          
+          emitPaymentUpdate(req, task._id.toString(), 'task_update', { 
+            taskId: task._id, 
+            status: 'completed',
+            paymentPhase: 'final'
+          });
 
           await sendNotification(student._id, {
             title: 'Earnings Credited',

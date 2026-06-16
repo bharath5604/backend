@@ -13,6 +13,19 @@ const sendServerError = (res, error, fallbackMessage) => {
   });
 };
 
+/**
+ * Global Real-time Broadcast Helper
+ * Used to signal the frontend to refresh specific data
+ */
+const emitUpdate = (req, room, event, data) => {
+  const io = req.app.get('socketio');
+  if (io) {
+    io.to(room).emit(event, data);
+    // Also signal the admin dashboard to refresh counters
+    io.emit('admin_stats_update', { timestamp: new Date() });
+  }
+};
+
 // =============================================================================
 // 1. DASHBOARD ANALYTICS & GROWTH
 // =============================================================================
@@ -29,7 +42,6 @@ exports.getOverviewStats = async (req, res) => {
       Task.countDocuments({ status: "assigned" }),
     ]);
 
-    // Matches the nested structure in Flutter AdminDashboardScreen
     return res.json({
       users: { total: uTotal, students: uStu, clients: uCli },
       tasks: { total: tTotal, completed: tCom, open: tOpen, active: tActive }
@@ -78,10 +90,6 @@ exports.getTaskStats = async (req, res) => {
 // 2. REGISTRY FILTERS & SEARCH
 // =============================================================================
 
-/**
- * FIXED: getTaskFilters
- * Logic: Scans the Task collection for unique values to populate registry filters.
- */
 exports.getTaskFilters = async (req, res) => {
   try {
     const [locations, domains] = await Promise.all([
@@ -99,16 +107,11 @@ exports.getTaskFilters = async (req, res) => {
   }
 };
 
-/**
- * FIXED: getAllTasks
- * Logic: Builds a filter object from req.query to enable Registry filtering.
- */
 exports.getAllTasks = async (req, res) => {
     try {
       const { location, domain, status } = req.query;
       const query = {};
   
-      // Add filters only if they have valid values
       if (location && location !== 'null' && location.trim() !== '') {
         query.location = location;
       }
@@ -134,10 +137,6 @@ exports.getAllTasks = async (req, res) => {
 // 3. CANDIDATE VETTING (Filter Candidates)
 // =============================================================================
 
-/**
- * Candidate Vetting Search
- * Requirement: Filter by location/skill and sort by tasks done.
- */
 exports.getSuggestedStudents = async (req, res) => {
   try {
     const { taskId } = req.params;
@@ -160,7 +159,7 @@ exports.getSuggestedStudents = async (req, res) => {
 
     const candidates = await User.find(query)
       .select("name email mobile location skills tasksCompleted totalScore totalScoreCount")
-      .sort({ tasksCompleted: -1 }) // Sorted based on number of tasks done
+      .sort({ tasksCompleted: -1 })
       .lean();
 
     return res.json(candidates);
@@ -195,6 +194,10 @@ exports.sendClientTaskMessage = async (req, res) => {
   try {
     const task = await Task.findById(req.params.taskId);
     const msg = await Message.create({ task: task._id, sender: req.user.id, receiver: task.client, text: req.body.text });
+    
+    // DYNAMIC EMIT: Let the client see the new message instantly
+    emitUpdate(req, req.params.taskId, 'new_message', msg);
+    
     res.status(201).json(msg);
   } catch (err) { res.status(500).json({ message: "Send failed" }); }
 };
@@ -202,6 +205,10 @@ exports.sendClientTaskMessage = async (req, res) => {
 exports.sendStudentTaskMessage = async (req, res) => {
   try {
     const msg = await Message.create({ task: req.params.taskId, sender: req.user.id, receiver: req.body.studentId, student: req.body.studentId, text: req.body.text });
+    
+    // DYNAMIC EMIT: Let the specific student see the new message instantly
+    emitUpdate(req, req.params.taskId, 'new_message', msg);
+    
     res.status(201).json(msg);
   } catch (err) { res.status(500).json({ message: "Send failed" }); }
 };
@@ -257,6 +264,9 @@ exports.rateStudent = async (req, res) => {
         });
   
         await student.save();
+
+        // DYNAMIC EMIT: Update the student's reputation dashboard instantly
+        emitUpdate(req, student._id.toString(), 'feedback_update', { score: scoreNum });
       }
       return res.json({ message: 'Reputation updated' });
     } catch (err) {
@@ -268,28 +278,22 @@ exports.rateStudent = async (req, res) => {
 // 6. TASK ACTIONS & VISIBILITY
 // =============================================================================
 
-// backend/controllers/adminController.js -> exports.toggleSubmissionVisibility
-
 exports.toggleSubmissionVisibility = async (req, res) => {
   try {
     const { taskId } = req.params;
-    const { canView } = req.body; // This is the boolean from Flutter
+    const { canView } = req.body;
 
     const task = await Task.findByIdAndUpdate(
       taskId,
-      { clientCanDownload: canView }, // Use the specific field
+      { clientCanDownload: canView },
       { new: true }
     );
 
     if (!task) return res.status(404).json({ message: "Task not found" });
 
-    // --- DYNAMIC BROADCAST ---
-    const io = req.app.get('socketio');
-    if (io) {
-      io.to(taskId).emit('task_update', { taskId: taskId });
-    }
+    // DYNAMIC EMIT: Unlock the download button on the Client's app instantly
+    emitUpdate(req, taskId, 'task_update', { taskId: taskId, clientCanDownload: canView });
 
-    // Return the specific field name so the frontend can map it easily
     return res.json({ 
         success: true, 
         clientCanDownload: task.clientCanDownload 
@@ -302,6 +306,10 @@ exports.toggleSubmissionVisibility = async (req, res) => {
 exports.confirmClientPayment = async (req, res) => {
   try {
     const task = await Task.findByIdAndUpdate(req.params.taskId, { adminReceivedPayment: true }, { new: true });
+    
+    // DYNAMIC EMIT: Update Client's task list to show "Verified" status
+    emitUpdate(req, req.params.taskId, 'task_update', { taskId: req.params.taskId });
+    
     return res.json({ message: "Verified", task });
   } catch (error) { return sendServerError(res, error, "Confirmation failed"); }
 };
@@ -309,6 +317,13 @@ exports.confirmClientPayment = async (req, res) => {
 exports.confirmStudentPayout = async (req, res) => {
   try {
     const task = await Task.findByIdAndUpdate(req.params.taskId, { adminPaidStudent: true }, { new: true });
+    
+    // DYNAMIC EMIT: Tell the student their payout is done (updates wallet/dashboard)
+    if (task.student) {
+        emitUpdate(req, task.student.toString(), 'payout_processed', { taskId: task._id });
+        emitUpdate(req, task._id.toString(), 'task_update', { taskId: task._id });
+    }
+
     return res.json({ message: "Payout confirmed", task });
   } catch (error) { return sendServerError(res, error, "Payout confirmation failed"); }
 };
@@ -336,6 +351,10 @@ exports.getStudentDetails = async (req, res) => {
 exports.updateUserApproval = async (req, res) => {
     try {
       const user = await User.findByIdAndUpdate(req.params.id, { isApproved: req.body.isApproved }, { new: true });
+      
+      // DYNAMIC EMIT: If banned, this can be used to force logout the user immediately
+      emitUpdate(req, req.params.id, 'user_status_update', { isApproved: req.body.isApproved });
+
       return res.json({ message: "User status updated", user });
     } catch (error) { return sendServerError(res, error, "Update failed"); }
 };
