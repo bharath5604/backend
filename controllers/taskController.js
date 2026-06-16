@@ -1,6 +1,7 @@
 // backend/controllers/taskController.js
 const Task = require('../models/Task');
 const User = require('../models/User');
+const { sendNotification } = require('../utils/fcm'); // IMPORTED
 
 // Helper for numeric parsing
 const asNumber = (val) => {
@@ -10,7 +11,6 @@ const asNumber = (val) => {
 
 /**
  * Global Real-time Broadcast Helper
- * Signals the frontend to refresh specific UI components
  */
 const emitUpdate = (req, room, event, data) => {
   const io = req.app.get('socketio');
@@ -65,8 +65,18 @@ exports.createTask = async (req, res) => {
       status: 'open'
     });
 
-    // DYNAMIC EMIT: Update Admin's "Task Registry" and Dashboard live
+    // REAL-TIME: Update Admin Task Registry
     emitUpdate(req, 'admin_room', 'task_created', { taskId: task._id });
+
+    // PUSH NOTIFICATION: Notify Admin of new requirement
+    const admin = await User.findOne({ role: 'admin' });
+    if (admin) {
+        await sendNotification(admin._id.toString(), {
+            title: "New Project Posted",
+            body: `${req.user.name} posted: ${task.title}`,
+            data: { type: "task_update", taskId: task._id.toString() }
+        });
+    }
 
     return res.status(201).json({ message: 'Task created successfully', task });
   } catch (err) {
@@ -114,8 +124,18 @@ exports.createGuestTask = async (req, res) => {
       status: 'open'
     });
 
-    // DYNAMIC EMIT: Alert Admin that an Emergency Post needs matching
+    // REAL-TIME: Alert Admin matching dashboard
     emitUpdate(req, 'admin_room', 'emergency_task_created', { taskId: task._id });
+
+    // PUSH NOTIFICATION: Alert Admin of Emergency match needed
+    const admin = await User.findOne({ role: 'admin' });
+    if (admin) {
+        await sendNotification(admin._id.toString(), {
+            title: "🚨 Emergency Task",
+            body: `Match needed for guest: ${guestName}`,
+            data: { type: "task_update", taskId: task._id.toString() }
+        });
+    }
 
     return res.status(201).json({
       message: 'Emergency task submitted. Admin will contact you shortly.',
@@ -168,8 +188,15 @@ exports.rateStudent = async (req, res) => {
 
       await student.save();
 
-      // DYNAMIC EMIT: Update student's dashboard and wallet immediately
+      // REAL-TIME: Update Student Dashboard
       emitUpdate(req, student._id.toString(), 'feedback_update', { score: scoreValue });
+
+      // PUSH NOTIFICATION
+      await sendNotification(student._id.toString(), {
+          title: "New Rating Received!",
+          body: `You received ${scoreValue} stars for ${task.title}`,
+          data: { type: "payment_received" }
+      });
     }
     return res.json({ success: true });
   } catch (err) {
@@ -208,7 +235,7 @@ exports.getAllTasks = async (req, res) => {
  */
 exports.getTaskById = async (req, res) => {
   try {
-    const task = await Task.findById(req.params.taskId)
+    const task = await Task.findById(req.params.taskId || req.params.id)
       .populate('client', 'name email company mobile')
       .populate('student', 'name email mobile skills tasksCompleted');
     if (!task) return res.status(404).json({ message: 'Task not found' });
@@ -242,12 +269,22 @@ exports.submitWork = async (req, res) => {
 
     task.status = 'under_review';
     task.clientCanViewSubmission = true; 
-    task.clientCanDownload = false;  // Gate is locked by default
+    task.clientCanDownload = false;
 
     await task.save();
 
-    // DYNAMIC EMIT: Signal the Client and Admin that work is ready for review
-    emitUpdate(req, task._id.toString(), 'task_update', { taskId: task._id, status: 'under_review' });
+    // REAL-TIME
+    emitUpdate(req, task._id.toString(), 'task_update', { taskId: task._id });
+
+    // PUSH NOTIFICATION: Alert Admin to Vetting Queue
+    const admin = await User.findOne({ role: 'admin' });
+    if (admin) {
+        await sendNotification(admin._id.toString(), {
+            title: "Work Submitted",
+            body: `Student delivered work for: ${task.title}. Review required.`,
+            data: { type: "task_submitted", taskId: task._id.toString() }
+        });
+    }
 
     return res.json({ message: 'Work submitted for Admin review', task });
   } catch (err) {
@@ -268,10 +305,6 @@ exports.approveWork = async (req, res) => {
       return res.status(403).json({ message: 'Not authorized' });
     }
 
-    if (!task.submission) {
-      return res.status(400).json({ message: 'No work found to approve' });
-    }
-
     task.submission.approved = true;
     task.submission.clientApprovedAt = new Date();
     task.status = 'completed';
@@ -283,12 +316,16 @@ exports.approveWork = async (req, res) => {
       student.tasksCompleted = (student.tasksCompleted || 0) + 1;
       await student.save();
       
-      // DYNAMIC EMIT: Signal the Student that their work is approved (triggers success UI)
+      // REAL-TIME & PUSH
       emitUpdate(req, student._id.toString(), 'task_approved', { taskId: task._id });
+      await sendNotification(student._id.toString(), {
+          title: "Work Approved!",
+          body: `Client approved deliverables for ${task.title}.`,
+          data: { type: "task_assigned" }
+      });
     }
 
-    // Update global task room (triggers QR visibility in Client app)
-    emitUpdate(req, task._id.toString(), 'task_update', { taskId: task._id, status: 'completed' });
+    emitUpdate(req, task._id.toString(), 'task_update', { taskId: task._id });
 
     return res.json({ message: 'Work approved. Payout process initiated.', task });
   } catch (err) {
@@ -320,9 +357,14 @@ exports.declineWork = async (req, res) => {
 
     await task.save();
 
-    // DYNAMIC EMIT: Tell the student they need to modify their work immediately
+    // REAL-TIME & PUSH: Inform student of modification request
     if (task.student) {
       emitUpdate(req, task.student.toString(), 'task_status_changed', { taskId: task._id, status: task.status });
+      await sendNotification(task.student.toString(), {
+          title: "Revision Requested",
+          body: `Client requested modifications for ${task.title}. Check chat.`,
+          data: { type: "task_declined", taskId: task._id.toString() }
+      });
     }
     emitUpdate(req, task._id.toString(), 'task_update', { taskId: task._id });
 

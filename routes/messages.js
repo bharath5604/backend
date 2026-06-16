@@ -61,7 +61,8 @@ function normalizeId(value) {
 }
 
 function isTaskChatClosed(task) {
-  return task.status === 'declined';
+  // Logic: Allow chat in all states except when explicitly blocked by business rules
+  return task.status === 'declined' && task.attemptCount >= task.maxAttempts;
 }
 
 function getTaskPartyIds(task) {
@@ -72,9 +73,7 @@ function getTaskPartyIds(task) {
 }
 
 /**
- * FIXED: canAccessTaskChat
- * Now asynchronous. It checks if the student is formally assigned OR if they 
- * are currently being vetted (Admin clicked "Chat First").
+ * Access Control Logic
  */
 async function canAccessTaskChat(task, user) {
   const userId = user.id.toString();
@@ -89,22 +88,17 @@ async function canAccessTaskChat(task, user) {
   }
 
   if (role === 'student') {
-    // 1. Check if they are formally assigned or invited
     const isAssigned = studentId && userId === studentId;
     const isInvited = task.requestedStudent && task.requestedStudent.toString() === userId;
     if (isAssigned || isInvited) return { allowed: true, reason: null };
 
-    // 2. Check for Vetting (Chat First): allow if a message exists between them and Admin
+    // Vetting Phase Check
     const messageExists = await Message.findOne({
       task: task._id,
-      $or: [
-        { sender: userId, receiver: { $exists: true } }, 
-        { receiver: userId, sender: { $exists: true } }
-      ]
+      $or: [{ sender: userId }, { receiver: userId }]
     });
 
     if (messageExists) return { allowed: true, reason: null };
-
     return { allowed: false, reason: 'You have not been contacted for this task yet.' };
   }
 
@@ -120,60 +114,51 @@ async function resolveReceiverForMessage(task, user, targetRole) {
       if (!clientId) return { ok: false, status: 400, message: 'Task client is missing' };
       return { ok: true, receiverId: clientId };
     }
-
     if (targetRole === 'student') {
-      // In vetting stage, studentId might be missing from task. Use specific student route logic instead.
-      if (!studentId) return { ok: false, status: 400, message: 'No student is assigned yet' };
-      return { ok: true, receiverId: studentId };
+      if (!studentId && !task.requestedStudent) return { ok: false, status: 400, message: 'No student assigned/invited' };
+      return { ok: true, receiverId: studentId || task.requestedStudent.toString() };
     }
     return { ok: false, status: 400, message: 'Admin targetRole must be client or student' };
   }
 
-  if (role === 'client' || role === 'student') {
-    const access = await canAccessTaskChat(task, user);
-    if (!access.allowed) return { ok: false, status: 403, message: access.reason };
-
-    const adminUser = await User.findOne({ role: 'admin' }).select('_id');
-    if (!adminUser) return { ok: false, status: 500, message: 'No admin available for chat' };
-
-    return { ok: true, receiverId: adminUser._id.toString() };
-  }
-
-  return { ok: false, status: 403, message: 'Unauthorized role' };
+  // Clients and Students always message the Admin
+  const adminUser = await User.findOne({ role: 'admin' }).select('_id');
+  if (!adminUser) return { ok: false, status: 500, message: 'Support unavailable' };
+  return { ok: true, receiverId: adminUser._id.toString() };
 }
 
 // =========================================================
 // ROUTES
 // =========================================================
 
-// GET /api/messages/task?taskId=...&studentId=...
+// GET /api/messages/task
 router.get('/task', verifyJWT, async (req, res) => {
   try {
     const taskId = normalizeId(req.query.taskId);
     const requestedStudentId = normalizeId(req.query.studentId);
-
     if (!taskId) return res.status(400).json({ message: 'taskId is required' });
 
     const task = await Task.findById(taskId);
     if (!task) return res.status(404).json({ message: 'Task not found' });
     if (isTaskChatClosed(task)) return res.status(403).json({ message: 'Chat is closed' });
 
-    // FIXED: Added await
     const access = await canAccessTaskChat(task, req.user);
     if (!access.allowed) return res.status(403).json({ message: access.reason });
 
-    const filter = { task: task._id };
+    // MODIFICATION: Mark messages received by current user as READ
+    await Message.updateMany(
+      { task: task._id, receiver: req.user.id },
+      { $set: { isRead: true } }
+    );
 
+    const filter = { task: task._id };
     if (req.user.role === 'admin') {
       if (requestedStudentId) {
         filter.$or = [{ student: requestedStudentId }, { peerStudentId: requestedStudentId }];
+      } else {
+        filter.student = null; // Admin-Client thread
       }
-      // If admin and no studentId, they likely want the client thread (legacy support)
-    } else if (req.user.role === 'student') {
-      // Students only see their own conversation with admin
-      filter.$or = [{ sender: req.user.id }, { receiver: req.user.id }];
     } else {
-      // Clients only see their own conversation with admin
       filter.$or = [{ sender: req.user.id }, { receiver: req.user.id }];
     }
 
@@ -184,7 +169,7 @@ router.get('/task', verifyJWT, async (req, res) => {
 
     return res.json(messages);
   } catch (err) {
-    return res.status(500).json({ message: 'Error fetching messages', error: err.message });
+    return res.status(500).json({ message: 'Error fetching messages' });
   }
 });
 
@@ -197,9 +182,7 @@ router.post('/task', verifyJWT, async (req, res) => {
     const taskId = normalizeId(value.taskId);
     const task = await Task.findById(taskId);
     if (!task) return res.status(404).json({ message: 'Task not found' });
-    if (isTaskChatClosed(task)) return res.status(403).json({ message: 'Chat is closed' });
 
-    // FIXED: Added await
     const receiverResolution = await resolveReceiverForMessage(task, req.user, value.targetRole);
     if (!receiverResolution.ok) return res.status(receiverResolution.status).json({ message: receiverResolution.message });
 
@@ -210,38 +193,36 @@ router.post('/task', verifyJWT, async (req, res) => {
       text: clean(value.text) || undefined,
       fileUrl: clean(value.fileUrl) || undefined,
       fileName: clean(value.fileName) || undefined,
+      isRead: false
     };
 
-    // Link message to the student thread for grouping
     if (req.user.role === 'student') {
       messagePayload.student = req.user.id;
-      messagePayload.peerStudentId = req.user.id;
     } else if (value.targetRole === 'student') {
       messagePayload.student = receiverResolution.receiverId;
-      messagePayload.peerStudentId = receiverResolution.receiverId;
     }
 
     const message = await Message.create(messagePayload);
     await message.populate([{ path: 'sender', select: 'name role' }, { path: 'receiver', select: 'name role' }]);
-    // --- ADD THIS BLOCK ---
+    
+    // REAL-TIME: Push to taskId room
     const io = req.app.get('socketio');
-    io.to(taskId).emit('new_message', message); 
-    // -----------------------
+    if (io) io.to(taskId).emit('new_message', message); 
 
     res.status(201).json(message);
 
-    // Background Notification
+    // PUSH NOTIFICATION
     (async () => {
       try {
         await sendNotification(receiverResolution.receiverId, {
-          title: 'New message',
-          body: value.text ? (value.text.length > 50 ? value.text.substring(0, 47) + '...' : value.text) : 'Attachment received',
+          title: `Message from ${req.user.name}`,
+          body: value.text || 'Attachment received',
           data: { type: 'chat_message', taskId: task._id.toString() },
         });
       } catch (notifyErr) { console.error('FCM error:', notifyErr); }
     })();
   } catch (err) {
-    return res.status(500).json({ message: 'Error sending message', error: err.message });
+    return res.status(500).json({ message: 'Error sending message' });
   }
 });
 
@@ -253,26 +234,20 @@ router.get('/admin-student', verifyJWT, async (req, res) => {
   try {
     const taskId = normalizeId(req.query.taskId);
     const studentId = normalizeId(req.query.studentId);
-
     if (!taskId || !studentId) return res.status(400).json({ message: 'taskId and studentId required' });
 
     const task = await Task.findById(taskId);
     if (!task) return res.status(404).json({ message: 'Task not found' });
 
-    // Auth check
-    const userId = req.user.id.toString();
-    if (req.user.role !== 'admin' && userId !== studentId) {
-      return res.status(403).json({ message: 'Access denied' });
-    }
+    // Mark as Read
+    await Message.updateMany(
+      { task: task._id, receiver: req.user.id, student: studentId },
+      { $set: { isRead: true } }
+    );
 
     const filter = {
       task: task._id,
-      $or: [
-        { student: studentId },
-        { peerStudentId: studentId },
-        { sender: studentId, receiver: { $exists: true } },
-        { receiver: studentId, sender: { $exists: true } }
-      ],
+      student: studentId
     };
 
     const messages = await Message.find(filter)
@@ -282,7 +257,7 @@ router.get('/admin-student', verifyJWT, async (req, res) => {
 
     return res.json(messages);
   } catch (err) {
-    return res.status(500).json({ message: 'Error fetching messages', error: err.message });
+    return res.status(500).json({ message: 'Error fetching messages' });
   }
 });
 
@@ -296,47 +271,37 @@ router.post('/admin-student', verifyJWT, async (req, res) => {
     const task = await Task.findById(taskId);
     if (!task) return res.status(404).json({ message: 'Task not found' });
 
-    const userId = req.user.id.toString();
-    if (req.user.role !== 'admin' && userId !== studentId) {
-      return res.status(403).json({ message: 'Access denied' });
-    }
-
-    let receiverId = (req.user.role === 'admin') ? studentId : null;
-    if (!receiverId) {
-      const adminUser = await User.findOne({ role: 'admin' }).select('_id');
-      receiverId = adminUser._id.toString();
-    }
-
+    const receiverResolution = await resolveReceiverForMessage(task, req.user, 'student');
+    
     const message = await Message.create({
       task: task._id,
       sender: req.user.id,
-      receiver: receiverId,
+      receiver: receiverResolution.receiverId,
       text: clean(value.text) || undefined,
       fileUrl: clean(value.fileUrl) || undefined,
       fileName: clean(value.fileName) || undefined,
       student: studentId,
-      peerStudentId: studentId,
+      isRead: false
     });
 
     await message.populate([{ path: 'sender', select: 'name role' }, { path: 'receiver', select: 'name role' }]);
-    // --- ADD THIS BLOCK ---
+    
     const io = req.app.get('socketio');
-    io.to(taskId).emit('new_message', message); 
-    // -----------------------
+    if (io) io.to(taskId).emit('new_message', message); 
 
     res.status(201).json(message);
 
     (async () => {
       try {
-        await sendNotification(receiverId, {
-          title: 'New message',
+        await sendNotification(receiverResolution.receiverId, {
+          title: `New message: ${task.title}`,
           body: value.text || 'Attachment received',
           data: { type: 'chat_message', taskId: task._id.toString(), studentId },
         });
       } catch (notifyErr) { console.error('FCM error:', notifyErr); }
     })();
   } catch (err) {
-    return res.status(500).json({ message: 'Error sending message', error: err.message });
+    return res.status(500).json({ message: 'Error sending message' });
   }
 });
 

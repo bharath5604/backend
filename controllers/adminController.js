@@ -2,6 +2,7 @@
 const User = require("../models/User");
 const Task = require("../models/Task");
 const Message = require("../models/Message");
+const { sendNotification } = require("../utils/fcm"); // IMPORTED
 
 /**
  * Standardized error handler
@@ -15,13 +16,11 @@ const sendServerError = (res, error, fallbackMessage) => {
 
 /**
  * Global Real-time Broadcast Helper
- * Used to signal the frontend to refresh specific data
  */
 const emitUpdate = (req, room, event, data) => {
   const io = req.app.get('socketio');
   if (io) {
     io.to(room).emit(event, data);
-    // Also signal the admin dashboard to refresh counters
     io.emit('admin_stats_update', { timestamp: new Date() });
   }
 };
@@ -59,10 +58,7 @@ exports.getGrowthStats = async (req, res) => {
     const growth = await TargetModel.aggregate([
       {
         $group: {
-          _id: {
-            year: { $year: "$createdAt" },
-            month: { $month: "$createdAt" },
-          },
+          _id: { year: { $year: "$createdAt" }, month: { $month: "$createdAt" } },
           count: { $sum: 1 },
         },
       },
@@ -134,7 +130,7 @@ exports.getAllTasks = async (req, res) => {
   };
 
 // =============================================================================
-// 3. CANDIDATE VETTING (Filter Candidates)
+// 3. CANDIDATE VETTING
 // =============================================================================
 
 exports.getSuggestedStudents = async (req, res) => {
@@ -169,23 +165,42 @@ exports.getSuggestedStudents = async (req, res) => {
 };
 
 // =============================================================================
-// 4. CHAT HANDLERS
+// 4. CHAT HANDLERS (WITH UNREAD LOGIC & FCM)
 // =============================================================================
 
 exports.getClientTaskMessages = async (req, res) => {
   try {
-    const messages = await Message.find({ task: req.params.taskId, student: null })
+    const { taskId } = req.params;
+    
+    // Mark messages received by Admin in this thread as READ
+    await Message.updateMany(
+      { task: taskId, receiver: req.user.id, student: null },
+      { $set: { isRead: true } }
+    );
+
+    const messages = await Message.find({ task: taskId, student: null })
     .populate('sender', 'name role')
     .sort({ createdAt: 1 });
+
     res.json(messages);
   } catch (err) { res.status(500).json({ message: "Error loading client chat" }); }
 };
 
 exports.getStudentTaskMessages = async (req, res) => {
   try {
-    const messages = await Message.find({ task: req.params.taskId, student: req.query.studentId })
+    const { taskId } = req.params;
+    const { studentId } = req.query;
+
+    // Mark messages received by Admin in this thread as READ
+    await Message.updateMany(
+      { task: taskId, receiver: req.user.id, student: studentId },
+      { $set: { isRead: true } }
+    );
+
+    const messages = await Message.find({ task: taskId, student: studentId })
     .populate('sender', 'name role')
     .sort({ createdAt: 1 });
+
     res.json(messages);
   } catch (err) { res.status(500).json({ message: "Error loading student chat" }); }
 };
@@ -193,10 +208,24 @@ exports.getStudentTaskMessages = async (req, res) => {
 exports.sendClientTaskMessage = async (req, res) => {
   try {
     const task = await Task.findById(req.params.taskId);
-    const msg = await Message.create({ task: task._id, sender: req.user.id, receiver: task.client, text: req.body.text });
+    const msg = await Message.create({ 
+        task: task._id, 
+        sender: req.user.id, 
+        receiver: task.client, 
+        text: req.body.text,
+        isRead: false 
+    });
     
-    // DYNAMIC EMIT: Let the client see the new message instantly
     emitUpdate(req, req.params.taskId, 'new_message', msg);
+
+    // PUSH NOTIFICATION: Alert the Client
+    if (task.client) {
+        await sendNotification(task.client.toString(), {
+            title: "Admin Message",
+            body: req.body.text,
+            data: { type: "chat_message", taskId: task._id.toString() }
+        });
+    }
     
     res.status(201).json(msg);
   } catch (err) { res.status(500).json({ message: "Send failed" }); }
@@ -204,10 +233,23 @@ exports.sendClientTaskMessage = async (req, res) => {
 
 exports.sendStudentTaskMessage = async (req, res) => {
   try {
-    const msg = await Message.create({ task: req.params.taskId, sender: req.user.id, receiver: req.body.studentId, student: req.body.studentId, text: req.body.text });
+    const msg = await Message.create({ 
+        task: req.params.taskId, 
+        sender: req.user.id, 
+        receiver: req.body.studentId, 
+        student: req.body.studentId, 
+        text: req.body.text,
+        isRead: false 
+    });
     
-    // DYNAMIC EMIT: Let the specific student see the new message instantly
     emitUpdate(req, req.params.taskId, 'new_message', msg);
+
+    // PUSH NOTIFICATION: Alert the Student
+    await sendNotification(req.body.studentId, {
+        title: "Message from Admin",
+        body: req.body.text,
+        data: { type: "chat_message", taskId: req.params.taskId.toString(), studentId: req.body.studentId }
+    });
     
     res.status(201).json(msg);
   } catch (err) { res.status(500).json({ message: "Send failed" }); }
@@ -226,8 +268,6 @@ exports.rateStudent = async (req, res) => {
       if (!task) return res.status(404).json({ message: 'Task not found' });
   
       const scoreNum = Number(score);
-      if (isNaN(scoreNum)) return res.status(400).json({ message: "Invalid score" });
-  
       task.rating = scoreNum;
       task.feedback = feedback || '';
       task.score = scoreNum;
@@ -237,21 +277,9 @@ exports.rateStudent = async (req, res) => {
       const client = await User.findById(req.user.id);
   
       if (student) {
-        if (!student.feedbackEntries) student.feedbackEntries = [];
-        if (!student.feedbackScores) student.feedbackScores = [];
-  
         student.totalScore = (student.totalScore || 0) + scoreNum;
         student.totalScoreCount = (student.totalScoreCount || 0) + 1;
-  
-        const taskDomain = task.domain || 'General';
-        let domainIndex = student.feedbackScores.findIndex(s => s.domain === taskDomain);
-        if (domainIndex > -1) {
-          student.feedbackScores[domainIndex].totalScore += scoreNum;
-          student.feedbackScores[domainIndex].count += 1;
-        } else {
-          student.feedbackScores.push({ domain: taskDomain, totalScore: scoreNum, count: 1 });
-        }
-  
+        
         student.feedbackEntries.push({
           taskId: task._id,
           taskTitle: task.title,
@@ -259,14 +287,19 @@ exports.rateStudent = async (req, res) => {
           clientName: client?.name || "Client",
           rating: scoreNum,
           comment: feedback || "Delivered successfully.",
-          domain: taskDomain,
+          domain: task.domain || 'General',
           createdAt: new Date()
         });
   
         await student.save();
-
-        // DYNAMIC EMIT: Update the student's reputation dashboard instantly
         emitUpdate(req, student._id.toString(), 'feedback_update', { score: scoreNum });
+
+        // PUSH NOTIFICATION: Tell Student they were rated
+        await sendNotification(student._id.toString(), {
+            title: "New Review Received",
+            body: `Client rated your work ${scoreNum} stars for ${task.title}`,
+            data: { type: "payment_received" } // Routes to Feedback Tab
+        });
       }
       return res.json({ message: 'Reputation updated' });
     } catch (err) {
@@ -275,7 +308,7 @@ exports.rateStudent = async (req, res) => {
   };
 
 // =============================================================================
-// 6. TASK ACTIONS & VISIBILITY
+// 6. TASK ACTIONS & VISIBILITY (WITH FCM)
 // =============================================================================
 
 exports.toggleSubmissionVisibility = async (req, res) => {
@@ -283,33 +316,38 @@ exports.toggleSubmissionVisibility = async (req, res) => {
     const { taskId } = req.params;
     const { canView } = req.body;
 
-    const task = await Task.findByIdAndUpdate(
-      taskId,
-      { clientCanDownload: canView },
-      { new: true }
-    );
-
+    const task = await Task.findByIdAndUpdate(taskId, { clientCanDownload: canView }, { new: true });
     if (!task) return res.status(404).json({ message: "Task not found" });
 
-    // DYNAMIC EMIT: Unlock the download button on the Client's app instantly
     emitUpdate(req, taskId, 'task_update', { taskId: taskId, clientCanDownload: canView });
 
-    return res.json({ 
-        success: true, 
-        clientCanDownload: task.clientCanDownload 
-    });
-  } catch (error) {
-    res.status(500).json({ message: error.message });
-  }
+    // PUSH NOTIFICATION: Alert Client that files are ready
+    if (canView && task.client) {
+        await sendNotification(task.client.toString(), {
+            title: "Work Ready!",
+            body: `Admin has released the deliverables for "${task.title}". You can now download them.`,
+            data: { type: "payment_needed" }
+        });
+    }
+
+    return res.json({ success: true, clientCanDownload: task.clientCanDownload });
+  } catch (error) { res.status(500).json({ message: error.message }); }
 };
 
 exports.confirmClientPayment = async (req, res) => {
   try {
     const task = await Task.findByIdAndUpdate(req.params.taskId, { adminReceivedPayment: true }, { new: true });
-    
-    // DYNAMIC EMIT: Update Client's task list to show "Verified" status
     emitUpdate(req, req.params.taskId, 'task_update', { taskId: req.params.taskId });
     
+    // PUSH NOTIFICATION: Confirm to Client
+    if (task.client) {
+        await sendNotification(task.client.toString(), {
+            title: "Payment Verified",
+            body: `We have received your payment for "${task.title}".`,
+            data: { type: "payment_needed" }
+        });
+    }
+
     return res.json({ message: "Verified", task });
   } catch (error) { return sendServerError(res, error, "Confirmation failed"); }
 };
@@ -318,10 +356,16 @@ exports.confirmStudentPayout = async (req, res) => {
   try {
     const task = await Task.findByIdAndUpdate(req.params.taskId, { adminPaidStudent: true }, { new: true });
     
-    // DYNAMIC EMIT: Tell the student their payout is done (updates wallet/dashboard)
     if (task.student) {
         emitUpdate(req, task.student.toString(), 'payout_processed', { taskId: task._id });
         emitUpdate(req, task._id.toString(), 'task_update', { taskId: task._id });
+
+        // PUSH NOTIFICATION: Alert Student
+        await sendNotification(task.student.toString(), {
+            title: "Payout Sent!",
+            body: `Payment for "${task.title}" has been sent to your bank account.`,
+            data: { type: "withdrawal_update" }
+        });
     }
 
     return res.json({ message: "Payout confirmed", task });
@@ -329,8 +373,31 @@ exports.confirmStudentPayout = async (req, res) => {
 };
 
 // =============================================================================
-// 7. GENERAL RETRIEVAL
+// 7. GENERAL RETRIEVAL & USER ACTIONS
 // =============================================================================
+
+exports.assignTaskToStudent = async (req, res) => {
+    const { studentId } = req.body;
+    try {
+      const task = await Task.findById(req.params.taskId);
+      if (!task) return res.status(404).json({ message: "Task not found" });
+  
+      task.requestedStudent = studentId;
+      task.assignmentRequestStatus = 'request_sent';
+      await task.save();
+  
+      emitUpdate(req, 'admin_room', 'task_update', { taskId: task._id });
+      
+      // PUSH NOTIFICATION: Alert Student of invitation
+      await sendNotification(studentId, {
+        title: 'New Assignment Invitation',
+        body: `Admin invited you to discuss: ${task.title}`,
+        data: { type: 'task_request', taskId: task._id.toString() }
+      });
+  
+      res.json({ message: 'Invitation sent', task });
+    } catch (err) { res.status(500).json({ message: "Failed to process invitation" }); }
+};
 
 exports.getTaskById = async (req, res) => {
   try {
@@ -351,9 +418,14 @@ exports.getStudentDetails = async (req, res) => {
 exports.updateUserApproval = async (req, res) => {
     try {
       const user = await User.findByIdAndUpdate(req.params.id, { isApproved: req.body.isApproved }, { new: true });
-      
-      // DYNAMIC EMIT: If banned, this can be used to force logout the user immediately
       emitUpdate(req, req.params.id, 'user_status_update', { isApproved: req.body.isApproved });
+
+      // PUSH NOTIFICATION: Welcome user or notify of ban
+      await sendNotification(user._id.toString(), {
+          title: req.body.isApproved ? "Account Activated!" : "Account Deactivated",
+          body: req.body.isApproved ? "Your Skilen account is now active. Welcome aboard!" : "Your account has been suspended by admin.",
+          data: { type: "user_status_update" }
+      });
 
       return res.json({ message: "User status updated", user });
     } catch (error) { return sendServerError(res, error, "Update failed"); }

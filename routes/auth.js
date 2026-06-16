@@ -35,33 +35,73 @@ const emitAuthUpdate = (req, event, data) => {
   const io = req.app.get('socketio');
   if (io) {
     io.emit(event, data);
-    // Refresh admin dashboard stats (Total Users counter)
     io.emit('admin_stats_update', { timestamp: new Date() });
   }
 };
 
 ////////////////////////////////////////////////////////////
-/// Joi schemas
+/// Joi schemas (WITH STRICT CONSTRAINTS)
 ////////////////////////////////////////////////////////////
 
 const signupSchema = Joi.object({
-  name: Joi.string().min(2).max(100).required(),
-  email: Joi.string().email().max(200).required(),
-  mobile: Joi.string().min(10).max(15).required(),
-  password: Joi.string().min(6).max(128).required(),
+  name: Joi.string().min(2).max(100).required().messages({
+    'string.empty': 'Name is required'
+  }),
+  email: Joi.string().email().max(200).required().messages({
+    'string.email': 'Enter a valid email address'
+  }),
+  mobile: Joi.string().min(10).max(15).required().messages({
+    'string.min': 'Mobile number must be at least 10 digits'
+  }),
+  
+  // ============================================================
+  // MODIFICATION: STRICT PASSWORD CONSTRAINTS
+  // Min 8 chars, 1 Upper, 1 Lower, 1 Number, 1 Special Char
+  // ============================================================
+  password: Joi.string()
+    .min(8)
+    .max(128)
+    .regex(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[!@#$%^&*(),.?":{}|<>])/)
+    .required()
+    .messages({
+      'string.min': 'Password must be at least 8 characters long',
+      'string.pattern.base': 'Password must contain Uppercase, Lowercase, Number, and Special Character'
+    }),
+
   role: Joi.string().valid('student', 'client', 'admin').required(),
-  location: Joi.string().max(200).allow('', null), 
+  location: Joi.string().max(200).required().messages({
+    'string.empty': 'Location is required for vetting'
+  }),
+
   company: Joi.string().max(200).allow('', null),
   domain: Joi.string().max(200).allow('', null),
   skills: Joi.array().items(Joi.string().max(100)).default([]),
+  
   bankAccountHolderName: Joi.string().max(200).allow('', null),
-  bankAccountNumber: Joi.string().max(50).allow('', null),
-  ifscCode: Joi.string().max(50).allow('', null),
+
+  // ============================================================
+  // MODIFICATION: BANKING CONSTRAINTS
+  // Account Number: 9 to 18 digits
+  // IFSC: Standard Indian format (4 letters, '0', 6 alphanumeric)
+  // ============================================================
+  bankAccountNumber: Joi.string()
+    .regex(/^\d{9,18}$/)
+    .allow('', null)
+    .messages({
+      'string.pattern.base': 'Account number must be between 9 and 18 digits'
+    }),
+  
+  ifscCode: Joi.string()
+    .regex(/^[A-Z]{4}0[A-Z0-9]{6}$/)
+    .allow('', null)
+    .messages({
+      'string.pattern.base': 'Invalid IFSC format (e.g. SBIN0001234)'
+    }),
 });
 
 const loginSchema = Joi.object({
-  email: Joi.string().email().max(200).required(),
-  password: Joi.string().min(6).max(128).required(),
+  email: Joi.string().email().required().messages({ 'string.email': 'Enter a valid email' }),
+  password: Joi.string().required().messages({ 'string.empty': 'Password is required' }),
 });
 
 const registerFcmSchema = Joi.object({
@@ -75,7 +115,7 @@ const forgotPasswordSchema = Joi.object({
 const resetPasswordSchema = Joi.object({
   email: Joi.string().email().required(),
   otp: Joi.string().length(6).required(),
-  newPassword: Joi.string().min(6).max(128).required(),
+  newPassword: Joi.string().min(8).regex(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[!@#$%^&*])/).required(),
 });
 
 ////////////////////////////////////////////////////////////
@@ -85,14 +125,17 @@ const resetPasswordSchema = Joi.object({
 router.post('/signup', async (req, res) => {
   try {
     const { error, value } = signupSchema.validate(req.body, {
-      abortEarly: false,
+      abortEarly: false, // Ensures all errors are returned so frontend can highlight multiple fields
       stripUnknown: true,
     });
 
     if (error) {
       return res.status(400).json({
         message: 'Validation error',
-        details: error.details.map((d) => d.message),
+        details: error.details.map((d) => ({
+            field: d.path[0],
+            message: d.message
+        })),
       });
     }
 
@@ -112,7 +155,7 @@ router.post('/signup', async (req, res) => {
       mobile,
       password: hashed,
       role: value.role,
-      location: clean(value.location) || '', 
+      location: clean(value.location), 
     };
 
     if (value.role === 'client') {
@@ -129,7 +172,7 @@ router.post('/signup', async (req, res) => {
 
     const user = await User.create(userPayload);
 
-    // DYNAMIC EMIT: Let Admin see the new user in their "Manage Users" list immediately
+    // DYNAMIC EMIT
     emitAuthUpdate(req, 'user_registered', { userId: user._id, role: user.role });
 
     /**
@@ -137,24 +180,17 @@ router.post('/signup', async (req, res) => {
      */
     if (user.role === 'client') {
       try {
-        // Find tasks posted by this mobile as a guest
         const tasksToLink = await Task.find({ isGuestTask: true, 'guestInfo.mobile': mobile });
         
         if (tasksToLink.length > 0) {
           await Task.updateMany(
             { isGuestTask: true, 'guestInfo.mobile': mobile },
             { 
-              $set: { 
-                client: user._id, 
-                isGuestTask: false,
-                company: user.company || ''
-              },
+              $set: { client: user._id, isGuestTask: false, company: user.company || '' },
               $unset: { guestInfo: 1 } 
             }
           );
 
-          // DYNAMIC EMIT: For each task that was just linked, tell the Admin app 
-          // to refresh that specific task detail view (from "Guest" to "Registered User")
           const io = req.app.get('socketio');
           if (io) {
             tasksToLink.forEach(t => {
@@ -163,7 +199,7 @@ router.post('/signup', async (req, res) => {
           }
         }
       } catch (linkErr) {
-        console.error('Task linking failed during signup:', linkErr.message);
+        console.error('Task linking failed:', linkErr.message);
       }
     }
 
