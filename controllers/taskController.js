@@ -11,7 +11,7 @@ const asNumber = (val) => {
 
 /**
  * Global Normalization Helper
- * Converts strings to Title Case and trims whitespace
+ * Fixes "edting" / "EDITING" issues by standardizing format
  * e.g. " web dev " -> "Web Dev"
  */
 function normalizeString(str) {
@@ -26,11 +26,14 @@ function normalizeString(str) {
 
 /**
  * Global Real-time Broadcast Helper
+ * Signals the frontend to refresh specific UI components
  */
 const emitUpdate = (req, room, event, data) => {
   const io = req.app.get('socketio');
   if (io) {
+    // 1. Update specific room (Task ID or User ID)
     io.to(room).emit(event, data);
+    // 2. Signal admin dashboard to refresh counters globally
     io.emit('admin_stats_update', { timestamp: new Date() });
   }
 };
@@ -60,10 +63,10 @@ exports.createTask = async (req, res) => {
     } = req.body;
 
     if (!title || !description || !deadline) {
-      return res.status(400).json({ message: 'Title, description and deadline are required' });
+      return res.status(400).json({ message: 'Missing required project details' });
     }
 
-    // NORMALIZATION: Clean the domain and skills before saving
+    // Standardize Casing for better student matching
     const cleanDomain = normalizeString(domain || 'General');
     const cleanSkills = (requiredSkills || []).map(s => normalizeString(s)).filter(s => s.length > 0);
 
@@ -83,10 +86,10 @@ exports.createTask = async (req, res) => {
       status: 'open'
     });
 
-    // REAL-TIME: Update Admin Registry
+    // Notify Admin Registry Live
     emitUpdate(req, 'admin_room', 'task_created', { taskId: task._id });
 
-    // PUSH NOTIFICATION: Alert Admin
+    // Push Notification for Admin
     const admin = await User.findOne({ role: 'admin' });
     if (admin) {
         await sendNotification(admin._id.toString(), {
@@ -123,10 +126,9 @@ exports.createGuestTask = async (req, res) => {
     } = req.body;
 
     if (!title || !description || !guestName || !guestMobile || !deadline) {
-      return res.status(400).json({ message: 'Missing required guest task fields' });
+      return res.status(400).json({ message: 'Missing required guest fields' });
     }
 
-    // NORMALIZATION: Clean input for better Admin matching
     const cleanDomain = normalizeString(domain || 'General');
     const cleanSkills = (requiredSkills || []).map(s => normalizeString(s)).filter(s => s.length > 0);
 
@@ -146,10 +148,9 @@ exports.createGuestTask = async (req, res) => {
       status: 'open'
     });
 
-    // REAL-TIME: Alert Admin Dashboard
+    // Notify Admin live
     emitUpdate(req, 'admin_room', 'emergency_task_created', { taskId: task._id });
 
-    // PUSH NOTIFICATION: Alert Admin
     const admin = await User.findOne({ role: 'admin' });
     if (admin) {
         await sendNotification(admin._id.toString(), {
@@ -201,8 +202,8 @@ exports.rateStudent = async (req, res) => {
       student.feedbackEntries.push({
         taskId: task._id,
         taskTitle: task.title,
-        clientId: client._id,
-        clientName: client.name,
+        clientId: req.user.id,
+        clientName: client?.name || "Client",
         rating: scoreValue,
         comment: feedbackText,
         domain: task.domain,
@@ -211,13 +212,13 @@ exports.rateStudent = async (req, res) => {
 
       await student.save();
 
-      // REAL-TIME: Update Student Stats
+      // Real-time Dashboard Update
       emitUpdate(req, student._id.toString(), 'feedback_update', { score: scoreValue });
 
-      // PUSH NOTIFICATION: Notify Student
+      // Student Notification
       await sendNotification(student._id.toString(), {
-          title: "New Task Review",
-          body: `You received a ${scoreValue}-star rating for ${task.title}.`,
+          title: "Rating Received!",
+          body: `You received ${scoreValue} stars for ${task.title}`,
           data: { type: "payment_received" }
       });
     }
@@ -238,7 +239,7 @@ exports.submitWork = async (req, res) => {
     const task = await Task.findById(req.params.taskId || req.params.id);
 
     if (!task || task.student?.toString() !== req.user.id) {
-      return res.status(403).json({ message: 'Unauthorized submission' });
+      return res.status(403).json({ message: 'Unauthorized' });
     }
 
     task.submission = {
@@ -250,20 +251,17 @@ exports.submitWork = async (req, res) => {
     };
 
     task.status = 'under_review';
-    task.clientCanViewSubmission = true; 
-    task.clientCanDownload = false;  
-
     await task.save();
 
-    // REAL-TIME: Update Task Room (Admin & Client)
+    // Signal Task Detail & Admin review queue
     emitUpdate(req, task._id.toString(), 'task_update', { taskId: task._id });
 
-    // PUSH NOTIFICATION: Alert Admin
+    // Notification for Admin
     const admin = await User.findOne({ role: 'admin' });
     if (admin) {
         await sendNotification(admin._id.toString(), {
-            title: "Submission Received",
-            body: `Deliverables uploaded for: ${task.title}`,
+            title: "Work Submitted",
+            body: `Student delivered work for: ${task.title}`,
             data: { type: "task_submitted", taskId: task._id.toString() }
         });
     }
@@ -298,13 +296,11 @@ exports.approveWork = async (req, res) => {
       student.tasksCompleted = (student.tasksCompleted || 0) + 1;
       await student.save();
       
-      // REAL-TIME: Update Student Dashboard
+      // Update student UI and Dashboard
       emitUpdate(req, student._id.toString(), 'task_approved', { taskId: task._id });
-
-      // PUSH NOTIFICATION: Congratulate Student
       await sendNotification(student._id.toString(), {
           title: "Work Approved!",
-          body: `Client finalized your project: ${task.title}. Payout initiated.`,
+          body: `Client finalized your project: ${task.title}.`,
           data: { type: "task_assigned" }
       });
     }
@@ -331,22 +327,15 @@ exports.declineWork = async (req, res) => {
 
     task.attemptCount = (task.attemptCount || 0) + 1;
     task.submission = null;
-    task.clientCanViewSubmission = false; 
-
-    if (task.attemptCount >= task.maxAttempts) {
-      task.status = 'declined';
-    } else {
-      task.status = 'assigned'; 
-    }
+    task.status = task.attemptCount >= task.maxAttempts ? 'declined' : 'assigned';
 
     await task.save();
 
-    // REAL-TIME & PUSH: Inform student of modification request
     if (task.student) {
       emitUpdate(req, task.student.toString(), 'task_status_changed', { taskId: task._id, status: task.status });
       await sendNotification(task.student.toString(), {
           title: "Revision Required",
-          body: `Client requested changes for ${task.title}. Check chat.`,
+          body: `Modifications requested for ${task.title}.`,
           data: { type: "task_declined", taskId: task._id.toString() }
       });
     }
@@ -381,7 +370,7 @@ exports.getTaskById = async (req, res) => {
   try {
     const task = await Task.findById(req.params.taskId || req.params.id)
       .populate('client', 'name email company mobile')
-      .populate('student', 'name email mobile skills tasksCompleted bankAccountHolderName bankAccountNumber ifscCode');
+      .populate('student', 'name email mobile skills tasksCompleted bankAccountHolderName bankAccountNumber ifscCode totalScore totalScoreCount');
     if (!task) return res.status(404).json({ message: 'Task not found' });
     return res.json(task);
   } catch (err) { return res.status(500).json({ message: 'Error fetching task' }); }
