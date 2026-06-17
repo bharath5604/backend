@@ -2,7 +2,7 @@
 const User = require("../models/User");
 const Task = require("../models/Task");
 const Message = require("../models/Message");
-const { sendNotification } = require("../utils/fcm"); // IMPORTED
+const { sendNotification } = require("../utils/fcm");
 
 /**
  * Standardized error handler
@@ -16,14 +16,50 @@ const sendServerError = (res, error, fallbackMessage) => {
 
 /**
  * Global Real-time Broadcast Helper
+ * Used to signal the frontend to refresh specific data
  */
 const emitUpdate = (req, room, event, data) => {
   const io = req.app.get('socketio');
   if (io) {
     io.to(room).emit(event, data);
+    // Also signal the admin dashboard to refresh counters
     io.emit('admin_stats_update', { timestamp: new Date() });
   }
 };
+
+// =============================================================================
+// FUZZY MATCHING HELPERS (Handles typos like "edting" vs "editing")
+// =============================================================================
+
+function getSimilarity(s1, s2) {
+  let longer = s1.toLowerCase().trim();
+  let shorter = s2.toLowerCase().trim();
+  if (s1.length < s2.length) { [longer, shorter] = [shorter, longer]; }
+  let longerLength = longer.length;
+  if (longerLength === 0) return 1.0;
+  return (longerLength - editDistance(longer, shorter)) / parseFloat(longerLength);
+}
+
+function editDistance(s1, s2) {
+  let costs = [];
+  for (let i = 0; i <= s1.length; i++) {
+    let lastValue = i;
+    for (let j = 0; j <= s2.length; j++) {
+      if (i == 0) costs[j] = j;
+      else {
+        if (j > 0) {
+          let newValue = costs[j - 1];
+          if (s1.charAt(i - 1) != s2.charAt(j - 1))
+            newValue = Math.min(Math.min(newValue, lastValue), costs[j]) + 1;
+          costs[j - 1] = lastValue;
+          lastValue = newValue;
+        }
+      }
+    }
+    if (i > 0) costs[s2.length] = lastValue;
+  }
+  return costs[s2.length];
+}
 
 // =============================================================================
 // 1. DASHBOARD ANALYTICS & GROWTH
@@ -58,7 +94,10 @@ exports.getGrowthStats = async (req, res) => {
     const growth = await TargetModel.aggregate([
       {
         $group: {
-          _id: { year: { $year: "$createdAt" }, month: { $month: "$createdAt" } },
+          _id: {
+            year: { $year: "$createdAt" },
+            month: { $month: "$createdAt" },
+          },
           count: { $sum: 1 },
         },
       },
@@ -130,7 +169,7 @@ exports.getAllTasks = async (req, res) => {
   };
 
 // =============================================================================
-// 3. CANDIDATE VETTING
+// 3. CANDIDATE VETTING (WITH FUZZY MATCHING)
 // =============================================================================
 
 exports.getSuggestedStudents = async (req, res) => {
@@ -141,47 +180,52 @@ exports.getSuggestedStudents = async (req, res) => {
     const task = await Task.findById(taskId);
     if (!task) return res.status(404).json({ message: "Task not found" });
 
-    let query = { role: "student", isApproved: true };
-
-    if (skill && skill !== 'null' && skill.trim() !== '') {
-      query.skills = { $in: [new RegExp(skill.trim(), "i")] };
-    } else if (task.requiredSkills && task.requiredSkills.length > 0) {
-      query.skills = { $in: task.requiredSkills };
-    }
-
-    if (location && location !== 'null' && location.trim() !== '') {
-      query.location = new RegExp(location.trim(), "i");
-    }
-
-    const candidates = await User.find(query)
-      .select("name email mobile location skills tasksCompleted totalScore totalScoreCount")
-      .sort({ tasksCompleted: -1 })
+    let allStudents = await User.find({ role: "student", isApproved: true })
+      .select("name email mobile location skills tasksCompleted totalScore totalScoreCount bankAccountHolderName bankAccountNumber ifscCode")
       .lean();
 
-    return res.json(candidates);
+    // 1. Filter by Location
+    if (location && location !== 'null' && location.trim() !== '') {
+      const locRegex = new RegExp(location.trim(), "i");
+      allStudents = allStudents.filter(s => locRegex.test(s.location || ''));
+    }
+
+    // 2. Fuzzy Skill Search
+    const searchSkill = (skill && skill !== 'null' && skill.trim() !== '') 
+                        ? skill.trim() 
+                        : (task.requiredSkills && task.requiredSkills.length > 0 ? task.requiredSkills[0] : null);
+
+    if (searchSkill) {
+      allStudents = allStudents.filter(student => {
+        return (student.skills || []).some(sSkill => {
+            const similarity = getSimilarity(sSkill, searchSkill);
+            return similarity >= 0.8; 
+        });
+      });
+    }
+
+    // 3. Sort by experience
+    allStudents.sort((a, b) => (b.tasksCompleted || 0) - (a.tasksCompleted || 0));
+
+    return res.json(allStudents);
   } catch (error) {
     return sendServerError(res, error, "Error identifying candidates");
   }
 };
 
 // =============================================================================
-// 4. CHAT HANDLERS (WITH UNREAD LOGIC & FCM)
+// 4. CHAT HANDLERS (WITH UNREAD DOT & PUSH LOGIC)
 // =============================================================================
 
 exports.getClientTaskMessages = async (req, res) => {
   try {
     const { taskId } = req.params;
-    
-    // Mark messages received by Admin in this thread as READ
-    await Message.updateMany(
-      { task: taskId, receiver: req.user.id, student: null },
-      { $set: { isRead: true } }
-    );
+    // Mark received messages as READ
+    await Message.updateMany({ task: taskId, receiver: req.user.id, student: null }, { $set: { isRead: true } });
 
     const messages = await Message.find({ task: taskId, student: null })
     .populate('sender', 'name role')
     .sort({ createdAt: 1 });
-
     res.json(messages);
   } catch (err) { res.status(500).json({ message: "Error loading client chat" }); }
 };
@@ -190,17 +234,12 @@ exports.getStudentTaskMessages = async (req, res) => {
   try {
     const { taskId } = req.params;
     const { studentId } = req.query;
-
-    // Mark messages received by Admin in this thread as READ
-    await Message.updateMany(
-      { task: taskId, receiver: req.user.id, student: studentId },
-      { $set: { isRead: true } }
-    );
+    // Mark received messages as READ
+    await Message.updateMany({ task: taskId, receiver: req.user.id, student: studentId }, { $set: { isRead: true } });
 
     const messages = await Message.find({ task: taskId, student: studentId })
     .populate('sender', 'name role')
     .sort({ createdAt: 1 });
-
     res.json(messages);
   } catch (err) { res.status(500).json({ message: "Error loading student chat" }); }
 };
@@ -208,17 +247,10 @@ exports.getStudentTaskMessages = async (req, res) => {
 exports.sendClientTaskMessage = async (req, res) => {
   try {
     const task = await Task.findById(req.params.taskId);
-    const msg = await Message.create({ 
-        task: task._id, 
-        sender: req.user.id, 
-        receiver: task.client, 
-        text: req.body.text,
-        isRead: false 
-    });
+    const msg = await Message.create({ task: task._id, sender: req.user.id, receiver: task.client, text: req.body.text, isRead: false });
     
     emitUpdate(req, req.params.taskId, 'new_message', msg);
 
-    // PUSH NOTIFICATION: Alert the Client
     if (task.client) {
         await sendNotification(task.client.toString(), {
             title: "Admin Message",
@@ -226,31 +258,21 @@ exports.sendClientTaskMessage = async (req, res) => {
             data: { type: "chat_message", taskId: task._id.toString() }
         });
     }
-    
     res.status(201).json(msg);
   } catch (err) { res.status(500).json({ message: "Send failed" }); }
 };
 
 exports.sendStudentTaskMessage = async (req, res) => {
   try {
-    const msg = await Message.create({ 
-        task: req.params.taskId, 
-        sender: req.user.id, 
-        receiver: req.body.studentId, 
-        student: req.body.studentId, 
-        text: req.body.text,
-        isRead: false 
-    });
+    const msg = await Message.create({ task: req.params.taskId, sender: req.user.id, receiver: req.body.studentId, student: req.body.studentId, text: req.body.text, isRead: false });
     
     emitUpdate(req, req.params.taskId, 'new_message', msg);
 
-    // PUSH NOTIFICATION: Alert the Student
     await sendNotification(req.body.studentId, {
         title: "Message from Admin",
         body: req.body.text,
         data: { type: "chat_message", taskId: req.params.taskId.toString(), studentId: req.body.studentId }
     });
-    
     res.status(201).json(msg);
   } catch (err) { res.status(500).json({ message: "Send failed" }); }
 };
@@ -294,21 +316,20 @@ exports.rateStudent = async (req, res) => {
         await student.save();
         emitUpdate(req, student._id.toString(), 'feedback_update', { score: scoreNum });
 
-        // PUSH NOTIFICATION: Tell Student they were rated
         await sendNotification(student._id.toString(), {
             title: "New Review Received",
-            body: `Client rated your work ${scoreNum} stars for ${task.title}`,
-            data: { type: "payment_received" } // Routes to Feedback Tab
+            body: `Client rated your work ${scoreNum} stars.`,
+            data: { type: "payment_received" }
         });
       }
       return res.json({ message: 'Reputation updated' });
     } catch (err) {
-      return res.status(500).json({ message: 'Rating failed', error: err.message });
+      return res.status(500).json({ message: 'Rating failed' });
     }
   };
 
 // =============================================================================
-// 6. TASK ACTIONS & VISIBILITY (WITH FCM)
+// 6. TASK ACTIONS & VISIBILITY
 // =============================================================================
 
 exports.toggleSubmissionVisibility = async (req, res) => {
@@ -321,17 +342,18 @@ exports.toggleSubmissionVisibility = async (req, res) => {
 
     emitUpdate(req, taskId, 'task_update', { taskId: taskId, clientCanDownload: canView });
 
-    // PUSH NOTIFICATION: Alert Client that files are ready
     if (canView && task.client) {
         await sendNotification(task.client.toString(), {
             title: "Work Ready!",
-            body: `Admin has released the deliverables for "${task.title}". You can now download them.`,
+            body: `Admin released the files for "${task.title}".`,
             data: { type: "payment_needed" }
         });
     }
 
     return res.json({ success: true, clientCanDownload: task.clientCanDownload });
-  } catch (error) { res.status(500).json({ message: error.message }); }
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
 };
 
 exports.confirmClientPayment = async (req, res) => {
@@ -339,11 +361,10 @@ exports.confirmClientPayment = async (req, res) => {
     const task = await Task.findByIdAndUpdate(req.params.taskId, { adminReceivedPayment: true }, { new: true });
     emitUpdate(req, req.params.taskId, 'task_update', { taskId: req.params.taskId });
     
-    // PUSH NOTIFICATION: Confirm to Client
     if (task.client) {
         await sendNotification(task.client.toString(), {
             title: "Payment Verified",
-            body: `We have received your payment for "${task.title}".`,
+            body: `Admin verified your payment for "${task.title}".`,
             data: { type: "payment_needed" }
         });
     }
@@ -355,48 +376,44 @@ exports.confirmClientPayment = async (req, res) => {
 exports.confirmStudentPayout = async (req, res) => {
   try {
     const task = await Task.findByIdAndUpdate(req.params.taskId, { adminPaidStudent: true }, { new: true });
-    
     if (task.student) {
         emitUpdate(req, task.student.toString(), 'payout_processed', { taskId: task._id });
         emitUpdate(req, task._id.toString(), 'task_update', { taskId: task._id });
 
-        // PUSH NOTIFICATION: Alert Student
         await sendNotification(task.student.toString(), {
             title: "Payout Sent!",
-            body: `Payment for "${task.title}" has been sent to your bank account.`,
+            body: `Payment for "${task.title}" has been sent to your account.`,
             data: { type: "withdrawal_update" }
         });
     }
-
     return res.json({ message: "Payout confirmed", task });
   } catch (error) { return sendServerError(res, error, "Payout confirmation failed"); }
 };
 
 // =============================================================================
-// 7. GENERAL RETRIEVAL & USER ACTIONS
+// 7. GENERAL RETRIEVAL
 // =============================================================================
 
 exports.assignTaskToStudent = async (req, res) => {
-    const { studentId } = req.body;
-    try {
-      const task = await Task.findById(req.params.taskId);
-      if (!task) return res.status(404).json({ message: "Task not found" });
-  
-      task.requestedStudent = studentId;
-      task.assignmentRequestStatus = 'request_sent';
-      await task.save();
-  
-      emitUpdate(req, 'admin_room', 'task_update', { taskId: task._id });
-      
-      // PUSH NOTIFICATION: Alert Student of invitation
-      await sendNotification(studentId, {
-        title: 'New Assignment Invitation',
-        body: `Admin invited you to discuss: ${task.title}`,
-        data: { type: 'task_request', taskId: task._id.toString() }
-      });
-  
-      res.json({ message: 'Invitation sent', task });
-    } catch (err) { res.status(500).json({ message: "Failed to process invitation" }); }
+  const { studentId } = req.body;
+  try {
+    const task = await Task.findById(req.params.taskId);
+    if (!task) return res.status(404).json({ message: "Task not found" });
+
+    task.requestedStudent = studentId;
+    task.assignmentRequestStatus = 'request_sent';
+    await task.save();
+
+    emitUpdate(req, 'admin_room', 'task_update', { taskId: task._id });
+
+    await sendNotification(studentId, {
+      title: 'New Assignment Invitation',
+      body: `Admin invited you to discuss: ${task.title}`,
+      data: { type: 'task_request', taskId: task._id.toString() }
+    });
+
+    res.json({ message: 'Invitation sent', task });
+  } catch (err) { res.status(500).json({ message: "Failed to process invitation" }); }
 };
 
 exports.getTaskById = async (req, res) => {
@@ -419,11 +436,10 @@ exports.updateUserApproval = async (req, res) => {
     try {
       const user = await User.findByIdAndUpdate(req.params.id, { isApproved: req.body.isApproved }, { new: true });
       emitUpdate(req, req.params.id, 'user_status_update', { isApproved: req.body.isApproved });
-
-      // PUSH NOTIFICATION: Welcome user or notify of ban
+      
       await sendNotification(user._id.toString(), {
           title: req.body.isApproved ? "Account Activated!" : "Account Deactivated",
-          body: req.body.isApproved ? "Your Skilen account is now active. Welcome aboard!" : "Your account has been suspended by admin.",
+          body: req.body.isApproved ? "Welcome to Skilen!" : "Your account has been suspended.",
           data: { type: "user_status_update" }
       });
 

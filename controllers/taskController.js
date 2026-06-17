@@ -1,7 +1,7 @@
 // backend/controllers/taskController.js
 const Task = require('../models/Task');
 const User = require('../models/User');
-const { sendNotification } = require('../utils/fcm'); // IMPORTED
+const { sendNotification } = require('../utils/fcm');
 
 // Helper for numeric parsing
 const asNumber = (val) => {
@@ -10,13 +10,27 @@ const asNumber = (val) => {
 };
 
 /**
+ * Global Normalization Helper
+ * Converts strings to Title Case and trims whitespace
+ * e.g. " web dev " -> "Web Dev"
+ */
+function normalizeString(str) {
+  if (!str || typeof str !== 'string') return '';
+  return str
+    .trim()
+    .toLowerCase()
+    .split(' ')
+    .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ');
+}
+
+/**
  * Global Real-time Broadcast Helper
  */
 const emitUpdate = (req, room, event, data) => {
   const io = req.app.get('socketio');
   if (io) {
     io.to(room).emit(event, data);
-    // Signal admin dashboard to refresh counters (Total Tasks, Open Tasks, etc)
     io.emit('admin_stats_update', { timestamp: new Date() });
   }
 };
@@ -49,15 +63,19 @@ exports.createTask = async (req, res) => {
       return res.status(400).json({ message: 'Title, description and deadline are required' });
     }
 
+    // NORMALIZATION: Clean the domain and skills before saving
+    const cleanDomain = normalizeString(domain || 'General');
+    const cleanSkills = (requiredSkills || []).map(s => normalizeString(s)).filter(s => s.length > 0);
+
     const task = await Task.create({
       title: title.trim(),
       description: description.trim(),
       budget: asNumber(budget), 
       deadline: new Date(deadline),
       location: String(location || '').trim(),
-      domain: String(domain || '').trim(),
+      domain: cleanDomain,
       company: String(company || '').trim(),
-      requiredSkills: Array.isArray(requiredSkills) ? requiredSkills : [],
+      requiredSkills: cleanSkills,
       attachments: Array.isArray(attachments) ? attachments : [],
       attachmentNames: Array.isArray(attachmentNames) ? attachmentNames : [],
       client: req.user.id,
@@ -65,15 +83,15 @@ exports.createTask = async (req, res) => {
       status: 'open'
     });
 
-    // REAL-TIME: Update Admin Task Registry
+    // REAL-TIME: Update Admin Registry
     emitUpdate(req, 'admin_room', 'task_created', { taskId: task._id });
 
-    // PUSH NOTIFICATION: Notify Admin of new requirement
+    // PUSH NOTIFICATION: Alert Admin
     const admin = await User.findOne({ role: 'admin' });
     if (admin) {
         await sendNotification(admin._id.toString(), {
             title: "New Project Posted",
-            body: `${req.user.name} posted: ${task.title}`,
+            body: `${req.user.name} requires ${cleanDomain} help.`,
             data: { type: "task_update", taskId: task._id.toString() }
         });
     }
@@ -81,7 +99,7 @@ exports.createTask = async (req, res) => {
     return res.status(201).json({ message: 'Task created successfully', task });
   } catch (err) {
     console.error('Create Task Error:', err);
-    return res.status(500).json({ message: 'Failed to create task', error: err.message });
+    return res.status(500).json({ message: 'Failed to create task' });
   }
 };
 
@@ -108,6 +126,10 @@ exports.createGuestTask = async (req, res) => {
       return res.status(400).json({ message: 'Missing required guest task fields' });
     }
 
+    // NORMALIZATION: Clean input for better Admin matching
+    const cleanDomain = normalizeString(domain || 'General');
+    const cleanSkills = (requiredSkills || []).map(s => normalizeString(s)).filter(s => s.length > 0);
+
     const task = await Task.create({
       title: title.trim(),
       description: description.trim(),
@@ -119,20 +141,20 @@ exports.createGuestTask = async (req, res) => {
       },
       budget: asNumber(budget),
       deadline: new Date(deadline),
-      domain: domain || 'General',
-      requiredSkills: requiredSkills || [],
+      domain: cleanDomain,
+      requiredSkills: cleanSkills,
       status: 'open'
     });
 
-    // REAL-TIME: Alert Admin matching dashboard
+    // REAL-TIME: Alert Admin Dashboard
     emitUpdate(req, 'admin_room', 'emergency_task_created', { taskId: task._id });
 
-    // PUSH NOTIFICATION: Alert Admin of Emergency match needed
+    // PUSH NOTIFICATION: Alert Admin
     const admin = await User.findOne({ role: 'admin' });
     if (admin) {
         await sendNotification(admin._id.toString(), {
             title: "🚨 Emergency Task",
-            body: `Match needed for guest: ${guestName}`,
+            body: `Guest ${guestName} needs ${cleanDomain} matching.`,
             data: { type: "task_update", taskId: task._id.toString() }
         });
     }
@@ -142,7 +164,7 @@ exports.createGuestTask = async (req, res) => {
       task
     });
   } catch (err) {
-    return res.status(500).json({ message: 'Failed to submit guest task', error: err.message });
+    return res.status(500).json({ message: 'Failed to submit guest task' });
   }
 };
 
@@ -183,65 +205,25 @@ exports.rateStudent = async (req, res) => {
         clientName: client.name,
         rating: scoreValue,
         comment: feedbackText,
+        domain: task.domain,
         createdAt: new Date()
       });
 
       await student.save();
 
-      // REAL-TIME: Update Student Dashboard
+      // REAL-TIME: Update Student Stats
       emitUpdate(req, student._id.toString(), 'feedback_update', { score: scoreValue });
 
-      // PUSH NOTIFICATION
+      // PUSH NOTIFICATION: Notify Student
       await sendNotification(student._id.toString(), {
-          title: "New Rating Received!",
-          body: `You received ${scoreValue} stars for ${task.title}`,
+          title: "New Task Review",
+          body: `You received a ${scoreValue}-star rating for ${task.title}.`,
           data: { type: "payment_received" }
       });
     }
     return res.json({ success: true });
   } catch (err) {
     res.status(500).json({ message: err.message });
-  }
-};
-
-/**
- * ===============================
- * GET ALL TASKS
- * ===============================
- */
-exports.getAllTasks = async (req, res) => {
-  try {
-    const { clientId, domain } = req.query;
-    const query = {};
-    if (clientId) query.client = clientId;
-    else query.status = 'open';
-
-    if (domain) query.domain = String(domain).trim();
-
-    const tasks = await Task.find(query)
-      .populate('client', 'name email company')
-      .sort({ createdAt: -1 });
-
-    return res.json(tasks);
-  } catch (err) {
-    return res.status(500).json({ message: 'Failed to fetch tasks' });
-  }
-};
-
-/**
- * ===============================
- * GET TASK BY ID
- * ===============================
- */
-exports.getTaskById = async (req, res) => {
-  try {
-    const task = await Task.findById(req.params.taskId || req.params.id)
-      .populate('client', 'name email company mobile')
-      .populate('student', 'name email mobile skills tasksCompleted');
-    if (!task) return res.status(404).json({ message: 'Task not found' });
-    return res.json(task);
-  } catch (err) {
-    return res.status(500).json({ message: 'Error fetching task' });
   }
 };
 
@@ -269,19 +251,19 @@ exports.submitWork = async (req, res) => {
 
     task.status = 'under_review';
     task.clientCanViewSubmission = true; 
-    task.clientCanDownload = false;
+    task.clientCanDownload = false;  
 
     await task.save();
 
-    // REAL-TIME
+    // REAL-TIME: Update Task Room (Admin & Client)
     emitUpdate(req, task._id.toString(), 'task_update', { taskId: task._id });
 
-    // PUSH NOTIFICATION: Alert Admin to Vetting Queue
+    // PUSH NOTIFICATION: Alert Admin
     const admin = await User.findOne({ role: 'admin' });
     if (admin) {
         await sendNotification(admin._id.toString(), {
-            title: "Work Submitted",
-            body: `Student delivered work for: ${task.title}. Review required.`,
+            title: "Submission Received",
+            body: `Deliverables uploaded for: ${task.title}`,
             data: { type: "task_submitted", taskId: task._id.toString() }
         });
     }
@@ -316,18 +298,20 @@ exports.approveWork = async (req, res) => {
       student.tasksCompleted = (student.tasksCompleted || 0) + 1;
       await student.save();
       
-      // REAL-TIME & PUSH
+      // REAL-TIME: Update Student Dashboard
       emitUpdate(req, student._id.toString(), 'task_approved', { taskId: task._id });
+
+      // PUSH NOTIFICATION: Congratulate Student
       await sendNotification(student._id.toString(), {
           title: "Work Approved!",
-          body: `Client approved deliverables for ${task.title}.`,
+          body: `Client finalized your project: ${task.title}. Payout initiated.`,
           data: { type: "task_assigned" }
       });
     }
 
     emitUpdate(req, task._id.toString(), 'task_update', { taskId: task._id });
 
-    return res.json({ message: 'Work approved. Payout process initiated.', task });
+    return res.json({ message: 'Work approved.', task });
   } catch (err) {
     return res.status(500).json({ message: 'Approval failed' });
   }
@@ -361,8 +345,8 @@ exports.declineWork = async (req, res) => {
     if (task.student) {
       emitUpdate(req, task.student.toString(), 'task_status_changed', { taskId: task._id, status: task.status });
       await sendNotification(task.student.toString(), {
-          title: "Revision Requested",
-          body: `Client requested modifications for ${task.title}. Check chat.`,
+          title: "Revision Required",
+          body: `Client requested changes for ${task.title}. Check chat.`,
           data: { type: "task_declined", taskId: task._id.toString() }
       });
     }
@@ -376,9 +360,33 @@ exports.declineWork = async (req, res) => {
 
 /**
  * ===============================
- * GET STUDENT TASKS
+ * DATA RETRIEVAL
  * ===============================
  */
+
+exports.getAllTasks = async (req, res) => {
+  try {
+    const { clientId, domain } = req.query;
+    const query = {};
+    if (clientId) query.client = clientId;
+    else query.status = 'open';
+    if (domain) query.domain = normalizeString(domain);
+
+    const tasks = await Task.find(query).populate('client', 'name email company').sort({ createdAt: -1 });
+    return res.json(tasks);
+  } catch (err) { return res.status(500).json({ message: 'Fetch failed' }); }
+};
+
+exports.getTaskById = async (req, res) => {
+  try {
+    const task = await Task.findById(req.params.taskId || req.params.id)
+      .populate('client', 'name email company mobile')
+      .populate('student', 'name email mobile skills tasksCompleted bankAccountHolderName bankAccountNumber ifscCode');
+    if (!task) return res.status(404).json({ message: 'Task not found' });
+    return res.json(task);
+  } catch (err) { return res.status(500).json({ message: 'Error fetching task' }); }
+};
+
 exports.getStudentTasks = async (req, res) => {
   try {
     const tasks = await Task.find({
@@ -386,23 +394,12 @@ exports.getStudentTasks = async (req, res) => {
       status: { $in: ['assigned', 'under_review', 'completed', 'declined'] },
     }).sort({ updatedAt: -1 });
     return res.json(tasks);
-  } catch (err) {
-    return res.status(500).json({ message: 'Failed to load workspace' });
-  }
+  } catch (err) { return res.status(500).json({ message: 'Load failed' }); }
 };
 
-/**
- * ===============================
- * GET CLIENT TASKS
- * ===============================
- */
 exports.getClientTasks = async (req, res) => {
     try {
-      const tasks = await Task.find({
-        client: req.user.id,
-      }).sort({ createdAt: -1 });
+      const tasks = await Task.find({ client: req.user.id }).sort({ createdAt: -1 });
       return res.json(tasks);
-    } catch (err) {
-      return res.status(500).json({ message: 'Failed to fetch tasks' });
-    }
-  };
+    } catch (err) { return res.status(500).json({ message: 'Fetch failed' }); }
+};

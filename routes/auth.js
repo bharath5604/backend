@@ -8,6 +8,7 @@ const jwt = require('jsonwebtoken');
 const Joi = require('joi');
 const nodemailer = require('nodemailer');
 const verifyJWT = require('../middleware/authMiddleware');
+const { sendNotification } = require('../utils/fcm');
 
 // =========================================================
 // EMAIL CONFIGURATION
@@ -35,42 +36,43 @@ const emitAuthUpdate = (req, event, data) => {
   const io = req.app.get('socketio');
   if (io) {
     io.emit(event, data);
+    // Trigger global refresh for Admin Dashboard stats
     io.emit('admin_stats_update', { timestamp: new Date() });
   }
 };
 
 ////////////////////////////////////////////////////////////
-/// Joi schemas (WITH STRICT CONSTRAINTS)
+/// JOI SCHEMAS (WITH STRICT CONSTRAINTS & CUSTOM MESSAGES)
 ////////////////////////////////////////////////////////////
 
 const signupSchema = Joi.object({
   name: Joi.string().min(2).max(100).required().messages({
-    'string.empty': 'Name is required'
+    'string.empty': 'Name is required',
+    'string.min': 'Name must be at least 2 characters'
   }),
   email: Joi.string().email().max(200).required().messages({
-    'string.email': 'Enter a valid email address'
+    'string.email': 'Enter a valid email address',
+    'string.empty': 'Email is required'
   }),
   mobile: Joi.string().min(10).max(15).required().messages({
-    'string.min': 'Mobile number must be at least 10 digits'
+    'string.min': 'Mobile number must be at least 10 digits',
+    'string.empty': 'Mobile number is required'
   }),
   
-  // ============================================================
-  // MODIFICATION: STRICT PASSWORD CONSTRAINTS
-  // Min 8 chars, 1 Upper, 1 Lower, 1 Number, 1 Special Char
-  // ============================================================
+  // Password: Min 8, 1 Uppercase, 1 Lowercase, 1 Number, 1 Special Char
   password: Joi.string()
     .min(8)
-    .max(128)
     .regex(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[!@#$%^&*(),.?":{}|<>])/)
     .required()
     .messages({
       'string.min': 'Password must be at least 8 characters long',
-      'string.pattern.base': 'Password must contain Uppercase, Lowercase, Number, and Special Character'
+      'string.pattern.base': 'Must have 1 Uppercase, 1 Lowercase, 1 Number, and 1 Special Character'
     }),
 
   role: Joi.string().valid('student', 'client', 'admin').required(),
+  
   location: Joi.string().max(200).required().messages({
-    'string.empty': 'Location is required for vetting'
+    'string.empty': 'Location is required for account vetting'
   }),
 
   company: Joi.string().max(200).allow('', null),
@@ -79,18 +81,15 @@ const signupSchema = Joi.object({
   
   bankAccountHolderName: Joi.string().max(200).allow('', null),
 
-  // ============================================================
-  // MODIFICATION: BANKING CONSTRAINTS
   // Account Number: 9 to 18 digits
-  // IFSC: Standard Indian format (4 letters, '0', 6 alphanumeric)
-  // ============================================================
   bankAccountNumber: Joi.string()
     .regex(/^\d{9,18}$/)
     .allow('', null)
     .messages({
-      'string.pattern.base': 'Account number must be between 9 and 18 digits'
+      'string.pattern.base': 'Account number must be 9 to 18 digits long'
     }),
   
+  // IFSC: 4 Alpha, '0', 6 Alphanumeric
   ifscCode: Joi.string()
     .regex(/^[A-Z]{4}0[A-Z0-9]{6}$/)
     .allow('', null)
@@ -100,12 +99,8 @@ const signupSchema = Joi.object({
 });
 
 const loginSchema = Joi.object({
-  email: Joi.string().email().required().messages({ 'string.email': 'Enter a valid email' }),
+  email: Joi.string().email().required().messages({ 'string.email': 'Invalid email format' }),
   password: Joi.string().required().messages({ 'string.empty': 'Password is required' }),
-});
-
-const registerFcmSchema = Joi.object({
-  fcmToken: Joi.string().max(1000).required(),
 });
 
 const forgotPasswordSchema = Joi.object({
@@ -114,8 +109,14 @@ const forgotPasswordSchema = Joi.object({
 
 const resetPasswordSchema = Joi.object({
   email: Joi.string().email().required(),
-  otp: Joi.string().length(6).required(),
-  newPassword: Joi.string().min(8).regex(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[!@#$%^&*])/).required(),
+  otp: Joi.string().length(6).required().messages({ 'string.length': 'OTP must be 6 digits' }),
+  newPassword: Joi.string()
+    .min(8)
+    .regex(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[!@#$%^&*(),.?":{}|<>])/)
+    .required()
+    .messages({
+      'string.pattern.base': 'New password must be secure (Upper, Lower, Number, Symbol)'
+    }),
 });
 
 ////////////////////////////////////////////////////////////
@@ -125,7 +126,7 @@ const resetPasswordSchema = Joi.object({
 router.post('/signup', async (req, res) => {
   try {
     const { error, value } = signupSchema.validate(req.body, {
-      abortEarly: false, // Ensures all errors are returned so frontend can highlight multiple fields
+      abortEarly: false, // Return ALL errors for frontend highlighting
       stripUnknown: true,
     });
 
@@ -144,7 +145,7 @@ router.post('/signup', async (req, res) => {
 
     const existing = await User.findOne({ email });
     if (existing) {
-      return res.status(400).json({ message: 'Email already registered' });
+      return res.status(400).json({ message: 'Email address already registered' });
     }
 
     const hashed = await bcrypt.hash(value.password, 10);
@@ -161,6 +162,7 @@ router.post('/signup', async (req, res) => {
     if (value.role === 'client') {
       userPayload.company = clean(value.company) || '';
       userPayload.domain = clean(value.domain) || '';
+      userPayload.isApproved = false; // Clients always need manual approval
     }
 
     if (value.role === 'student') {
@@ -168,11 +170,12 @@ router.post('/signup', async (req, res) => {
       userPayload.bankAccountHolderName = clean(value.bankAccountHolderName) || '';
       userPayload.bankAccountNumber = clean(value.bankAccountNumber) || '';
       userPayload.ifscCode = clean(value.ifscCode) || '';
+      userPayload.isApproved = true; // Students auto-approved
     }
 
     const user = await User.create(userPayload);
 
-    // DYNAMIC EMIT
+    // REAL-TIME: Notify Admin User Registry
     emitAuthUpdate(req, 'user_registered', { userId: user._id, role: user.role });
 
     /**
@@ -181,7 +184,6 @@ router.post('/signup', async (req, res) => {
     if (user.role === 'client') {
       try {
         const tasksToLink = await Task.find({ isGuestTask: true, 'guestInfo.mobile': mobile });
-        
         if (tasksToLink.length > 0) {
           await Task.updateMany(
             { isGuestTask: true, 'guestInfo.mobile': mobile },
@@ -190,7 +192,7 @@ router.post('/signup', async (req, res) => {
               $unset: { guestInfo: 1 } 
             }
           );
-
+          // Signal Admin to refresh specific linked task detail views
           const io = req.app.get('socketio');
           if (io) {
             tasksToLink.forEach(t => {
@@ -199,23 +201,26 @@ router.post('/signup', async (req, res) => {
           }
         }
       } catch (linkErr) {
-        console.error('Task linking failed:', linkErr.message);
+        console.error('Task linking failed during signup:', linkErr.message);
       }
     }
 
-    const safeUser = await User.findById(user._id).select('-password');
+    // PUSH NOTIFICATION: Alert Admin of new registration
+    const adminUser = await User.findOne({ role: 'admin' });
+    if (adminUser) {
+        await sendNotification(adminUser._id.toString(), {
+            title: "New Registration",
+            body: `${user.name} joined as a ${user.role}.`,
+            data: { type: "user_status_update" }
+        });
+    }
 
-    return res.status(201).json({ 
-      message: 'User created successfully', 
-      user: safeUser 
-    });
+    const safeUser = await User.findById(user._id).select('-password');
+    return res.status(201).json({ message: 'User created successfully', user: safeUser });
 
   } catch (err) {
     console.error('Signup error:', err);
-    return res.status(500).json({ 
-        message: 'Error creating user profile', 
-        error: err.message 
-    });
+    return res.status(500).json({ message: 'Internal server error during registration' });
   }
 });
 
@@ -225,14 +230,8 @@ router.post('/signup', async (req, res) => {
 
 router.post('/login', async (req, res) => {
   try {
-    const { error, value } = loginSchema.validate(req.body, { stripUnknown: true });
-
-    if (error) {
-      return res.status(400).json({ 
-          message: 'Validation error', 
-          details: error.details.map((d) => d.message) 
-      });
-    }
+    const { error, value } = loginSchema.validate(req.body);
+    if (error) return res.status(400).json({ message: error.details[0].message });
 
     const email = clean(value.email).toLowerCase();
     const user = await User.findOne({ email });
@@ -243,19 +242,17 @@ router.post('/login', async (req, res) => {
     }
 
     const match = await bcrypt.compare(value.password, user.password);
-    if (!match) return res.status(401).json({ message: 'Invalid password' });
+    if (!match) return res.status(401).json({ message: 'Invalid credentials' });
 
-    const token = jwt.sign(
-        { id: user._id, role: user.role }, 
-        process.env.JWT_SECRET, 
-        { expiresIn: '7d' }
-    );
+    const token = jwt.sign({ id: user._id, role: user.role }, process.env.JWT_SECRET, { expiresIn: '7d' });
+    
+    user.lastLoginAt = new Date();
+    await user.save();
 
     const safeUser = await User.findById(user._id).select('-password');
-
     return res.json({ token, user: safeUser });
   } catch (err) {
-    return res.status(500).json({ message: 'Login processing error', error: err.message });
+    return res.status(500).json({ message: 'Login processing error' });
   }
 });
 
@@ -268,12 +265,9 @@ router.post('/forgot-password', async (req, res) => {
     const { error, value } = forgotPasswordSchema.validate(req.body);
     if (error) return res.status(400).json({ message: error.details[0].message });
 
-    const email = value.email.toLowerCase();
+    const email = clean(value.email).toLowerCase();
     const user = await User.findOne({ email });
-
-    if (!user) {
-      return res.status(404).json({ message: "No account found with this email." });
-    }
+    if (!user) return res.status(404).json({ message: "Email not found" });
 
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
     user.resetPasswordOTP = otp;
@@ -284,56 +278,45 @@ router.post('/forgot-password', async (req, res) => {
       from: '"SKILEN Support" <krrinnovations@gmail.com>',
       to: email,
       subject: 'Password Reset OTP',
-      html: `<p>Hello ${user.name},</p><p>Use the code <b>${otp}</b> to reset your password.</p>`,
+      html: `<p>Hello ${user.name},</p><p>Use code <b>${otp}</b> to reset your password.</p>`,
     });
 
-    return res.json({ success: true, message: "OTP sent successfully." });
-  } catch (err) {
-    return res.status(500).json({ message: "Failed to send reset code" });
-  }
+    return res.json({ success: true, message: "OTP sent successfully" });
+  } catch (err) { return res.status(500).json({ message: "Failed to send reset email" }); }
 });
 
 router.post('/reset-password', async (req, res) => {
   try {
     const { error, value } = resetPasswordSchema.validate(req.body);
-    if (error) return res.status(400).json({ message: error.details[0].message });
+    if (error) {
+        return res.status(400).json({ 
+            message: 'Validation error', 
+            details: error.details.map(d => ({ field: d.path[0], message: d.message })) 
+        });
+    }
 
-    const email = value.email.toLowerCase();
     const user = await User.findOne({ 
-      email, 
-      resetPasswordOTP: value.otp,
+      email: value.email.toLowerCase(), 
+      resetPasswordOTP: value.otp, 
       resetPasswordExpires: { $gt: Date.now() } 
     });
 
-    if (!user) {
-      return res.status(400).json({ message: "Invalid or expired OTP." });
-    }
+    if (!user) return res.status(400).json({ message: "Invalid or expired OTP" });
 
     user.password = await bcrypt.hash(value.newPassword, 10);
     user.resetPasswordOTP = undefined;
     user.resetPasswordExpires = undefined;
     await user.save();
 
-    return res.json({ success: true, message: "Password updated." });
-  } catch (err) {
-    return res.status(500).json({ message: "Failed to reset password" });
-  }
+    return res.json({ success: true, message: "Password updated successfully" });
+  } catch (err) { return res.status(500).json({ message: "Reset failed" }); }
 });
-
-////////////////////////////////////////////////////////////
-/// FCM TOKEN
-////////////////////////////////////////////////////////////
 
 router.post('/register-fcm', verifyJWT, async (req, res) => {
   try {
-    const { error, value } = registerFcmSchema.validate(req.body, { stripUnknown: true });
-    if (error) return res.status(400).json({ message: 'Invalid token data' });
-
-    await User.findByIdAndUpdate(req.user.id, { fcmToken: clean(value.fcmToken) });
-    return res.json({ message: 'Notification token updated' });
-  } catch (err) {
-    return res.status(500).json({ message: 'FCM sync failed' });
-  }
+    await User.findByIdAndUpdate(req.user.id, { fcmToken: clean(req.body.fcmToken) });
+    return res.json({ message: 'Token updated' });
+  } catch (err) { return res.status(500).json({ message: 'FCM sync failed' }); }
 });
 
 module.exports = router;
