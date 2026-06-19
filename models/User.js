@@ -89,7 +89,7 @@ const userSchema = new mongoose.Schema(
       required: true,
     },
 
-    // Used by both Students (New Requirement) and Clients
+    // Used by both Students and Clients for vetting and matching
     location: {
       type: String,
       trim: true,
@@ -134,11 +134,28 @@ const userSchema = new mongoose.Schema(
     /// STUDENT FIELDS
     ////////////////////////////////////////////////////
 
+    // bio: {
+    //   type: String,
+    //   trim: true,
+    //   default: ''
+    // },
+
     skills: {
       type: [String],
       default: [],
     },
+
     portfolioUrl: {
+      type: String,
+      trim: true,
+      default: ''
+    },
+
+    // ============================================================
+    // MODIFICATION: STUDENT IDENTITY PROOF (SOLVES IMAGE ISSUE)
+    // Pointer to Firebase Storage URL
+    // ============================================================
+    idCardUrl: {
       type: String,
       trim: true,
       default: ''
@@ -168,7 +185,6 @@ const userSchema = new mongoose.Schema(
     /// REPUTATION & EXPERIENCE (Used for Admin Sorting)
     ////////////////////////////////////////////////////
 
-    // Used for sorting students based on experience
     tasksCompleted: {
       type: Number,
       default: 0,
@@ -178,6 +194,7 @@ const userSchema = new mongoose.Schema(
       type: Number,
       default: 0,
     },
+
     totalScoreCount: {
       type: Number,
       default: 0,
@@ -187,6 +204,7 @@ const userSchema = new mongoose.Schema(
       type: [feedbackScoreSchema],
       default: [],
     },
+
     feedbackEntries: {
       type: [feedbackEntrySchema],
       default: [],
@@ -203,14 +221,14 @@ const userSchema = new mongoose.Schema(
     },
 
     ////////////////////////////////////////////////////
-    /// APPROVAL
+    /// APPROVAL LOGIC
     ////////////////////////////////////////////////////
 
     isApproved: {
       type: Boolean,
       default: function () {
         if (this.role === 'student') return true;
-        if (this.role === 'client') return false; // Clients still require admin approval
+        if (this.role === 'client') return false; 
         if (this.role === 'admin') return true;
         return false;
       },
@@ -227,7 +245,6 @@ const userSchema = new mongoose.Schema(
 /// VIRTUALS
 ////////////////////////////////////////////////////
 
-// Calculates average rating for display in Admin's student list
 userSchema.virtual('averageScore').get(function () {
   if (!this.totalScoreCount || this.totalScoreCount === 0) return 0;
   return (this.totalScore / this.totalScoreCount).toFixed(1);

@@ -33,7 +33,7 @@ if (key_id && key_secret && key_id !== 'PLACEHOLDER' && key_secret !== 'PLACEHOL
     console.error('❌ Razorpay failed to initialize:', err.message);
   }
 } else {
-  console.warn('⚠️ Razorpay credentials missing or invalid. Auto-payments disabled. Defaulting to manual workflow.');
+  console.warn('⚠️ Razorpay credentials missing or invalid. Auto-payments disabled.');
 }
 
 /**
@@ -51,47 +51,50 @@ const emitPaymentUpdate = (req, room, event, data) => {
 /**
  * POST /api/payments/create-order
  * Triggered by Client App to start a payment session.
+ * Now enforces budgetFinalized check.
  */
 router.post('/create-order', verifyJWT, async (req, res) => {
   try {
     if (!isRazorpayActive || !razorpay) {
       return res.status(503).json({ 
-        message: 'Automatic payment gateway is currently unavailable. Please contact Admin for manual payment details.' 
+        message: 'Automatic payment gateway is currently unavailable. Please use manual QR method.' 
       });
     }
 
-    const { taskId, type } = req.body;
-
-    if (!['advance', 'final'].includes(type)) {
-      return res.status(400).json({ message: 'Invalid payment type' });
-    }
+    const { taskId } = req.body;
 
     const task = await Task.findById(taskId);
     if (!task) return res.status(404).json({ message: 'Task not found' });
 
-    const amount = type === 'advance' ? (task.budget * 0.20) : (task.budget * 0.80);
-    
+    // Enforce business logic: Admin must finalize budget before Razorpay is enabled
+    if (!task.budgetFinalized || !task.budget) {
+      return res.status(400).json({ message: 'Budget not yet finalized by Admin. Please use manual payment or wait.' });
+    }
+
     const options = {
-      amount: Math.round(amount * 100), 
+      amount: Math.round(task.budget * 100), // Amount in Paise (INR * 100)
       currency: "INR",
-      receipt: `receipt_${taskId}_${type}_${Date.now()}`,
+      receipt: `receipt_${taskId}_${Date.now()}`,
     };
 
     const order = await razorpay.orders.create(options);
 
+    // Update or Create Payment Ledger
     let paymentRecord = await Payment.findOne({ task: taskId });
-    
     if (!paymentRecord) {
-      return res.status(404).json({ message: 'Payment record not found' });
+        paymentRecord = new Payment({
+            task: taskId,
+            client: task.client,
+            student: task.student,
+            totalBudget: task.budget,
+            netToStudent: task.budget // Defaulting to 100% for now
+        });
     }
 
-    if (type === 'advance') {
-      paymentRecord.advance.amount = amount;
-      paymentRecord.advance.orderId = order.id;
-    } else {
-      paymentRecord.final.amount = amount;
-      paymentRecord.final.orderId = order.id;
-    }
+    // Assign Order ID to the 'final' phase as requested (Lump sum at finish)
+    paymentRecord.final.amount = task.budget;
+    paymentRecord.final.orderId = order.id;
+    paymentRecord.status = 'awaiting_payment';
 
     await paymentRecord.save();
 
@@ -110,7 +113,8 @@ router.post('/create-order', verifyJWT, async (req, res) => {
 
 /**
  * POST /api/payments/webhook
- * AUTOMATIC: Hit by Razorpay servers instantly when payment is successful.
+ * AUTOMATIC: Triggered by Razorpay.
+ * MODIFICATION: Automatically flips adminReceivedPayment to true.
  */
 router.post('/webhook', async (req, res) => {
   const secret = process.env.RAZORPAY_WEBHOOK_SECRET;
@@ -126,7 +130,7 @@ router.post('/webhook', async (req, res) => {
     const digest = shasum.digest('hex');
 
     if (digest !== signature) {
-      return res.status(400).send('Invalid webhook signature');
+      return res.status(400).send('Invalid signature');
     }
 
     const event = req.body.event;
@@ -143,72 +147,59 @@ router.post('/webhook', async (req, res) => {
         const task = await Task.findById(paymentRecord.task);
         const student = await User.findById(paymentRecord.student);
 
-        if (orderId === paymentRecord.advance.orderId) {
-          /** PHASE 1 COMPLETE: 20% Advance Received */
-          paymentRecord.advance.status = 'paid';
-          paymentRecord.advance.paymentId = payload.id;
-          paymentRecord.advance.paidAt = new Date();
-          paymentRecord.advance.method = 'razorpay';
-          paymentRecord.status = 'partially_paid';
-          
-          task.status = 'assigned';
+        // ============================================================
+        // MODIFICATION: AUTOMATIC TASK VERIFICATION
+        // ============================================================
+        task.adminReceivedPayment = true; 
+        task.status = 'completed';
 
-          // DYNAMIC EMIT: Tell the Student and Client that the task is now ACTIVE
-          emitPaymentUpdate(req, task._id.toString(), 'task_update', { 
-            taskId: task._id, 
-            status: 'assigned',
-            paymentPhase: 'advance'
-          });
+        paymentRecord.final.status = 'paid';
+        paymentRecord.final.paymentId = payload.id;
+        paymentRecord.final.paidAt = new Date();
+        paymentRecord.final.method = 'razorpay';
+        paymentRecord.status = 'completed';
 
-          await sendNotification(student._id, {
-            title: 'Task Activated',
-            body: `Advance for "${task.title}" received. You can now start the work.`,
-            data: { type: 'task_assigned', taskId: task._id.toString() }
-          });
-
-        } else if (orderId === paymentRecord.final.orderId) {
-          /** PHASE 2 COMPLETE: 80% Final Received */
-          paymentRecord.final.status = 'paid';
-          paymentRecord.final.paymentId = payload.id;
-          paymentRecord.final.paidAt = new Date();
-          paymentRecord.final.method = 'razorpay';
-          paymentRecord.status = 'completed';
-          
-          task.status = 'completed';
-
-          const amountToCredit = paymentRecord.netToStudent || task.budget;
-          student.wallet += amountToCredit;
-          student.tasksCompleted += 1;
-          await student.save();
-
-          // DYNAMIC EMIT: Update student's wallet and task status instantly
-          emitPaymentUpdate(req, student._id.toString(), 'feedback_update', { 
-             walletBalance: student.wallet 
-          });
-          
-          emitPaymentUpdate(req, task._id.toString(), 'task_update', { 
-            taskId: task._id, 
-            status: 'completed',
-            paymentPhase: 'final'
-          });
-
-          await sendNotification(student._id, {
-            title: 'Earnings Credited',
-            body: `Final payment for "${task.title}" received. Check your virtual wallet!`,
-            data: { type: 'payment_received', taskId: task._id.toString() }
-          });
-        }
-
+        // Credit Student Wallet
+        const creditAmount = paymentRecord.netToStudent || task.budget;
+        student.wallet = (student.wallet || 0) + creditAmount;
+        student.tasksCompleted += 1;
+        
+        await student.save();
         await paymentRecord.save();
         await task.save();
+
+        // REAL-TIME: Instantly show "Verified" status in Client/Admin apps
+        emitPaymentUpdate(req, task._id.toString(), 'task_update', { 
+            taskId: task._id, 
+            adminReceivedPayment: true,
+            status: 'completed'
+        });
+
+        // Update Student Dashboard points live
+        emitPaymentUpdate(req, student._id.toString(), 'feedback_update', { 
+            walletBalance: student.wallet 
+        });
+
+        // PUSH NOTIFICATIONS
+        await sendNotification(task.client.toString(), {
+            title: "Payment Successful",
+            body: `Your payment for "${task.title}" has been verified automatically.`,
+            data: { type: "payment_needed" }
+        });
+
+        await sendNotification(student._id.toString(), {
+            title: "Project Payout Received",
+            body: `Payment for "${task.title}" has been credited to your virtual wallet.`,
+            data: { type: "payment_received" }
+        });
       }
     }
 
     return res.status(200).json({ status: 'ok' });
 
   } catch (err) {
-    console.error('Webhook Logic Error:', err);
-    return res.status(500).send('Internal Processing Error');
+    console.error('Webhook Error:', err);
+    return res.status(500).send('Webhook Processing Error');
   }
 });
 

@@ -20,7 +20,7 @@ router.use(verifyJWT);
 router.use(ensureAdmin);
 
 // =============================================================================
-// 1. STATIC ANALYTICS & GLOBAL FILTERS (TOP PRIORITY - PREVENTS 404)
+// 1. STATIC ANALYTICS & GLOBAL FILTERS
 // =============================================================================
 
 // GET /api/admin/stats/overview
@@ -36,7 +36,7 @@ router.get('/tasks/filters', adminController.getTaskFilters);
  * REQUIREMENT: GET /api/admin/student-filters
  * Logic: Returns unique technical skills from students and 
  * UNIQUE LOCATIONS FROM ALL USERS (Students and Clients).
- * This fixes the dropdowns in your candidate vetting UI.
+ * This fixes the dropdowns in candidate vetting UI.
  */
 router.get('/student-filters', async (req, res) => {
     try {
@@ -61,8 +61,7 @@ router.get('/getTopStudents', adminController.getTopStudents);
 router.get('/getTaskStats', adminController.getTaskStats);
 
 // =============================================================================
-// 2. CHAT SUB-ROUTES (MEDIUM PRIORITY)
-// Must be defined before the generic /tasks/:taskId route
+// 2. CHAT SUB-ROUTES (Moderated Communication)
 // =============================================================================
 
 // Context: Admin communicating with the Client
@@ -77,18 +76,11 @@ router.post('/tasks/:taskId/chat/student/messages', adminController.sendStudentT
 // 3. RESOURCE LISTS
 // =============================================================================
 
-// GET /api/admin/users?role=student
-// backend/routes/admin.js -> Update the GET /users route
-
+// GET /api/admin/users
 router.get('/users', async (req, res) => {
-    const User = require('../models/User');
-    // 1. Extract query params
     const { role, location, company, domain } = req.query;
-    
-    // 2. Build the filter object (Hide admins by default)
     const filter = { role: { $ne: 'admin' } };
     
-    // 3. Add filters if provided (using Regex for partial matching)
     if (role && role !== 'All') {
         filter.role = role;
     }
@@ -99,7 +91,6 @@ router.get('/users', async (req, res) => {
         filter.company = new RegExp(company, 'i');
     }
     if (domain) {
-        // Search in the skills array for students or domain field for clients
         filter.$or = [
             { skills: { $in: [new RegExp(domain, 'i')] } },
             { domain: new RegExp(domain, 'i') }
@@ -115,12 +106,18 @@ router.get('/users', async (req, res) => {
 });
 
 // GET /api/admin/tasks (Master registry including Emergency Guest tasks)
-// Pointed to getAllTasks to ensure visibility in dashboard
 router.get('/tasks', adminController.getAllTasks);
 
 // =============================================================================
-// 4. PARAMETERIZED ACTIONS & PAYMENTS (LOW PRIORITY)
+// 4. PROJECT ACTIONS & PAYMENTS
 // =============================================================================
+
+/**
+ * MODIFICATION: Finalize Negotiated Budget
+ * PATCH /api/admin/tasks/:taskId/finalize-budget
+ * Finalizes the budget agreed in chat to enable Razorpay on the Client app.
+ */
+router.patch('/tasks/:taskId/finalize-budget', adminController.finalizeTaskBudget);
 
 // Complete Student Profile + Full Project History
 router.get('/students/:studentId', adminController.getStudentDetails);
@@ -146,30 +143,7 @@ router.patch('/tasks/:taskId/confirm-student-payout', adminController.confirmStu
 /**
  * Formal Task Invitation
  */
-router.post('/tasks/:taskId/assign', async (req, res) => {
-  const Task = require('../models/Task');
-  const { sendNotification } = require('../utils/fcm');
-  const { studentId } = req.body;
-
-  try {
-    const task = await Task.findById(req.params.taskId);
-    if (!task) return res.status(404).json({ message: "Task not found" });
-
-    task.requestedStudent = studentId;
-    task.assignmentRequestStatus = 'request_sent';
-    await task.save();
-
-    await sendNotification(studentId, {
-      title: 'New Assignment Invitation',
-      body: `Admin invited you to discuss: ${task.title}`,
-      data: { type: 'task_request', taskId: task._id.toString() }
-    });
-
-    res.json({ message: 'Invitation sent to student', task });
-  } catch (err) {
-    res.status(500).json({ message: "Failed to process invitation" });
-  }
-});
+router.post('/tasks/:taskId/assign', adminController.assignTaskToStudent);
 
 // Generic Task Retrieval
 router.get('/tasks/:taskId', adminController.getTaskById);

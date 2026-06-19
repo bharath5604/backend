@@ -144,12 +144,21 @@ const taskSchema = new Schema(
       default: false,
     },
 
+    // ============================================================
+    // MODIFICATION: HYBRID PAYMENT SWITCH
+    // If true, Client UI shows Razorpay. If false, shows Static QR.
+    // ============================================================
+    budgetFinalized: {
+      type: Boolean,
+      default: false
+    },
+
     /**
      * Project Parameters
      */
     budget: {
       type: Number,
-      required: false, // Optional
+      required: false, // Optional until finalized by Admin
       min: [0, 'Budget cannot be negative'],
     },
 

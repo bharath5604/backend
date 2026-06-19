@@ -31,42 +31,40 @@ function clean(value) {
 
 /**
  * Real-time Broadcast Helper
+ * Signals the Admin app to refresh counters and lists
  */
 const emitAuthUpdate = (req, event, data) => {
   const io = req.app.get('socketio');
   if (io) {
     io.emit(event, data);
-    // Trigger global refresh for Admin Dashboard stats
+    // Refresh admin dashboard stats (Total Users counter)
     io.emit('admin_stats_update', { timestamp: new Date() });
   }
 };
 
 ////////////////////////////////////////////////////////////
-/// JOI SCHEMAS (WITH STRICT CONSTRAINTS & CUSTOM MESSAGES)
+/// JOI SCHEMAS (WITH STRICT CONSTRAINTS & IMAGE POINTERS)
 ////////////////////////////////////////////////////////////
 
 const signupSchema = Joi.object({
   name: Joi.string().min(2).max(100).required().messages({
-    'string.empty': 'Name is required',
-    'string.min': 'Name must be at least 2 characters'
+    'string.empty': 'Name is required'
   }),
   email: Joi.string().email().max(200).required().messages({
-    'string.email': 'Enter a valid email address',
-    'string.empty': 'Email is required'
+    'string.email': 'Invalid email format'
   }),
   mobile: Joi.string().min(10).max(15).required().messages({
-    'string.min': 'Mobile number must be at least 10 digits',
-    'string.empty': 'Mobile number is required'
+    'string.min': 'Mobile must be at least 10 digits'
   }),
   
-  // Password: Min 8, 1 Uppercase, 1 Lowercase, 1 Number, 1 Special Char
+  // Password: Min 8, 1 Upper, 1 Lower, 1 Num, 1 Symbol
   password: Joi.string()
     .min(8)
     .regex(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[!@#$%^&*(),.?":{}|<>])/)
     .required()
     .messages({
-      'string.min': 'Password must be at least 8 characters long',
-      'string.pattern.base': 'Must have 1 Uppercase, 1 Lowercase, 1 Number, and 1 Special Character'
+      'string.min': 'Password must be at least 8 characters',
+      'string.pattern.base': 'Password must include Uppercase, Lowercase, Number, and Special Character'
     }),
 
   role: Joi.string().valid('student', 'client', 'admin').required(),
@@ -75,21 +73,28 @@ const signupSchema = Joi.object({
     'string.empty': 'Location is required for account vetting'
   }),
 
+  // ============================================================
+  // STUDENT SPECIFIC LOGIC (BIO & ID CARD URL)
+  // ============================================================
+  // bio: Joi.string().max(1000).allow('', null),
+  // idCardUrl: Joi.string().uri().allow('', null).messages({
+  //   'string.uri': 'Invalid ID card storage link'
+  // }),
+
   company: Joi.string().max(200).allow('', null),
   domain: Joi.string().max(200).allow('', null),
   skills: Joi.array().items(Joi.string().max(100)).default([]),
   
   bankAccountHolderName: Joi.string().max(200).allow('', null),
 
-  // Account Number: 9 to 18 digits
+  // Banking constraints
   bankAccountNumber: Joi.string()
     .regex(/^\d{9,18}$/)
     .allow('', null)
     .messages({
-      'string.pattern.base': 'Account number must be 9 to 18 digits long'
+      'string.pattern.base': 'Account number must be 9 to 18 digits'
     }),
   
-  // IFSC: 4 Alpha, '0', 6 Alphanumeric
   ifscCode: Joi.string()
     .regex(/^[A-Z]{4}0[A-Z0-9]{6}$/)
     .allow('', null)
@@ -99,12 +104,12 @@ const signupSchema = Joi.object({
 });
 
 const loginSchema = Joi.object({
-  email: Joi.string().email().required().messages({ 'string.email': 'Invalid email format' }),
+  email: Joi.string().email().required().messages({ 'string.email': 'Valid email is required' }),
   password: Joi.string().required().messages({ 'string.empty': 'Password is required' }),
 });
 
 const forgotPasswordSchema = Joi.object({
-  email: Joi.string().email().required(),
+  email: Joi.string().email().required().messages({ 'string.email': 'Valid email is required' }),
 });
 
 const resetPasswordSchema = Joi.object({
@@ -115,6 +120,7 @@ const resetPasswordSchema = Joi.object({
     .regex(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[!@#$%^&*(),.?":{}|<>])/)
     .required()
     .messages({
+      'string.min': 'New password must be at least 8 characters',
       'string.pattern.base': 'New password must be secure (Upper, Lower, Number, Symbol)'
     }),
 });
@@ -126,7 +132,7 @@ const resetPasswordSchema = Joi.object({
 router.post('/signup', async (req, res) => {
   try {
     const { error, value } = signupSchema.validate(req.body, {
-      abortEarly: false, // Return ALL errors for frontend highlighting
+      abortEarly: false, 
       stripUnknown: true,
     });
 
@@ -162,37 +168,33 @@ router.post('/signup', async (req, res) => {
     if (value.role === 'client') {
       userPayload.company = clean(value.company) || '';
       userPayload.domain = clean(value.domain) || '';
-      userPayload.isApproved = false; // Clients always need manual approval
+      userPayload.isApproved = false; 
     }
 
     if (value.role === 'student') {
       userPayload.skills = [...new Set(value.skills || [])];
+      // userPayload.bio = clean(value.bio);
+      userPayload.idCardUrl = clean(value.idCardUrl);
       userPayload.bankAccountHolderName = clean(value.bankAccountHolderName) || '';
       userPayload.bankAccountNumber = clean(value.bankAccountNumber) || '';
       userPayload.ifscCode = clean(value.ifscCode) || '';
-      userPayload.isApproved = true; // Students auto-approved
+      userPayload.isApproved = true; 
     }
 
     const user = await User.create(userPayload);
 
-    // REAL-TIME: Notify Admin User Registry
+    // Dynamic Real-time Signal
     emitAuthUpdate(req, 'user_registered', { userId: user._id, role: user.role });
 
-    /**
-     * REQUIREMENT: Linking Emergency Guest Tasks to Real Account
-     */
+    // Link Emergency Guest Tasks
     if (user.role === 'client') {
       try {
         const tasksToLink = await Task.find({ isGuestTask: true, 'guestInfo.mobile': mobile });
         if (tasksToLink.length > 0) {
           await Task.updateMany(
             { isGuestTask: true, 'guestInfo.mobile': mobile },
-            { 
-              $set: { client: user._id, isGuestTask: false, company: user.company || '' },
-              $unset: { guestInfo: 1 } 
-            }
+            { $set: { client: user._id, isGuestTask: false, company: user.company || '' }, $unset: { guestInfo: 1 } }
           );
-          // Signal Admin to refresh specific linked task detail views
           const io = req.app.get('socketio');
           if (io) {
             tasksToLink.forEach(t => {
@@ -201,11 +203,11 @@ router.post('/signup', async (req, res) => {
           }
         }
       } catch (linkErr) {
-        console.error('Task linking failed during signup:', linkErr.message);
+        console.error('Task linking error:', linkErr.message);
       }
     }
 
-    // PUSH NOTIFICATION: Alert Admin of new registration
+    // PUSH NOTIFICATION: Alert Admin
     const adminUser = await User.findOne({ role: 'admin' });
     if (adminUser) {
         await sendNotification(adminUser._id.toString(), {
@@ -238,21 +240,20 @@ router.post('/login', async (req, res) => {
     if (!user) return res.status(404).json({ message: 'Account not found' });
 
     if (!user.isApproved) {
-      return res.status(403).json({ message: 'Account pending admin approval' });
+      return res.status(403).json({ message: 'Account pending admin approval.' });
     }
 
     const match = await bcrypt.compare(value.password, user.password);
     if (!match) return res.status(401).json({ message: 'Invalid credentials' });
 
     const token = jwt.sign({ id: user._id, role: user.role }, process.env.JWT_SECRET, { expiresIn: '7d' });
-    
     user.lastLoginAt = new Date();
     await user.save();
 
     const safeUser = await User.findById(user._id).select('-password');
     return res.json({ token, user: safeUser });
   } catch (err) {
-    return res.status(500).json({ message: 'Login processing error' });
+    return res.status(500).json({ message: 'Login error' });
   }
 });
 

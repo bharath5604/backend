@@ -67,7 +67,7 @@ router.get('/:id/public-profile', verifyJWT, async (req, res) => {
 
     // Explicitly select feedbackEntries to populate the Profile history list
     const student = await User.findById(id).select(
-      'name email bio skills location portfolioUrl totalScore totalScoreCount feedbackScores feedbackEntries role tasksCompleted'
+      'name email skills location portfolioUrl totalScore totalScoreCount feedbackScores feedbackEntries role tasksCompleted'
     );
 
     if (!student || student.role !== 'student') {
@@ -83,7 +83,7 @@ router.get('/:id/public-profile', verifyJWT, async (req, res) => {
       id: student._id,
       name: clean(student.name),
       email: clean(student.email),
-      bio: clean(student.bio),
+      // bio: clean(student.bio),
       location: clean(student.location),
       skills: Array.isArray(student.skills) ? student.skills : [],
       portfolioUrl: clean(student.portfolioUrl),

@@ -19,7 +19,7 @@ const updateMeSchema = Joi.object({
   name: Joi.string().min(2).max(100).optional(),
   email: Joi.string().email().max(200).optional(), // Optional email change support
   mobile: Joi.string().max(20).allow('', null),    // Requirement: Edit contact
-  bio: Joi.string().max(1000).allow('', null),
+  // bio: Joi.string().max(1000).allow('', null),
   skills: Joi.array().items(Joi.string().max(100)).optional(),
   portfolioUrl: Joi.string().uri().max(500).allow('', null),
   location: Joi.string().max(200).allow('', null), // Fixed location storage
@@ -124,7 +124,7 @@ router.get('/students/:id/public-profile', async (req, res) => {
     if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: 'Invalid ID' });
 
     const student = await User.findById(id).select(
-        'name role bio skills location portfolioUrl tasksCompleted totalScore totalScoreCount feedbackScores feedbackEntries mobile'
+        'name role skills location portfolioUrl tasksCompleted totalScore totalScoreCount feedbackScores feedbackEntries mobile'
     );
 
     if (!student || student.role !== 'student') {
