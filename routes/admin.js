@@ -7,6 +7,7 @@ const User = require('../models/User');
 
 /**
  * Admin Role Guard 
+ * Ensures that only users with the 'admin' role can access these routes.
  */
 const ensureAdmin = (req, res, next) => {
   if (!req.user || req.user.role !== 'admin') {
@@ -20,7 +21,7 @@ router.use(verifyJWT);
 router.use(ensureAdmin);
 
 // =============================================================================
-// 1. STATIC ANALYTICS & GLOBAL FILTERS
+// 1. DASHBOARD ANALYTICS & GLOBAL FILTERS
 // =============================================================================
 
 // GET /api/admin/stats/overview
@@ -29,6 +30,12 @@ router.get('/stats/overview', adminController.getOverviewStats);
 // GET /api/admin/stats/growth?metric=tasks
 router.get('/stats/growth', adminController.getGrowthStats);
 
+// GET /api/admin/getTopStudents
+router.get('/getTopStudents', adminController.getTopStudents);
+
+// GET /api/admin/getTaskStats
+router.get('/getTaskStats', adminController.getTaskStats);
+
 // GET /api/admin/tasks/filters (For the main tasks registry page)
 router.get('/tasks/filters', adminController.getTaskFilters);
 
@@ -36,13 +43,13 @@ router.get('/tasks/filters', adminController.getTaskFilters);
  * REQUIREMENT: GET /api/admin/student-filters
  * Logic: Returns unique technical skills from students and 
  * UNIQUE LOCATIONS FROM ALL USERS (Students and Clients).
- * This fixes the dropdowns in candidate vetting UI.
+ * This fixes the dropdowns in your candidate vetting UI.
  */
 router.get('/student-filters', async (req, res) => {
     try {
         const [allLocations, studentSkills] = await Promise.all([
-            User.distinct('location'), // Unique locations from everyone in DB
-            User.distinct('skills', { role: 'student' }) // Technical skills from students
+            User.distinct('location'), 
+            User.distinct('skills', { role: 'student' }) 
         ]);
         
         res.json({ 
@@ -54,14 +61,9 @@ router.get('/student-filters', async (req, res) => {
     }
 });
 
-// GET /api/admin/getTopStudents
-router.get('/getTopStudents', adminController.getTopStudents);
-
-// GET /api/admin/getTaskStats
-router.get('/getTaskStats', adminController.getTaskStats);
-
 // =============================================================================
 // 2. CHAT SUB-ROUTES (Moderated Communication)
+// These handle the separate Admin-Client and Admin-Student threads for a task.
 // =============================================================================
 
 // Context: Admin communicating with the Client
@@ -73,10 +75,10 @@ router.get('/tasks/:taskId/chat/student/messages', adminController.getStudentTas
 router.post('/tasks/:taskId/chat/student/messages', adminController.sendStudentTaskMessage);
 
 // =============================================================================
-// 3. RESOURCE LISTS
+// 3. RESOURCE REGISTRIES
 // =============================================================================
 
-// GET /api/admin/users
+// GET /api/admin/users (Managed User List with Multi-filters)
 router.get('/users', async (req, res) => {
     const { role, location, company, domain } = req.query;
     const filter = { role: { $ne: 'admin' } };
@@ -105,11 +107,11 @@ router.get('/users', async (req, res) => {
     }
 });
 
-// GET /api/admin/tasks (Master registry including Emergency Guest tasks)
+// GET /api/admin/tasks (Master project registry)
 router.get('/tasks', adminController.getAllTasks);
 
 // =============================================================================
-// 4. PROJECT ACTIONS & PAYMENTS
+// 4. PROJECT ACTIONS & HYBRID PAYMENTS
 // =============================================================================
 
 /**
@@ -129,14 +131,12 @@ router.get('/tasks/:taskId/candidates', adminController.getSuggestedStudents);
 router.patch('/tasks/:taskId/visibility', adminController.toggleSubmissionVisibility);
 
 /**
- * MANUAL PAYMENT CHAIN STEP 1:
- * Admin verifies that the Client has paid the Admin.
+ * MANUAL PAYMENT CHAIN STEP 1: Admin verifies Client paid Admin.
  */
 router.patch('/tasks/:taskId/confirm-client-payment', adminController.confirmClientPayment);
 
 /**
- * MANUAL PAYMENT CHAIN STEP 2:
- * Admin verifies that the Admin has paid the Student.
+ * MANUAL PAYMENT CHAIN STEP 2: Admin verifies Admin paid Student.
  */
 router.patch('/tasks/:taskId/confirm-student-payout', adminController.confirmStudentPayout);
 

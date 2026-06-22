@@ -16,20 +16,20 @@ const sendServerError = (res, error, fallbackMessage) => {
 
 /**
  * Global Real-time Broadcast Helper
- * Signals the frontend to refresh specific UI components without a refresh
+ * Signals the frontend to refresh specific UI components instantly
  */
 const emitUpdate = (req, room, event, data) => {
   const io = req.app.get('socketio');
   if (io) {
     // 1. Send to the specific room (Task ID or User ID)
     io.to(room).emit(event, data);
-    // 2. Signal all admin dashboards to refresh counters (Total Tasks, etc.)
+    // 2. Refresh counters on all Admin Dashboards globally
     io.emit('admin_stats_update', { timestamp: new Date() });
   }
 };
 
 // =============================================================================
-// FUZZY MATCHING ENGINE (Handles "edting" vs "editing")
+// FUZZY MATCHING HELPERS (Handles typos like "edting" vs "editing")
 // =============================================================================
 
 function getSimilarity(s1, s2) {
@@ -82,9 +82,7 @@ exports.getOverviewStats = async (req, res) => {
       users: { total: uTotal, students: uStu, clients: uCli },
       tasks: { total: tTotal, completed: tCom, open: tOpen, active: tActive }
     });
-  } catch (error) {
-    return sendServerError(res, error, "Failed to load overview stats");
-  }
+  } catch (error) { return sendServerError(res, error, "Failed to load overview stats"); }
 };
 
 exports.getGrowthStats = async (req, res) => {
@@ -113,8 +111,8 @@ exports.getTaskStats = async (req, res) => {
 exports.getTaskFilters = async (req, res) => {
   try {
     const [locations, domains] = await Promise.all([Task.distinct("location"), Task.distinct("domain")]);
-    return res.json({ locations: locations.filter(Boolean).sort(), domains: domains.filter(Boolean).sort(), companies: [] });
-  } catch (error) { return sendServerError(res, error, "Failed to load filters"); }
+    return res.json({ locations: locations.filter(Boolean).sort(), domains: domains.filter(Boolean).sort() });
+  } catch (error) { return sendServerError(res, error, "Failed to load registry filters"); }
 };
 
 exports.getAllTasks = async (req, res) => {
@@ -168,7 +166,7 @@ exports.getSuggestedStudents = async (req, res) => {
 };
 
 // =============================================================================
-// 4. CHAT HANDLERS (Populated Sender Fix)
+// 4. CHAT HANDLERS (Correct Alignment & Read Status)
 // =============================================================================
 
 exports.getClientTaskMessages = async (req, res) => {
@@ -194,8 +192,6 @@ exports.sendClientTaskMessage = async (req, res) => {
   try {
     const task = await Task.findById(req.params.taskId);
     let msg = await Message.create({ task: task._id, sender: req.user.id, receiver: task.client, text: req.body.text, isRead: false });
-    
-    // CRITICAL: Populate sender before emitting to fix UI side-alignment and names
     msg = await msg.populate('sender', 'name role');
 
     emitUpdate(req, req.params.taskId, 'new_message', msg);
@@ -212,7 +208,6 @@ exports.sendClientTaskMessage = async (req, res) => {
 exports.sendStudentTaskMessage = async (req, res) => {
   try {
     let msg = await Message.create({ task: req.params.taskId, sender: req.user.id, receiver: req.body.studentId, student: req.body.studentId, text: req.body.text, isRead: false });
-    
     msg = await msg.populate('sender', 'name role');
 
     emitUpdate(req, req.params.taskId, 'new_message', msg);
@@ -225,13 +220,41 @@ exports.sendStudentTaskMessage = async (req, res) => {
 };
 
 // =============================================================================
-// 5. REPUTATION & TASK ACTIONS
+// 5. PROJECT ACTIONS & HYBRID PAYMENTS
 // =============================================================================
+
+/**
+ * FINALIZATION LOGIC (Fixes the Render Deploy Error)
+ */
+exports.finalizeTaskBudget = async (req, res) => {
+  try {
+    const { taskId } = req.params;
+    const { amount } = req.body;
+
+    const task = await Task.findById(taskId);
+    if (!task) return res.status(404).json({ message: "Task not found" });
+
+    // Block edits if payment was already verified
+    if (task.adminReceivedPayment) {
+      return res.status(400).json({ message: "Cannot edit budget after payment verification." });
+    }
+
+    task.budget = Number(amount);
+    task.budgetFinalized = true; 
+    await task.save();
+
+    // Signal Client App to switch from QR to Razorpay Button
+    emitUpdate(req, taskId, 'task_update', { taskId, budget: task.budget, budgetFinalized: true });
+
+    res.json({ message: "Budget Finalized", task });
+  } catch (error) { res.status(500).json({ message: "Finalization failed" }); }
+};
 
 exports.rateStudent = async (req, res) => {
     try {
       const { score, feedback } = req.body; 
-      const task = await Task.findById(req.params.id || req.params.taskId);
+      const taskId = req.params.id || req.params.taskId;
+      const task = await Task.findById(taskId);
       if (!task) return res.status(404).json({ message: 'Not found' });
       task.rating = Number(score);
       task.feedback = feedback || '';
@@ -244,7 +267,7 @@ exports.rateStudent = async (req, res) => {
         student.feedbackEntries.push({ taskId: task._id, taskTitle: task.title, clientId: req.user.id, clientName: client?.name || "Client", rating: Number(score), comment: feedback || "Delivered.", domain: task.domain, createdAt: new Date() });
         await student.save();
         emitUpdate(req, student._id.toString(), 'feedback_update', { score: Number(score) });
-        await sendNotification(student._id.toString(), { title: "New Rating Received!", body: `You received ${score} stars.`, data: { type: "payment_received" } });
+        await sendNotification(student._id.toString(), { title: "New Rating!", body: `You received ${score} stars.`, data: { type: "payment_received" } });
       }
       return res.json({ message: 'Rated' });
     } catch (err) { return res.status(500).json({ message: 'Error' }); }
@@ -266,7 +289,7 @@ exports.confirmClientPayment = async (req, res) => {
     const task = await Task.findByIdAndUpdate(req.params.taskId, { adminReceivedPayment: true }, { new: true });
     emitUpdate(req, req.params.taskId, 'task_update', { taskId: req.params.taskId });
     if (task.client) {
-        await sendNotification(task.client.toString(), { title: "Payment Verified", body: `Verification complete for ${task.title}.`, data: { type: "payment_needed" } });
+        await sendNotification(task.client.toString(), { title: "Payment Verified", body: `Admin verified your payment for "${task.title}".`, data: { type: "payment_needed" } });
     }
     return res.json({ message: "Verified", task });
   } catch (error) { return sendServerError(res, error, "Error"); }
@@ -285,7 +308,7 @@ exports.confirmStudentPayout = async (req, res) => {
 };
 
 // =============================================================================
-// 6. RETRIEVAL (Populated Bank Info Fix)
+// 6. RETRIEVAL & MANAGEMENT
 // =============================================================================
 
 exports.getTaskById = async (req, res) => {
@@ -313,7 +336,7 @@ exports.updateUserApproval = async (req, res) => {
       emitUpdate(req, req.params.id, 'user_status_update', { isApproved: req.body.isApproved });
       await sendNotification(user._id.toString(), { title: req.body.isApproved ? "Account Ready!" : "Account Locked", body: "Check app for status.", data: { type: "user_status_update" } });
       return res.json({ message: "Updated", user });
-    } catch (error) { return sendServerError(res, error, "Error"); }
+    } catch (error) { return sendServerError(res, error, "Update failed"); }
 };
 
 exports.getTopStudents = async (req, res) => {
@@ -331,7 +354,7 @@ exports.assignTaskToStudent = async (req, res) => {
       task.assignmentRequestStatus = 'request_sent';
       await task.save();
       emitUpdate(req, 'admin_room', 'task_update', { taskId: task._id });
-      await sendNotification(studentId, { title: 'Assignment Invitation', body: `Check task: ${task.title}`, data: { type: 'task_request', taskId: task._id.toString() } });
+      await sendNotification(studentId, { title: 'Invitation', body: `New work: ${task.title}`, data: { type: 'task_request', taskId: task._id.toString() } });
       res.json({ message: 'Sent', task });
     } catch (err) { res.status(500).json({ message: "Error" }); }
 };
