@@ -21,7 +21,7 @@ const sendServerError = (res, error, fallbackMessage) => {
 const emitUpdate = (req, room, event, data) => {
   const io = req.app.get('socketio');
   if (io) {
-    // 1. Send to the specific room (Task ID or User ID)
+    // 1. Update the specific task or user room
     io.to(room).emit(event, data);
     // 2. Refresh counters on all Admin Dashboards globally
     io.emit('admin_stats_update', { timestamp: new Date() });
@@ -132,7 +132,7 @@ exports.getAllTasks = async (req, res) => {
   };
 
 // =============================================================================
-// 3. CANDIDATE VETTING (WITH FUZZY LOGIC)
+// 3. CANDIDATE VETTING
 // =============================================================================
 
 exports.getSuggestedStudents = async (req, res) => {
@@ -166,7 +166,7 @@ exports.getSuggestedStudents = async (req, res) => {
 };
 
 // =============================================================================
-// 4. CHAT HANDLERS (Correct Alignment & Read Status)
+// 4. CHAT HANDLERS (WITH ADMIN FILE SUPPORT)
 // =============================================================================
 
 exports.getClientTaskMessages = async (req, res) => {
@@ -191,14 +191,24 @@ exports.getStudentTaskMessages = async (req, res) => {
 exports.sendClientTaskMessage = async (req, res) => {
   try {
     const task = await Task.findById(req.params.taskId);
-    let msg = await Message.create({ task: task._id, sender: req.user.id, receiver: task.client, text: req.body.text, isRead: false });
+    let msg = await Message.create({ 
+        task: task._id, 
+        sender: req.user.id, 
+        receiver: task.client, 
+        text: req.body.text, 
+        fileUrl: req.body.fileUrl, // MODIFICATION: Added file support
+        fileName: req.body.fileName, // MODIFICATION: Added file support
+        isRead: false 
+    });
     msg = await msg.populate('sender', 'name role');
 
     emitUpdate(req, req.params.taskId, 'new_message', msg);
 
     if (task.client) {
         await sendNotification(task.client.toString(), {
-            title: "Admin Message", body: req.body.text, data: { type: "chat_message", taskId: task._id.toString() }
+            title: "Admin Message", 
+            body: req.body.text || "Attachment received", 
+            data: { type: "chat_message", taskId: task._id.toString() }
         });
     }
     res.status(201).json(msg);
@@ -207,13 +217,24 @@ exports.sendClientTaskMessage = async (req, res) => {
 
 exports.sendStudentTaskMessage = async (req, res) => {
   try {
-    let msg = await Message.create({ task: req.params.taskId, sender: req.user.id, receiver: req.body.studentId, student: req.body.studentId, text: req.body.text, isRead: false });
+    let msg = await Message.create({ 
+        task: req.params.taskId, 
+        sender: req.user.id, 
+        receiver: req.body.studentId, 
+        student: req.body.studentId, 
+        text: req.body.text, 
+        fileUrl: req.body.fileUrl, // MODIFICATION: Added file support
+        fileName: req.body.fileName, // MODIFICATION: Added file support
+        isRead: false 
+    });
     msg = await msg.populate('sender', 'name role');
 
     emitUpdate(req, req.params.taskId, 'new_message', msg);
 
     await sendNotification(req.body.studentId, {
-        title: "Message from Admin", body: req.body.text, data: { type: "chat_message", taskId: req.params.taskId.toString(), studentId: req.body.studentId }
+        title: "Message from Admin", 
+        body: req.body.text || "Attachment received", 
+        data: { type: "chat_message", taskId: req.params.taskId.toString(), studentId: req.body.studentId }
     });
     res.status(201).json(msg);
   } catch (err) { res.status(500).json({ message: "Send failed" }); }
@@ -223,31 +244,20 @@ exports.sendStudentTaskMessage = async (req, res) => {
 // 5. PROJECT ACTIONS & HYBRID PAYMENTS
 // =============================================================================
 
-/**
- * FINALIZATION LOGIC (Fixes the Render Deploy Error)
- */
 exports.finalizeTaskBudget = async (req, res) => {
   try {
     const { taskId } = req.params;
     const { amount } = req.body;
-
     const task = await Task.findById(taskId);
     if (!task) return res.status(404).json({ message: "Task not found" });
-
-    // Block edits if payment was already verified
-    if (task.adminReceivedPayment) {
-      return res.status(400).json({ message: "Cannot edit budget after payment verification." });
-    }
+    if (task.adminReceivedPayment) return res.status(400).json({ message: "Locked" });
 
     task.budget = Number(amount);
     task.budgetFinalized = true; 
     await task.save();
-
-    // Signal Client App to switch from QR to Razorpay Button
     emitUpdate(req, taskId, 'task_update', { taskId, budget: task.budget, budgetFinalized: true });
-
     res.json({ message: "Budget Finalized", task });
-  } catch (error) { res.status(500).json({ message: "Finalization failed" }); }
+  } catch (error) { res.status(500).json({ message: "Error" }); }
 };
 
 exports.rateStudent = async (req, res) => {
@@ -336,7 +346,7 @@ exports.updateUserApproval = async (req, res) => {
       emitUpdate(req, req.params.id, 'user_status_update', { isApproved: req.body.isApproved });
       await sendNotification(user._id.toString(), { title: req.body.isApproved ? "Account Ready!" : "Account Locked", body: "Check app for status.", data: { type: "user_status_update" } });
       return res.json({ message: "Updated", user });
-    } catch (error) { return sendServerError(res, error, "Update failed"); }
+    } catch (error) { return sendServerError(res, error, "Error"); }
 };
 
 exports.getTopStudents = async (req, res) => {

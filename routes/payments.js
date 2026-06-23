@@ -51,7 +51,6 @@ const emitPaymentUpdate = (req, room, event, data) => {
 /**
  * POST /api/payments/create-order
  * Triggered by Client App to start a payment session.
- * Now enforces budgetFinalized check.
  */
 router.post('/create-order', verifyJWT, async (req, res) => {
   try {
@@ -68,13 +67,18 @@ router.post('/create-order', verifyJWT, async (req, res) => {
 
     // Enforce business logic: Admin must finalize budget before Razorpay is enabled
     if (!task.budgetFinalized || !task.budget) {
-      return res.status(400).json({ message: 'Budget not yet finalized by Admin. Please use manual payment or wait.' });
+      return res.status(400).json({ message: 'Budget not yet finalized by Admin.' });
     }
 
     const options = {
       amount: Math.round(task.budget * 100), // Amount in Paise (INR * 100)
       currency: "INR",
       receipt: `receipt_${taskId}_${Date.now()}`,
+      // ============================================================
+      // MODIFICATION: AUTOMATIC CAPTURE (Fixes "Manual Capture" Error)
+      // 1 = True. This captures the payment immediately upon success.
+      // ============================================================
+      payment_capture: 1 
     };
 
     const order = await razorpay.orders.create(options);
@@ -87,11 +91,10 @@ router.post('/create-order', verifyJWT, async (req, res) => {
             client: task.client,
             student: task.student,
             totalBudget: task.budget,
-            netToStudent: task.budget // Defaulting to 100% for now
+            netToStudent: task.budget
         });
     }
 
-    // Assign Order ID to the 'final' phase as requested (Lump sum at finish)
     paymentRecord.final.amount = task.budget;
     paymentRecord.final.orderId = order.id;
     paymentRecord.status = 'awaiting_payment';
@@ -114,14 +117,13 @@ router.post('/create-order', verifyJWT, async (req, res) => {
 /**
  * POST /api/payments/webhook
  * AUTOMATIC: Triggered by Razorpay.
- * MODIFICATION: Automatically flips adminReceivedPayment to true.
  */
 router.post('/webhook', async (req, res) => {
   const secret = process.env.RAZORPAY_WEBHOOK_SECRET;
   const signature = req.headers['x-razorpay-signature'];
 
   if (!secret || !signature) {
-    return res.status(200).json({ status: 'ignored', message: 'Webhook secret not configured' });
+    return res.status(200).json({ status: 'ignored', message: 'Webhook secret missing' });
   }
 
   try {
@@ -136,6 +138,7 @@ router.post('/webhook', async (req, res) => {
     const event = req.body.event;
     const payload = req.body.payload.payment.entity;
 
+    // This event fires because we added payment_capture: 1 above
     if (event === 'payment.captured') {
       const orderId = payload.order_id;
       
@@ -147,9 +150,7 @@ router.post('/webhook', async (req, res) => {
         const task = await Task.findById(paymentRecord.task);
         const student = await User.findById(paymentRecord.student);
 
-        // ============================================================
-        // MODIFICATION: AUTOMATIC TASK VERIFICATION
-        // ============================================================
+        // Update Task and status
         task.adminReceivedPayment = true; 
         task.status = 'completed';
 
@@ -159,7 +160,7 @@ router.post('/webhook', async (req, res) => {
         paymentRecord.final.method = 'razorpay';
         paymentRecord.status = 'completed';
 
-        // Credit Student Wallet
+        // Credit Student Wallet (Managed as a number field in User model)
         const creditAmount = paymentRecord.netToStudent || task.budget;
         student.wallet = (student.wallet || 0) + creditAmount;
         student.tasksCompleted += 1;
@@ -168,7 +169,7 @@ router.post('/webhook', async (req, res) => {
         await paymentRecord.save();
         await task.save();
 
-        // REAL-TIME: Instantly show "Verified" status in Client/Admin apps
+        // REAL-TIME: Instantly notify Client and Admin apps
         emitPaymentUpdate(req, task._id.toString(), 'task_update', { 
             taskId: task._id, 
             adminReceivedPayment: true,
@@ -182,14 +183,14 @@ router.post('/webhook', async (req, res) => {
 
         // PUSH NOTIFICATIONS
         await sendNotification(task.client.toString(), {
-            title: "Payment Successful",
-            body: `Your payment for "${task.title}" has been verified automatically.`,
+            title: "Payment Verified",
+            body: `Your payment for "${task.title}" has been processed successfully.`,
             data: { type: "payment_needed" }
         });
 
         await sendNotification(student._id.toString(), {
-            title: "Project Payout Received",
-            body: `Payment for "${task.title}" has been credited to your virtual wallet.`,
+            title: "Earnings Credited",
+            body: `Payment for "${task.title}" is now in your virtual wallet.`,
             data: { type: "payment_received" }
         });
       }
@@ -199,7 +200,7 @@ router.post('/webhook', async (req, res) => {
 
   } catch (err) {
     console.error('Webhook Error:', err);
-    return res.status(500).send('Webhook Processing Error');
+    return res.status(500).send('Webhook Error');
   }
 });
 
