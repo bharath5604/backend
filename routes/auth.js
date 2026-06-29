@@ -77,9 +77,9 @@ const signupSchema = Joi.object({
   // STUDENT SPECIFIC LOGIC (BIO & ID CARD URL)
   // ============================================================
   // bio: Joi.string().max(1000).allow('', null),
-  // idCardUrl: Joi.string().uri().allow('', null).messages({
-  //   'string.uri': 'Invalid ID card storage link'
-  // }),
+  idCardUrl: Joi.string().uri().allow('', null).messages({
+    'string.uri': 'Invalid ID card storage link'
+  }),
 
   company: Joi.string().max(200).allow('', null),
   domain: Joi.string().max(200).allow('', null),
