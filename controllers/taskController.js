@@ -200,12 +200,12 @@ exports.submitWork = async (req, res) => {
       submittedAt: new Date(),
     };
 
-    // ============================================================
-    // MODIFICATION: IMMEDIATE CLIENT PREVIEW (NO DOWNLOAD)
-    // ============================================================
+    // MODIFICATION: Set immediate visibility for Client & CLEAR modification notes
     task.status = 'under_review';
-    task.clientCanViewSubmission = true; // Client gets Preview mode immediately
-    task.clientCanDownload = false;      // Locked until Admin release
+    task.clientCanViewSubmission = true; 
+    task.clientCanDownload = false; 
+    task.modificationNotes = ''; // Clear notes as student has acted on them
+
     await task.save();
 
     emitUpdate(req, task._id.toString(), 'task_update', { taskId: task._id });
@@ -273,14 +273,15 @@ exports.declineWork = async (req, res) => {
 
     task.attemptCount = (task.attemptCount || 0) + 1;
     task.submission = null; 
-    task.status = 'assigned'; // Move back to in-progress status
+    task.status = 'assigned'; 
+
+    // ============================================================
+    // MODIFICATION: PERSIST MODIFICATION INSTRUCTIONS
+    // ============================================================
+    task.modificationNotes = String(reason || '').trim();
 
     await task.save();
 
-    // ============================================================
-    // MODIFICATION: DUAL-THREAD SYSTEM MESSAGING
-    // Instructions sent to both parties via moderated threads.
-    // ============================================================
     const admin = await User.findOne({ role: 'admin' });
 
     if (admin) {
@@ -299,7 +300,6 @@ exports.declineWork = async (req, res) => {
         });
     }
 
-    // REAL-TIME SIGNAL
     if (task.student) {
       emitUpdate(req, task.student.toString(), 'task_status_changed', { taskId: task._id, status: 'assigned' });
       await sendNotification(task.student.toString(), {

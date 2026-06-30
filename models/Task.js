@@ -144,10 +144,7 @@ const taskSchema = new Schema(
       default: false,
     },
 
-    // ============================================================
-    // MODIFICATION: HYBRID PAYMENT SWITCH
     // If true, Client UI shows Razorpay. If false, shows Static QR.
-    // ============================================================
     budgetFinalized: {
       type: Boolean,
       default: false
@@ -158,7 +155,7 @@ const taskSchema = new Schema(
      */
     budget: {
       type: Number,
-      required: false, // Optional until finalized by Admin
+      required: false, 
       min: [0, 'Budget cannot be negative'],
     },
 
@@ -230,6 +227,16 @@ const taskSchema = new Schema(
     submission: {
       type: submissionSchema,
       default: null,
+    },
+
+    // ============================================================
+    // MODIFICATION: PERSISTENT INSTRUCTIONS FOR STUDENT
+    // Stores the reason/notes provided when a client requests modification.
+    // ============================================================
+    modificationNotes: {
+      type: String,
+      default: '',
+      trim: true
     },
 
     attemptCount: { type: Number, default: 0 },
