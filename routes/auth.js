@@ -47,8 +47,10 @@ const emitAuthUpdate = (req, event, data) => {
 ////////////////////////////////////////////////////////////
 
 const signupSchema = Joi.object({
-  name: Joi.string().min(2).max(100).required().messages({
-    'string.empty': 'Name is required'
+  name: Joi.string().min(2).max(100).regex(/^[a-zA-Z\s]+$/).required().messages({
+     'string.empty': 'Name is required',
+      'string.pattern.base': 'Name must only contain alphabets and spaces',
+      'string.min': 'Name must be at least 2 characters'
   }),
   email: Joi.string().email().max(200).required().messages({
     'string.email': 'Invalid email format'

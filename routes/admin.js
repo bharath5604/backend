@@ -45,6 +45,7 @@ router.get('/tasks/filters', adminController.getTaskFilters);
  * UNIQUE LOCATIONS FROM ALL USERS (Students and Clients).
  * This fixes the dropdowns in your candidate vetting UI.
  */
+
 router.get('/student-filters', async (req, res) => {
     try {
         const [allLocations, studentSkills] = await Promise.all([
@@ -52,15 +53,39 @@ router.get('/student-filters', async (req, res) => {
             User.distinct('skills', { role: 'student' }) 
         ]);
         
+        // ============================================================
+        // MODIFICATION: CASE-INSENSITIVE DUPLICATE REMOVAL
+        // ============================================================
+        const normalizedLocations = [...new Set(
+            allLocations
+                .filter(Boolean) // Remove null/undefined
+                .map(loc => loc.trim()
+                    .toLowerCase()
+                    .split(' ')
+                    .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+                    .join(' ')
+                )
+        )].sort();
+
+        const normalizedSkills = [...new Set(
+            studentSkills
+                .filter(Boolean)
+                .map(skill => skill.trim()
+                    .toLowerCase()
+                    .split(' ')
+                    .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+                    .join(' ')
+                )
+        )].sort();
+        
         res.json({ 
-            locations: allLocations.filter(Boolean).sort(), 
-            skills: studentSkills.filter(Boolean).sort() 
+            locations: normalizedLocations, 
+            skills: normalizedSkills 
         });
     } catch (err) {
         res.status(500).json({ message: "Error loading vetting filter options" });
     }
 });
-
 // =============================================================================
 // 2. CHAT SUB-ROUTES (Moderated Communication)
 // These handle the separate Admin-Client and Admin-Student threads for a task.
