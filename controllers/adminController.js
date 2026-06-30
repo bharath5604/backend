@@ -21,7 +21,7 @@ const sendServerError = (res, error, fallbackMessage) => {
 const emitUpdate = (req, room, event, data) => {
   const io = req.app.get('socketio');
   if (io) {
-    // 1. Update the specific task or user room
+    // 1. Send to the specific room (Task ID or User ID)
     io.to(room).emit(event, data);
     // 2. Refresh counters on all Admin Dashboards globally
     io.emit('admin_stats_update', { timestamp: new Date() });
@@ -132,7 +132,7 @@ exports.getAllTasks = async (req, res) => {
   };
 
 // =============================================================================
-// 3. CANDIDATE VETTING
+// 3. CANDIDATE VETTING (WITH FUZZY LOGIC)
 // =============================================================================
 
 exports.getSuggestedStudents = async (req, res) => {
@@ -144,7 +144,7 @@ exports.getSuggestedStudents = async (req, res) => {
     if (!task) return res.status(404).json({ message: "Task not found" });
 
     let students = await User.find({ role: "student", isApproved: true })
-      .select("name email mobile location skills tasksCompleted totalScore totalScoreCount")
+      .select("name email mobile location skills tasksCompleted totalScore totalScoreCount bankAccountHolderName bankAccountNumber ifscCode idCardUrl bio")
       .lean();
 
     if (location && location.trim() !== '') {
@@ -166,7 +166,7 @@ exports.getSuggestedStudents = async (req, res) => {
 };
 
 // =============================================================================
-// 4. CHAT HANDLERS (WITH ADMIN FILE SUPPORT)
+// 4. CHAT HANDLERS (Correct Alignment & Read Status)
 // =============================================================================
 
 exports.getClientTaskMessages = async (req, res) => {
@@ -192,13 +192,8 @@ exports.sendClientTaskMessage = async (req, res) => {
   try {
     const task = await Task.findById(req.params.taskId);
     let msg = await Message.create({ 
-        task: task._id, 
-        sender: req.user.id, 
-        receiver: task.client, 
-        text: req.body.text, 
-        fileUrl: req.body.fileUrl, // MODIFICATION: Added file support
-        fileName: req.body.fileName, // MODIFICATION: Added file support
-        isRead: false 
+        task: task._id, sender: req.user.id, receiver: task.client, text: req.body.text, 
+        fileUrl: req.body.fileUrl, fileName: req.body.fileName, isRead: false 
     });
     msg = await msg.populate('sender', 'name role');
 
@@ -206,9 +201,7 @@ exports.sendClientTaskMessage = async (req, res) => {
 
     if (task.client) {
         await sendNotification(task.client.toString(), {
-            title: "Admin Message", 
-            body: req.body.text || "Attachment received", 
-            data: { type: "chat_message", taskId: task._id.toString() }
+            title: "Admin Message", body: req.body.text || "Attachment received", data: { type: "chat_message", taskId: task._id.toString() }
         });
     }
     res.status(201).json(msg);
@@ -218,23 +211,16 @@ exports.sendClientTaskMessage = async (req, res) => {
 exports.sendStudentTaskMessage = async (req, res) => {
   try {
     let msg = await Message.create({ 
-        task: req.params.taskId, 
-        sender: req.user.id, 
-        receiver: req.body.studentId, 
-        student: req.body.studentId, 
-        text: req.body.text, 
-        fileUrl: req.body.fileUrl, // MODIFICATION: Added file support
-        fileName: req.body.fileName, // MODIFICATION: Added file support
-        isRead: false 
+        task: req.params.taskId, sender: req.user.id, receiver: req.body.studentId, 
+        student: req.body.studentId, text: req.body.text, 
+        fileUrl: req.body.fileUrl, fileName: req.body.fileName, isRead: false 
     });
     msg = await msg.populate('sender', 'name role');
 
     emitUpdate(req, req.params.taskId, 'new_message', msg);
 
     await sendNotification(req.body.studentId, {
-        title: "Message from Admin", 
-        body: req.body.text || "Attachment received", 
-        data: { type: "chat_message", taskId: req.params.taskId.toString(), studentId: req.body.studentId }
+        title: "Message from Admin", body: req.body.text || "Attachment received", data: { type: "chat_message", taskId: req.params.taskId.toString(), studentId: req.body.studentId }
     });
     res.status(201).json(msg);
   } catch (err) { res.status(500).json({ message: "Send failed" }); }
@@ -250,11 +236,12 @@ exports.finalizeTaskBudget = async (req, res) => {
     const { amount } = req.body;
     const task = await Task.findById(taskId);
     if (!task) return res.status(404).json({ message: "Task not found" });
-    if (task.adminReceivedPayment) return res.status(400).json({ message: "Locked" });
+    if (task.adminReceivedPayment) return res.status(400).json({ message: "Already Paid" });
 
     task.budget = Number(amount);
     task.budgetFinalized = true; 
     await task.save();
+
     emitUpdate(req, taskId, 'task_update', { taskId, budget: task.budget, budgetFinalized: true });
     res.json({ message: "Budget Finalized", task });
   } catch (error) { res.status(500).json({ message: "Error" }); }
@@ -299,7 +286,7 @@ exports.confirmClientPayment = async (req, res) => {
     const task = await Task.findByIdAndUpdate(req.params.taskId, { adminReceivedPayment: true }, { new: true });
     emitUpdate(req, req.params.taskId, 'task_update', { taskId: req.params.taskId });
     if (task.client) {
-        await sendNotification(task.client.toString(), { title: "Payment Verified", body: `Admin verified your payment for "${task.title}".`, data: { type: "payment_needed" } });
+        await sendNotification(task.client.toString(), { title: "Payment Verified", body: `Verification complete for ${task.title}.`, data: { type: "payment_needed" } });
     }
     return res.json({ message: "Verified", task });
   } catch (error) { return sendServerError(res, error, "Error"); }
@@ -318,14 +305,51 @@ exports.confirmStudentPayout = async (req, res) => {
 };
 
 // =============================================================================
-// 6. RETRIEVAL & MANAGEMENT
+// 6. USER ACCOUNT ACTIONS (DELETION & APPROVAL)
+// =============================================================================
+
+exports.updateUserApproval = async (req, res) => {
+    try {
+      const user = await User.findByIdAndUpdate(req.params.id, { isApproved: req.body.isApproved }, { new: true });
+      // Kill signal for real-time logout
+      emitUpdate(req, req.params.id, 'user_status_update', { isApproved: req.body.isApproved });
+      
+      await sendNotification(user._id.toString(), { 
+          title: req.body.isApproved ? "Account Ready!" : "Account Locked", 
+          body: "Check app for status.", data: { type: "user_status_update" } 
+      });
+      return res.json({ message: "Updated", user });
+    } catch (error) { return sendServerError(res, error, "Update failed"); }
+};
+
+/**
+ * MODIFICATION: PERMANENT USER DELETION
+ * Sends a kill signal to the app before removing the record
+ */
+exports.deleteUser = async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    // Send signal to force logout the app immediately
+    const io = req.app.get('socketio');
+    if (io) {
+      io.to(id.toString()).emit('user_status_update', { isApproved: false, deleted: true });
+    }
+
+    await User.findByIdAndDelete(id);
+    res.json({ message: "User account permanently removed from database." });
+  } catch (error) { res.status(500).json({ message: "Deletion failed" }); }
+};
+
+// =============================================================================
+// 7. RETRIEVAL & ASSIGNMENT
 // =============================================================================
 
 exports.getTaskById = async (req, res) => {
   try {
     const task = await Task.findById(req.params.taskId)
       .populate("client", "name mobile company guestInfo email")
-      .populate("student", "name mobile email skills tasksCompleted totalScore totalScoreCount bankAccountHolderName bankAccountNumber ifscCode")
+      .populate("student", "name mobile email skills tasksCompleted totalScore totalScoreCount bankAccountHolderName bankAccountNumber ifscCode idCardUrl bio")
       .populate("requestedStudent");
     return res.json(task);
   } catch (error) { return sendServerError(res, error, "Error"); }
@@ -338,15 +362,6 @@ exports.getStudentDetails = async (req, res) => {
     const history = await Task.find({ student: req.params.studentId }).sort({ createdAt: -1 });
     return res.json({ student, history });
   } catch (error) { return sendServerError(res, error, "Error"); }
-};
-
-exports.updateUserApproval = async (req, res) => {
-    try {
-      const user = await User.findByIdAndUpdate(req.params.id, { isApproved: req.body.isApproved }, { new: true });
-      emitUpdate(req, req.params.id, 'user_status_update', { isApproved: req.body.isApproved });
-      await sendNotification(user._id.toString(), { title: req.body.isApproved ? "Account Ready!" : "Account Locked", body: "Check app for status.", data: { type: "user_status_update" } });
-      return res.json({ message: "Updated", user });
-    } catch (error) { return sendServerError(res, error, "Error"); }
 };
 
 exports.getTopStudents = async (req, res) => {

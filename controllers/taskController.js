@@ -1,6 +1,7 @@
 // backend/controllers/taskController.js
 const Task = require('../models/Task');
 const User = require('../models/User');
+const Message = require('../models/Message'); // IMPORTED for automated system messages
 const { sendNotification } = require('../utils/fcm');
 
 // Helper for numeric parsing
@@ -11,8 +12,7 @@ const asNumber = (val) => {
 
 /**
  * Global Normalization Helper
- * Fixes "edting" / "EDITING" issues by standardizing format
- * e.g. " web dev " -> "Web Dev"
+ * Standardizes Title Case for domains and skills (Fixes "edting" / "EDITING" issues)
  */
 function normalizeString(str) {
   if (!str || typeof str !== 'string') return '';
@@ -26,14 +26,14 @@ function normalizeString(str) {
 
 /**
  * Global Real-time Broadcast Helper
- * Signals the frontend to refresh specific UI components
+ * Signals the frontend to refresh specific UI components instantly
  */
 const emitUpdate = (req, room, event, data) => {
   const io = req.app.get('socketio');
   if (io) {
-    // 1. Update specific room (Task ID or User ID)
+    // 1. Update the specific task or user room
     io.to(room).emit(event, data);
-    // 2. Signal admin dashboard to refresh counters globally
+    // 2. Refresh counters on all Admin Dashboards globally
     io.emit('admin_stats_update', { timestamp: new Date() });
   }
 };
@@ -50,23 +50,14 @@ exports.createTask = async (req, res) => {
     }
 
     const {
-      title,
-      description,
-      budget, 
-      deadline,
-      location,
-      domain,
-      company,
-      requiredSkills,
-      attachments,
-      attachmentNames,
+      title, description, budget, deadline, location,
+      domain, company, requiredSkills, attachments, attachmentNames,
     } = req.body;
 
     if (!title || !description || !deadline) {
       return res.status(400).json({ message: 'Missing required project details' });
     }
 
-    // Standardize Casing for better student matching
     const cleanDomain = normalizeString(domain || 'General');
     const cleanSkills = (requiredSkills || []).map(s => normalizeString(s)).filter(s => s.length > 0);
 
@@ -86,18 +77,7 @@ exports.createTask = async (req, res) => {
       status: 'open'
     });
 
-    // Notify Admin Registry Live
     emitUpdate(req, 'admin_room', 'task_created', { taskId: task._id });
-
-    // Push Notification for Admin
-    const admin = await User.findOne({ role: 'admin' });
-    if (admin) {
-        await sendNotification(admin._id.toString(), {
-            title: "New Project Posted",
-            body: `${req.user.name} requires ${cleanDomain} help.`,
-            data: { type: "task_update", taskId: task._id.toString() }
-        });
-    }
 
     return res.status(201).json({ message: 'Task created successfully', task });
   } catch (err) {
@@ -114,15 +94,8 @@ exports.createTask = async (req, res) => {
 exports.createGuestTask = async (req, res) => {
   try {
     const {
-      title,
-      description,
-      guestName,
-      guestMobile,
-      guestEmail,
-      budget,
-      deadline,
-      domain,
-      requiredSkills
+      title, description, guestName, guestMobile, guestEmail,
+      budget, deadline, domain, requiredSkills
     } = req.body;
 
     if (!title || !description || !guestName || !guestMobile || !deadline) {
@@ -148,17 +121,7 @@ exports.createGuestTask = async (req, res) => {
       status: 'open'
     });
 
-    // Notify Admin live
     emitUpdate(req, 'admin_room', 'emergency_task_created', { taskId: task._id });
-
-    const admin = await User.findOne({ role: 'admin' });
-    if (admin) {
-        await sendNotification(admin._id.toString(), {
-            title: "🚨 Emergency Task",
-            body: `Guest ${guestName} needs ${cleanDomain} matching.`,
-            data: { type: "task_update", taskId: task._id.toString() }
-        });
-    }
 
     return res.status(201).json({
       message: 'Emergency task submitted. Admin will contact you shortly.',
@@ -183,7 +146,7 @@ exports.rateStudent = async (req, res) => {
       return res.status(400).json({ message: "Invalid score. Must be a number." });
     }
 
-    const task = await Task.findById(req.params.id);
+    const task = await Task.findById(req.params.id || req.params.taskId);
     if (!task) return res.status(404).json({ message: 'Task not found' });
     if (!task.student) return res.status(400).json({ message: 'No student assigned' });
 
@@ -198,34 +161,21 @@ exports.rateStudent = async (req, res) => {
     if (student) {
       student.totalScore = (student.totalScore || 0) + scoreValue;
       student.totalScoreCount = (student.totalScoreCount || 0) + 1;
-
       student.feedbackEntries.push({
-        taskId: task._id,
-        taskTitle: task.title,
-        clientId: req.user.id,
-        clientName: client?.name || "Client",
-        rating: scoreValue,
-        comment: feedbackText,
-        domain: task.domain,
-        createdAt: new Date()
+        taskId: task._id, taskTitle: task.title, clientId: req.user.id,
+        clientName: client?.name || "Client", rating: scoreValue,
+        comment: feedbackText, domain: task.domain, createdAt: new Date()
       });
-
       await student.save();
-
-      // Real-time Dashboard Update
       emitUpdate(req, student._id.toString(), 'feedback_update', { score: scoreValue });
-
-      // Student Notification
       await sendNotification(student._id.toString(), {
-          title: "Rating Received!",
-          body: `You received ${scoreValue} stars for ${task.title}`,
+          title: "New Task Review",
+          body: `You received a ${scoreValue}-star rating for ${task.title}.`,
           data: { type: "payment_received" }
       });
     }
     return res.json({ success: true });
-  } catch (err) {
-    res.status(500).json({ message: err.message });
-  }
+  } catch (err) { res.status(500).json({ message: err.message }); }
 };
 
 /**
@@ -250,26 +200,27 @@ exports.submitWork = async (req, res) => {
       submittedAt: new Date(),
     };
 
+    // ============================================================
+    // MODIFICATION: IMMEDIATE CLIENT PREVIEW (NO DOWNLOAD)
+    // ============================================================
     task.status = 'under_review';
+    task.clientCanViewSubmission = true; // Client gets Preview mode immediately
+    task.clientCanDownload = false;      // Locked until Admin release
     await task.save();
 
-    // Signal Task Detail & Admin review queue
     emitUpdate(req, task._id.toString(), 'task_update', { taskId: task._id });
 
-    // Notification for Admin
     const admin = await User.findOne({ role: 'admin' });
     if (admin) {
         await sendNotification(admin._id.toString(), {
             title: "Work Submitted",
-            body: `Student delivered work for: ${task.title}`,
+            body: `Student delivered work for: ${task.title}. Review required.`,
             data: { type: "task_submitted", taskId: task._id.toString() }
         });
     }
 
-    return res.json({ message: 'Work submitted for Admin review', task });
-  } catch (err) {
-    return res.status(500).json({ message: 'Submission failed' });
-  }
+    return res.json({ message: 'Work submitted for review', task });
+  } catch (err) { return res.status(500).json({ message: 'Submission failed' }); }
 };
 
 /**
@@ -280,7 +231,6 @@ exports.submitWork = async (req, res) => {
 exports.approveWork = async (req, res) => {
   try {
     const task = await Task.findById(req.params.taskId || req.params.id);
-
     if (!task || (task.client && task.client.toString() !== req.user.id)) {
       return res.status(403).json({ message: 'Not authorized' });
     }
@@ -288,15 +238,12 @@ exports.approveWork = async (req, res) => {
     task.submission.approved = true;
     task.submission.clientApprovedAt = new Date();
     task.status = 'completed';
-
     await task.save();
 
     const student = await User.findById(task.student);
     if (student) {
       student.tasksCompleted = (student.tasksCompleted || 0) + 1;
       await student.save();
-      
-      // Update student UI and Dashboard
       emitUpdate(req, student._id.toString(), 'task_approved', { taskId: task._id });
       await sendNotification(student._id.toString(), {
           title: "Work Approved!",
@@ -306,45 +253,66 @@ exports.approveWork = async (req, res) => {
     }
 
     emitUpdate(req, task._id.toString(), 'task_update', { taskId: task._id });
-
     return res.json({ message: 'Work approved.', task });
-  } catch (err) {
-    return res.status(500).json({ message: 'Approval failed' });
-  }
+  } catch (err) { return res.status(500).json({ message: 'Approval failed' }); }
 };
 
 /**
  * ===============================
- * CLIENT DECLINE / REVISION
+ * CLIENT DECLINE / MODIFY (REVISION)
  * ===============================
  */
 exports.declineWork = async (req, res) => {
   try {
+    const { reason } = req.body; 
     const task = await Task.findById(req.params.taskId || req.params.id);
+    
     if (!task || (task.client && task.client.toString() !== req.user.id)) {
       return res.status(403).json({ message: 'Not authorized' });
     }
 
     task.attemptCount = (task.attemptCount || 0) + 1;
-    task.submission = null;
-    task.status = task.attemptCount >= task.maxAttempts ? 'declined' : 'assigned';
+    task.submission = null; 
+    task.status = 'assigned'; // Move back to in-progress status
 
     await task.save();
 
+    // ============================================================
+    // MODIFICATION: DUAL-THREAD SYSTEM MESSAGING
+    // Instructions sent to both parties via moderated threads.
+    // ============================================================
+    const admin = await User.findOne({ role: 'admin' });
+
+    if (admin) {
+        // 1. Alert Student in Admin-Student thread
+        await Message.create({
+            task: task._id, sender: admin._id, receiver: task.student, 
+            student: task.student, 
+            text: `⚠️ MODIFICATION REQUESTED BY CLIENT:\n"${reason}"\n\nPlease update and resubmit the work.`
+        });
+
+        // 2. Alert Client in Admin-Client thread
+        await Message.create({
+            task: task._id, sender: admin._id, receiver: task.client,
+            student: null, 
+            text: `✅ You requested these modifications:\n"${reason}"\n\nThe student has been notified.`
+        });
+    }
+
+    // REAL-TIME SIGNAL
     if (task.student) {
-      emitUpdate(req, task.student.toString(), 'task_status_changed', { taskId: task._id, status: task.status });
+      emitUpdate(req, task.student.toString(), 'task_status_changed', { taskId: task._id, status: 'assigned' });
       await sendNotification(task.student.toString(), {
           title: "Revision Required",
-          body: `Modifications requested for ${task.title}.`,
+          body: `Client requested modifications for ${task.title}.`,
           data: { type: "task_declined", taskId: task._id.toString() }
       });
     }
     emitUpdate(req, task._id.toString(), 'task_update', { taskId: task._id });
+    emitUpdate(req, task._id.toString(), 'new_message', { taskId: task._id });
 
     return res.json({ message: 'Revision requested', task });
-  } catch (err) {
-    return res.status(500).json({ message: 'Request failed' });
-  }
+  } catch (err) { return res.status(500).json({ message: 'Request failed' }); }
 };
 
 /**
