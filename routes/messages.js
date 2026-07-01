@@ -152,7 +152,7 @@ router.get('/task', verifyJWT, async (req, res) => {
       if (requestedStudentId) {
         filter.$or = [{ student: requestedStudentId }, { peerStudentId: requestedStudentId }];
       } else {
-        filter.student = null; // Admin-Client thread
+        filter.student = null; 
       }
     } else {
       filter.$or = [{ sender: req.user.id }, { receiver: req.user.id }];
@@ -202,21 +202,25 @@ router.post('/task', verifyJWT, async (req, res) => {
     await message.populate([{ path: 'sender', select: 'name role' }, { path: 'receiver', select: 'name role' }]);
     
     // ============================================================
-    // MODIFICATION: TARGETED THREAD EMISSION (Fixes Data Leak)
+    // MODIFICATION: TARGETED THREAD EMISSION (Isolation Fix)
     // ============================================================
     const io = req.app.get('socketio');
     if (io) {
-      // If student is attached to the message, emit to the student sub-room.
-      // Otherwise, emit to the client sub-room.
+      // Determine if the message belongs to the Student thread or Client thread
       const targetRoom = message.student 
         ? `${taskId}_student_${message.student}` 
         : `${taskId}_client`;
 
+      // Emit ONLY to the specific thread sub-room
       io.to(targetRoom).emit('new_message', message); 
+      
+      // Emit generic status update to standard task room for non-chat UI updates
+      io.to(taskId.toString()).emit('task_update', { taskId });
     }
 
     res.status(201).json(message);
 
+    // PUSH NOTIFICATION
     (async () => {
       try {
         await sendNotification(receiverResolution.receiverId, {
@@ -291,12 +295,15 @@ router.post('/admin-student', verifyJWT, async (req, res) => {
     await message.populate([{ path: 'sender', select: 'name role' }, { path: 'receiver', select: 'name role' }]);
     
     // ============================================================
-    // MODIFICATION: EMIT TO SPECIFIC STUDENT SUB-ROOM
+    // MODIFICATION: STRICT STUDENT SUB-ROOM EMISSION
     // ============================================================
     const io = req.app.get('socketio');
     if (io) {
       const targetRoom = `${taskId}_student_${studentId}`;
       io.to(targetRoom).emit('new_message', message); 
+      
+      // UI update for background counters
+      io.to(taskId.toString()).emit('task_update', { taskId });
     }
 
     res.status(201).json(message);
