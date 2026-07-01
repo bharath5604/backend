@@ -49,8 +49,9 @@ exports.createTask = async (req, res) => {
       return res.status(403).json({ message: 'Only clients can create tasks' });
     }
 
+    // MODIFICATION: 'budget' removed from destructuring as it's no longer sent from frontend
     const {
-      title, description, budget, deadline, location,
+      title, description, deadline, location,
       domain, company, requiredSkills, attachments, attachmentNames,
     } = req.body;
 
@@ -64,7 +65,7 @@ exports.createTask = async (req, res) => {
     const task = await Task.create({
       title: title.trim(),
       description: description.trim(),
-      budget: asNumber(budget), 
+      budget: null, // MODIFICATION: Explicitly set to null. Admin will finalize this later.
       deadline: new Date(deadline),
       location: String(location || '').trim(),
       domain: cleanDomain,
@@ -93,9 +94,10 @@ exports.createTask = async (req, res) => {
  */
 exports.createGuestTask = async (req, res) => {
   try {
+    // MODIFICATION: 'budget' removed from destructuring
     const {
       title, description, guestName, guestMobile, guestEmail,
-      budget, deadline, domain, requiredSkills
+      deadline, domain, requiredSkills
     } = req.body;
 
     if (!title || !description || !guestName || !guestMobile || !deadline) {
@@ -114,7 +116,7 @@ exports.createGuestTask = async (req, res) => {
         mobile: guestMobile.trim(),
         email: (guestEmail || '').trim()
       },
-      budget: asNumber(budget),
+      budget: null, // MODIFICATION: Initialized as null for Emergency Posts
       deadline: new Date(deadline),
       domain: cleanDomain,
       requiredSkills: cleanSkills,
@@ -200,11 +202,10 @@ exports.submitWork = async (req, res) => {
       submittedAt: new Date(),
     };
 
-    // MODIFICATION: Set immediate visibility for Client & CLEAR modification notes
     task.status = 'under_review';
     task.clientCanViewSubmission = true; 
     task.clientCanDownload = false; 
-    task.modificationNotes = ''; // Clear notes as student has acted on them
+    task.modificationNotes = ''; 
 
     await task.save();
 
@@ -275,9 +276,6 @@ exports.declineWork = async (req, res) => {
     task.submission = null; 
     task.status = 'assigned'; 
 
-    // ============================================================
-    // MODIFICATION: PERSIST MODIFICATION INSTRUCTIONS
-    // ============================================================
     task.modificationNotes = String(reason || '').trim();
 
     await task.save();
@@ -285,14 +283,12 @@ exports.declineWork = async (req, res) => {
     const admin = await User.findOne({ role: 'admin' });
 
     if (admin) {
-        // 1. Alert Student in Admin-Student thread
         await Message.create({
             task: task._id, sender: admin._id, receiver: task.student, 
             student: task.student, 
             text: `⚠️ MODIFICATION REQUESTED BY CLIENT:\n"${reason}"\n\nPlease update and resubmit the work.`
         });
 
-        // 2. Alert Client in Admin-Client thread
         await Message.create({
             task: task._id, sender: admin._id, receiver: task.client,
             student: null, 

@@ -16,7 +16,10 @@ const { sendNotification } = require('../utils/fcm');
 const createTaskSchema = Joi.object({
   title: Joi.string().min(3).max(200).required(),
   description: Joi.string().min(10).max(5000).required(),
-  budget: Joi.number().min(0).allow(null, ''), // Requirement: Optional
+  
+  // MODIFICATION: Changed to optional so the frontend can omit it during creation
+  budget: Joi.number().min(0).allow(null, '').optional(), 
+  
   deadline: Joi.date().required(),
   location: Joi.string().max(200).allow('', null),
   domain: Joi.string().max(200).allow('', null),
@@ -33,7 +36,10 @@ const guestTaskSchema = Joi.object({
   guestName: Joi.string().required(),
   guestMobile: Joi.string().required(),
   guestEmail: Joi.string().email().allow('', null),
-  budget: Joi.number().min(0).allow(null, ''),
+  
+  // MODIFICATION: Changed to optional for the Emergency Task flow
+  budget: Joi.number().min(0).allow(null, '').optional(),
+  
   deadline: Joi.date().required(),
   domain: Joi.string().allow('', null),
   requiredSkills: Joi.array().items(Joi.string()).default([]),
@@ -55,7 +61,7 @@ const feedbackSchema = Joi.object({
 // =========================================================
 
 /**
- * GET /api/tasks/assigned
+ * GET /api/tasks/filters
  * Returns tasks currently active or under review for the student
  */
 router.get('/filters', verifyJWT, async (req, res) => {
@@ -265,31 +271,6 @@ router.post('/:id/decline', verifyJWT, async (req, res) => {
   } catch (err) { res.status(500).json({ message: 'Update failed' }); }
 });
 
-/**
- * Requirement: Provide Feedback/Rating
- */
-// router.post('/:id/feedback', verifyJWT, async (req, res) => {
-//   try {
-//     const { error, value } = feedbackSchema.validate(req.body);
-//     if (error) return res.status(400).json({ message: "Invalid feedback data" });
-
-//     const task = await Task.findById(req.params.id);
-//     if (!task || task.client?.toString() !== req.user.id) return res.status(403).json({ message: 'Denied' });
-
-//     task.feedback = value.text;
-//     task.score = value.score;
-//     task.rating = value.score;
-//     await task.save();
-
-//     // Aggregates for student
-//     const student = await User.findById(task.student);
-//     student.totalScore += value.score;
-//     student.totalScoreCount += 1;
-//     await student.save();
-
-//     res.json({ message: 'Feedback saved' });
-//   } catch (err) { res.status(500).json({ message: 'Failed to save feedback' }); }
-// });
 router.post('/:id/feedback', verifyJWT, async (req, res, next) => {
   const { error } = feedbackSchema.validate(req.body);
   if (error) return res.status(400).json({ message: error.details[0].message });

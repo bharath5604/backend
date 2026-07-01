@@ -61,7 +61,6 @@ function normalizeId(value) {
 }
 
 function isTaskChatClosed(task) {
-  // Logic: Allow chat in all states except when explicitly blocked by business rules
   return task.status === 'declined' && task.attemptCount >= task.maxAttempts;
 }
 
@@ -92,7 +91,6 @@ async function canAccessTaskChat(task, user) {
     const isInvited = task.requestedStudent && task.requestedStudent.toString() === userId;
     if (isAssigned || isInvited) return { allowed: true, reason: null };
 
-    // Vetting Phase Check
     const messageExists = await Message.findOne({
       task: task._id,
       $or: [{ sender: userId }, { receiver: userId }]
@@ -121,7 +119,6 @@ async function resolveReceiverForMessage(task, user, targetRole) {
     return { ok: false, status: 400, message: 'Admin targetRole must be client or student' };
   }
 
-  // Clients and Students always message the Admin
   const adminUser = await User.findOne({ role: 'admin' }).select('_id');
   if (!adminUser) return { ok: false, status: 500, message: 'Support unavailable' };
   return { ok: true, receiverId: adminUser._id.toString() };
@@ -145,7 +142,6 @@ router.get('/task', verifyJWT, async (req, res) => {
     const access = await canAccessTaskChat(task, req.user);
     if (!access.allowed) return res.status(403).json({ message: access.reason });
 
-    // MODIFICATION: Mark messages received by current user as READ
     await Message.updateMany(
       { task: task._id, receiver: req.user.id },
       { $set: { isRead: true } }
@@ -205,13 +201,22 @@ router.post('/task', verifyJWT, async (req, res) => {
     const message = await Message.create(messagePayload);
     await message.populate([{ path: 'sender', select: 'name role' }, { path: 'receiver', select: 'name role' }]);
     
-    // REAL-TIME: Push to taskId room
+    // ============================================================
+    // MODIFICATION: TARGETED THREAD EMISSION (Fixes Data Leak)
+    // ============================================================
     const io = req.app.get('socketio');
-    if (io) io.to(taskId).emit('new_message', message); 
+    if (io) {
+      // If student is attached to the message, emit to the student sub-room.
+      // Otherwise, emit to the client sub-room.
+      const targetRoom = message.student 
+        ? `${taskId}_student_${message.student}` 
+        : `${taskId}_client`;
+
+      io.to(targetRoom).emit('new_message', message); 
+    }
 
     res.status(201).json(message);
 
-    // PUSH NOTIFICATION
     (async () => {
       try {
         await sendNotification(receiverResolution.receiverId, {
@@ -239,7 +244,6 @@ router.get('/admin-student', verifyJWT, async (req, res) => {
     const task = await Task.findById(taskId);
     if (!task) return res.status(404).json({ message: 'Task not found' });
 
-    // Mark as Read
     await Message.updateMany(
       { task: task._id, receiver: req.user.id, student: studentId },
       { $set: { isRead: true } }
@@ -286,8 +290,14 @@ router.post('/admin-student', verifyJWT, async (req, res) => {
 
     await message.populate([{ path: 'sender', select: 'name role' }, { path: 'receiver', select: 'name role' }]);
     
+    // ============================================================
+    // MODIFICATION: EMIT TO SPECIFIC STUDENT SUB-ROOM
+    // ============================================================
     const io = req.app.get('socketio');
-    if (io) io.to(taskId).emit('new_message', message); 
+    if (io) {
+      const targetRoom = `${taskId}_student_${studentId}`;
+      io.to(targetRoom).emit('new_message', message); 
+    }
 
     res.status(201).json(message);
 
