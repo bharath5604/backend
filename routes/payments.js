@@ -12,7 +12,7 @@ const verifyJWT = require('../middleware/authMiddleware');
 const { sendNotification } = require('../utils/fcm');
 
 // =========================================================
-// RAZORPAY INITIALIZATION (FAIL-SAFE LOGIC)
+// RAZORPAY INITIALIZATION
 // =========================================================
 
 const key_id = process.env.RAZORPAY_KEY_ID;
@@ -33,7 +33,7 @@ if (key_id && key_secret && key_id !== 'PLACEHOLDER' && key_secret !== 'PLACEHOL
     console.error('❌ Razorpay failed to initialize:', err.message);
   }
 } else {
-  console.warn('⚠️ Razorpay credentials missing or invalid. Auto-payments disabled.');
+  console.warn('⚠️ Razorpay credentials missing; Auto-payments disabled.');
 }
 
 /**
@@ -43,7 +43,7 @@ const emitPaymentUpdate = (req, room, event, data) => {
   const io = req.app.get('socketio');
   if (io) {
     io.to(room).emit(event, data);
-    // Refresh stats for Admin Dashboard
+    // Refresh global dashboard counters
     io.emit('admin_stats_update', { timestamp: new Date() });
   }
 };
@@ -65,25 +65,19 @@ router.post('/create-order', verifyJWT, async (req, res) => {
     const task = await Task.findById(taskId);
     if (!task) return res.status(404).json({ message: 'Task not found' });
 
-    // Enforce business logic: Admin must finalize budget before Razorpay is enabled
     if (!task.budgetFinalized || !task.budget) {
       return res.status(400).json({ message: 'Budget not yet finalized by Admin.' });
     }
 
     const options = {
-      amount: Math.round(task.budget * 100), // Amount in Paise (INR * 100)
+      amount: Math.round(task.budget * 100), // INR to Paise
       currency: "INR",
       receipt: `receipt_${taskId}_${Date.now()}`,
-      // ============================================================
-      // MODIFICATION: AUTOMATIC CAPTURE (Fixes "Manual Capture" Error)
-      // 1 = True. This captures the payment immediately upon success.
-      // ============================================================
-      payment_capture: 1 
+      payment_capture: 1 // Automatically capture payment upon successful authorization
     };
 
     const order = await razorpay.orders.create(options);
 
-    // Update or Create Payment Ledger
     let paymentRecord = await Payment.findOne({ task: taskId });
     if (!paymentRecord) {
         paymentRecord = new Payment({
@@ -105,7 +99,7 @@ router.post('/create-order', verifyJWT, async (req, res) => {
       orderId: order.id,
       amount: order.amount,
       currency: order.currency,
-      keyId: process.env.RAZORPAY_KEY_ID 
+      keyId: key_id 
     });
 
   } catch (err) {
@@ -116,7 +110,7 @@ router.post('/create-order', verifyJWT, async (req, res) => {
 
 /**
  * POST /api/payments/webhook
- * AUTOMATIC: Triggered by Razorpay.
+ * AUTOMATIC: Secure verification triggered by Razorpay servers.
  */
 router.post('/webhook', async (req, res) => {
   const secret = process.env.RAZORPAY_WEBHOOK_SECRET;
@@ -127,18 +121,19 @@ router.post('/webhook', async (req, res) => {
   }
 
   try {
+    // SECURITY: Verify that this request actually came from Razorpay
     const shasum = crypto.createHmac('sha256', secret);
     shasum.update(JSON.stringify(req.body));
     const digest = shasum.digest('hex');
 
     if (digest !== signature) {
+      console.error("❌ Webhook Signature Mismatch");
       return res.status(400).send('Invalid signature');
     }
 
     const event = req.body.event;
     const payload = req.body.payload.payment.entity;
 
-    // This event fires because we added payment_capture: 1 above
     if (event === 'payment.captured') {
       const orderId = payload.order_id;
       
@@ -150,9 +145,12 @@ router.post('/webhook', async (req, res) => {
         const task = await Task.findById(paymentRecord.task);
         const student = await User.findById(paymentRecord.student);
 
-        // Update Task and status
+        // ============================================================
+        // MODIFICATION: AUTOMATIC DELIVERABLE UNLOCK
+        // ============================================================
         task.adminReceivedPayment = true; 
         task.status = 'completed';
+        task.clientCanDownload = true; // <--- This allows the Client to save the work immediately
 
         paymentRecord.final.status = 'paid';
         paymentRecord.final.paymentId = payload.id;
@@ -160,46 +158,60 @@ router.post('/webhook', async (req, res) => {
         paymentRecord.final.method = 'razorpay';
         paymentRecord.status = 'completed';
 
-        // Credit Student Wallet (Managed as a number field in User model)
-        const creditAmount = paymentRecord.netToStudent || task.budget;
-        student.wallet = (student.wallet || 0) + creditAmount;
-        student.tasksCompleted += 1;
+        // Credit Student Virtual Wallet
+        if (student) {
+          const creditAmount = paymentRecord.netToStudent || task.budget;
+          student.wallet = (student.wallet || 0) + creditAmount;
+          student.tasksCompleted += 1;
+          await student.save();
+          
+          // Notify Student Dashboard to update points live
+          emitPaymentUpdate(req, student._id.toString(), 'feedback_update', { 
+            walletBalance: student.wallet 
+          });
+        }
         
-        await student.save();
         await paymentRecord.save();
         await task.save();
 
-        // REAL-TIME: Instantly notify Client and Admin apps
-        emitPaymentUpdate(req, task._id.toString(), 'task_update', { 
+        // ============================================================
+        // REAL-TIME NOTIFICATIONS
+        // ============================================================
+        
+        // 1. Notify Client Thread Room (Unlocks "Save to Device" button instantly)
+        emitPaymentUpdate(req, `${task._id}_client`, 'task_update', { 
             taskId: task._id, 
             adminReceivedPayment: true,
+            clientCanDownload: true,
             status: 'completed'
         });
 
-        // Update Student Dashboard points live
-        emitPaymentUpdate(req, student._id.toString(), 'feedback_update', { 
-            walletBalance: student.wallet 
-        });
+        // 2. Notify Admin Global Room (Shows green checkmark in Matching Hub)
+        emitPaymentUpdate(req, 'admin_room', 'task_update', { taskId: task._id });
 
-        // PUSH NOTIFICATIONS
-        await sendNotification(task.client.toString(), {
-            title: "Payment Verified",
-            body: `Your payment for "${task.title}" has been processed successfully.`,
-            data: { type: "payment_needed" }
-        });
+        // 3. Send Push Notifications
+        if (task.client) {
+            await sendNotification(task.client.toString(), {
+                title: "Payment Verified!",
+                body: `Your payment for "${task.title}" is confirmed. Downloads are now unlocked.`,
+                data: { type: "payment_needed", taskId: task._id.toString() }
+            });
+        }
 
-        await sendNotification(student._id.toString(), {
-            title: "Earnings Credited",
-            body: `Payment for "${task.title}" is now in your virtual wallet.`,
-            data: { type: "payment_received" }
-        });
+        if (student) {
+            await sendNotification(student._id.toString(), {
+                title: "Earnings Credited",
+                body: `Payment for "${task.title}" has been added to your virtual wallet.`,
+                data: { type: "payment_received", taskId: task._id.toString() }
+            });
+        }
       }
     }
 
     return res.status(200).json({ status: 'ok' });
 
   } catch (err) {
-    console.error('Webhook Error:', err);
+    console.error('Webhook processing error:', err);
     return res.status(500).send('Webhook Error');
   }
 });

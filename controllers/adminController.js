@@ -21,7 +21,7 @@ const sendServerError = (res, error, fallbackMessage) => {
 const emitUpdate = (req, room, event, data) => {
   const io = req.app.get('socketio');
   if (io) {
-    // 1. Send to the specific room (Specific Thread Sub-room or User ID private room)
+    // 1. Send to the specific isolated room (Thread room or User private room)
     io.to(room).emit(event, data);
     // 2. Refresh counters on all Admin Dashboards globally
     io.emit('admin_stats_update', { timestamp: new Date() });
@@ -166,7 +166,7 @@ exports.getSuggestedStudents = async (req, res) => {
 };
 
 // =============================================================================
-// 4. CHAT HANDLERS (Correct Sub-Room Isolation)
+// 4. CHAT HANDLERS (With Sub-Room Privacy)
 // =============================================================================
 
 exports.getClientTaskMessages = async (req, res) => {
@@ -197,7 +197,6 @@ exports.sendClientTaskMessage = async (req, res) => {
     });
     msg = await msg.populate('sender', 'name role');
 
-    // MODIFICATION: Emit ONLY to the client sub-room
     emitUpdate(req, `${req.params.taskId}_client`, 'new_message', msg);
 
     if (task.client) {
@@ -218,7 +217,6 @@ exports.sendStudentTaskMessage = async (req, res) => {
     });
     msg = await msg.populate('sender', 'name role');
 
-    // MODIFICATION: Emit ONLY to the specific student sub-room
     emitUpdate(req, `${req.params.taskId}_student_${req.body.studentId}`, 'new_message', msg);
 
     await sendNotification(req.body.studentId, {
@@ -244,7 +242,6 @@ exports.finalizeTaskBudget = async (req, res) => {
     task.budgetFinalized = true; 
     await task.save();
 
-    // MODIFICATION: Notify both isolated threads that budget is finalized
     emitUpdate(req, `${taskId}_client`, 'task_update', { taskId, budget: task.budget, budgetFinalized: true });
     if (task.student) {
         emitUpdate(req, `${taskId}_student_${task.student}`, 'task_update', { taskId, budget: task.budget, budgetFinalized: true });
@@ -280,10 +277,7 @@ exports.rateStudent = async (req, res) => {
 exports.toggleSubmissionVisibility = async (req, res) => {
   try {
     const task = await Task.findByIdAndUpdate(req.params.taskId, { clientCanDownload: req.body.canView }, { new: true });
-    
-    // MODIFICATION: Notify Client Thread specifically
     emitUpdate(req, `${req.params.taskId}_client`, 'task_update', { taskId: req.params.taskId, clientCanDownload: req.body.canView });
-    
     if (req.body.canView && task.client) {
         await sendNotification(task.client.toString(), { title: "Work Ready!", body: `Admin released files for ${task.title}.`, data: { type: "payment_needed" } });
     }
@@ -291,18 +285,38 @@ exports.toggleSubmissionVisibility = async (req, res) => {
   } catch (error) { res.status(500).json({ message: "Error" }); }
 };
 
+/**
+ * MODIFICATION: VERIFY PAYMENT & AUTO-UNLOCK DOWNLOADS
+ */
 exports.confirmClientPayment = async (req, res) => {
   try {
-    const task = await Task.findByIdAndUpdate(req.params.taskId, { adminReceivedPayment: true }, { new: true });
-    
-    // MODIFICATION: Notify Client Thread specifically
-    emitUpdate(req, `${req.params.taskId}_client`, 'task_update', { taskId: req.params.taskId });
-    
-    if (task.client) {
-        await sendNotification(task.client.toString(), { title: "Payment Verified", body: `Verification complete for ${task.title}.`, data: { type: "payment_needed" } });
+    // Logic: Set adminReceivedPayment to true AND unlock clientCanDownload immediately
+    const task = await Task.findByIdAndUpdate(
+        req.params.taskId, 
+        { adminReceivedPayment: true, clientCanDownload: true }, 
+        { new: true }
+    );
+
+    // Refresh Client UI instantly
+    emitUpdate(req, `${req.params.taskId}_client`, 'task_update', { 
+        taskId: req.params.taskId,
+        adminReceivedPayment: true,
+        clientCanDownload: true
+    });
+
+    // Refresh Admin global list
+    emitUpdate(req, 'admin_room', 'task_update', { taskId: req.params.taskId });
+
+    if (task && task.client) {
+        await sendNotification(task.client.toString(), { 
+            title: "Payment Verified", 
+            body: `Admin confirmed payment for "${task.title}". Files are unlocked.`, 
+            data: { type: "payment_needed" } 
+        });
     }
-    return res.json({ message: "Verified", task });
-  } catch (error) { return sendServerError(res, error, "Error"); }
+
+    return res.json({ message: "Payment verified and deliverables unlocked.", task });
+  } catch (error) { return sendServerError(res, error, "Confirmation failed"); }
 };
 
 exports.confirmStudentPayout = async (req, res) => {
@@ -310,10 +324,7 @@ exports.confirmStudentPayout = async (req, res) => {
     const task = await Task.findByIdAndUpdate(req.params.taskId, { adminPaidStudent: true }, { new: true });
     if (task.student) {
         emitUpdate(req, task.student.toString(), 'payout_processed', { taskId: task._id });
-        
-        // MODIFICATION: Notify Student Thread specifically
         emitUpdate(req, `${task._id}_student_${task.student}`, 'task_update', { taskId: task._id });
-        
         await sendNotification(task.student.toString(), { title: "Payout Sent!", body: "Your earnings have been transferred.", data: { type: "withdrawal_update" } });
     }
     return res.json({ message: "Paid", task });
