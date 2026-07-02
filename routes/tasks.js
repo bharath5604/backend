@@ -5,19 +5,19 @@ const Task = require('../models/Task');
 const User = require('../models/User');
 const Message = require('../models/Message');
 const verifyJWT = require('../middleware/authMiddleware');
-const taskController = require('../controllers/taskController');
+const taskController = require('../controllers/taskController'); // Core Logic
 const Joi = require('joi');
-const { sendNotification } = require('../utils/fcm');
 
 // =========================================================
-// JOI SCHEMAS
+// JOI SCHEMAS (SYNCHRONIZED WITH UI CHANGES)
 // =========================================================
 
 const createTaskSchema = Joi.object({
   title: Joi.string().min(3).max(200).required(),
   description: Joi.string().min(10).max(5000).required(),
   
-  // MODIFICATION: Changed to optional so the frontend can omit it during creation
+  // MODIFICATION: Budget is now optional during initial post.
+  // This prevents 400 Errors when the Client leaves it blank.
   budget: Joi.number().min(0).allow(null, '').optional(), 
   
   deadline: Joi.date().required(),
@@ -27,7 +27,7 @@ const createTaskSchema = Joi.object({
   company: Joi.string().max(200).allow('', null),
   attachments: Joi.array().items(Joi.string().uri()).default([]),
   attachmentNames: Joi.array().items(Joi.string()).default([]),
-  clientAgreedToTerms: Joi.boolean().valid(true).required() ,
+  clientAgreedToTerms: Joi.boolean().valid(true).required(),
 });
 
 const guestTaskSchema = Joi.object({
@@ -37,17 +37,12 @@ const guestTaskSchema = Joi.object({
   guestMobile: Joi.string().required(),
   guestEmail: Joi.string().email().allow('', null),
   
-  // MODIFICATION: Changed to optional for the Emergency Task flow
+  // MODIFICATION: Budget optional for guest leads.
   budget: Joi.number().min(0).allow(null, '').optional(),
   
   deadline: Joi.date().required(),
   domain: Joi.string().allow('', null),
   requiredSkills: Joi.array().items(Joi.string()).default([]),
-});
-
-const submissionSchema = Joi.object({
-  fileUrl: Joi.string().uri().required(),
-  notes: Joi.string().max(2000).allow('', null),
 });
 
 const feedbackSchema = Joi.object({
@@ -57,12 +52,11 @@ const feedbackSchema = Joi.object({
 });
 
 // =========================================================
-// 1. STATIC & HIGH-PRIORITY ROUTES
+// 1. DATA RETRIEVAL (DASHBOARD & WORKSPACE)
 // =========================================================
 
 /**
- * GET /api/tasks/filters
- * Returns tasks currently active or under review for the student
+ * Provides dynamic filters based on existing DB entries
  */
 router.get('/filters', verifyJWT, async (req, res) => {
     try {
@@ -79,6 +73,9 @@ router.get('/filters', verifyJWT, async (req, res) => {
     }
 });
 
+/**
+ * Returns tasks actively assigned to the logged-in student
+ */
 router.get('/assigned', verifyJWT, async (req, res) => {
   try {
     const tasks = await Task.find({
@@ -90,8 +87,7 @@ router.get('/assigned', verifyJWT, async (req, res) => {
 });
 
 /**
- * GET /api/tasks/requests
- * Returns formal invitations sent by Admin
+ * Returns task invitations (Pending Acceptance)
  */
 router.get('/requests', verifyJWT, async (req, res) => {
   try {
@@ -104,8 +100,7 @@ router.get('/requests', verifyJWT, async (req, res) => {
 });
 
 /**
- * GET /api/tasks/chat-tasks
- * Used to build the student's inbox
+ * Aggregates tasks for the real-time chat inbox
  */
 router.get('/chat-tasks', verifyJWT, async (req, res) => {
   try {
@@ -119,8 +114,7 @@ router.get('/chat-tasks', verifyJWT, async (req, res) => {
 });
 
 /**
- * GET /api/tasks/mine
- * Returns tasks created by the logged-in client
+ * Returns tasks posted by the logged-in client
  */
 router.get('/mine', verifyJWT, async (req, res) => {
   try {
@@ -130,61 +124,19 @@ router.get('/mine', verifyJWT, async (req, res) => {
 });
 
 // =========================================================
-// 2. CREATION ROUTES
+// 2. CREATION & SUBMISSION (ROUTED TO CONTROLLER)
+// =========================================================
+
+router.post('/create', verifyJWT, taskController.createTask);
+router.post('/guest-create', taskController.createGuestTask);
+router.post('/:id/submit', verifyJWT, taskController.submitWork);
+
+// =========================================================
+// 3. WORKFLOW ACTIONS (RELIANT ON CONTROLLER FOR SOCKETS)
 // =========================================================
 
 /**
- * Requirement: Create Task (Registered User)
- */
-router.post('/create', verifyJWT, async (req, res) => {
-  try {
-    const { error, value } = createTaskSchema.validate(req.body);
-    if (error) return res.status(400).json({ message: error.details[0].message });
-
-    const task = await Task.create({
-      ...value,
-      client: req.user.id,
-      isGuestTask: false,
-      status: 'open'
-    });
-    res.status(201).json(task);
-  } catch (err) { res.status(500).json({ message: 'Creation failed' }); }
-});
-
-/**
- * Requirement: Emergency Task (Guest Flow)
- */
-router.post('/guest-create', async (req, res) => {
-  try {
-    const { error, value } = guestTaskSchema.validate(req.body);
-    if (error) return res.status(400).json({ message: error.details[0].message });
-
-    const task = await Task.create({
-      title: value.title,
-      description: value.description,
-      deadline: value.deadline,
-      budget: value.budget,
-      domain: value.domain,
-      requiredSkills: value.requiredSkills,
-      isGuestTask: true,
-      guestInfo: {
-        name: value.guestName,
-        mobile: value.guestMobile,
-        email: value.guestEmail
-      },
-      status: 'open'
-    });
-    res.status(201).json(task);
-  } catch (err) { res.status(500).json({ message: 'Emergency submission failed' }); }
-});
-
-// =========================================================
-// 3. WORKFLOW ACTIONS
-// =========================================================
-
-/**
- * FIXED: Accept Request
- * Logic: Transitions task to 'assigned' directly. No Payment record created.
+ * Transitions task from Invite -> Active
  */
 router.post('/:id/accept-request', verifyJWT, async (req, res) => {
   try {
@@ -201,76 +153,32 @@ router.post('/:id/accept-request', verifyJWT, async (req, res) => {
     task.assignmentRequestStatus = null;
 
     await task.save();
+    
+    // Broadcast update to Admin and Client rooms
+    const io = req.app.get('socketio');
+    if (io) {
+        io.to('admin_room').emit('task_update', { taskId: task._id });
+        io.to(`${task._id}_client`).emit('task_update', { taskId: task._id });
+    }
+
     res.json({ message: 'Task assigned and active', task });
   } catch (err) { res.status(500).json({ message: 'Acceptance failed' }); }
 });
 
 /**
- * Requirement: Student Submit Work
- * Logic: Set visibility to false so Admin can vet it first
+ * Approves student deliverables
  */
-router.post('/:id/submit', verifyJWT, async (req, res) => {
-  try {
-    const { error, value } = submissionSchema.validate(req.body);
-    if (error) return res.status(400).json({ message: "File required" });
-
-    const task = await Task.findById(req.params.id);
-    if (!task || task.student?.toString() !== req.user.id) return res.status(403).json({ message: 'Unauthorized' });
-
-    task.submission = {
-      student: req.user.id,
-      fileUrl: value.fileUrl,
-      notes: value.notes,
-      submittedAt: new Date()
-    };
-    task.status = 'under_review';
-    task.clientCanViewSubmission = false; // Hidden until Admin vetting
-
-    await task.save();
-    res.json({ message: 'Work submitted for Admin review', task });
-  } catch (err) { res.status(500).json({ message: 'Submission failed' }); }
-});
+router.post('/:id/approve', verifyJWT, taskController.approveWork);
 
 /**
- * Requirement: Client Approve Work
- * Logic: Status moves to completed. This triggers QR visibility in UI.
+ * MODIFICATION: Client requests revision. 
+ * Linked to Controller to ensure modificationNotes are saved and no limit is enforced.
  */
-router.post('/:id/approve', verifyJWT, async (req, res) => {
-  try {
-    const task = await Task.findById(req.params.id);
-    if (!task || task.client?.toString() !== req.user.id) return res.status(403).json({ message: 'Unauthorized' });
-
-    task.submission.approved = true;
-    task.submission.clientApprovedAt = new Date();
-    task.status = 'completed';
-
-    await task.save();
-
-    // Reputation update
-    await User.findByIdAndUpdate(task.student, { $inc: { tasksCompleted: 1 } });
-
-    res.json({ message: 'Deliverables approved. Scan QR to pay Admin.', task });
-  } catch (err) { res.status(500).json({ message: 'Approval failed' }); }
-});
+router.post('/:id/decline', verifyJWT, taskController.declineWork);
 
 /**
- * Requirement: Request Revision
+ * Final Feedback and Rating
  */
-router.post('/:id/decline', verifyJWT, async (req, res) => {
-  try {
-    const task = await Task.findById(req.params.id);
-    if (!task || task.client?.toString() !== req.user.id) return res.status(403).json({ message: 'Unauthorized' });
-
-    task.attemptCount += 1;
-    task.submission = null;
-    task.clientCanViewSubmission = false;
-    task.status = task.attemptCount >= task.maxAttempts ? 'declined' : 'assigned';
-
-    await task.save();
-    res.json({ message: 'Revision requested', task });
-  } catch (err) { res.status(500).json({ message: 'Update failed' }); }
-});
-
 router.post('/:id/feedback', verifyJWT, async (req, res, next) => {
   const { error } = feedbackSchema.validate(req.body);
   if (error) return res.status(400).json({ message: error.details[0].message });
@@ -278,7 +186,7 @@ router.post('/:id/feedback', verifyJWT, async (req, res, next) => {
 });
 
 // =========================================================
-// 4. GENERAL RETRIEVAL
+// 4. GENERAL RETRIEVAL & DELETION
 // =========================================================
 
 router.get('/:id', verifyJWT, async (req, res) => {
@@ -292,7 +200,9 @@ router.get('/:id', verifyJWT, async (req, res) => {
 router.delete('/:id', verifyJWT, async (req, res) => {
   try {
     const task = await Task.findById(req.params.id);
+    if (!task) return res.status(404).json({ message: 'Task not found' });
     if (task.client.toString() !== req.user.id) return res.status(403).json({ message: 'Denied' });
+    
     await Task.deleteOne({ _id: req.params.id });
     res.json({ message: 'Task deleted' });
   } catch (err) { res.status(500).json({ message: 'Deletion failed' }); }

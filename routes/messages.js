@@ -60,8 +60,14 @@ function normalizeId(value) {
   return clean(value);
 }
 
+/**
+ * MODIFICATION: Removed the 'attemptCount >= maxAttempts' logic.
+ * Chat now stays open indefinitely regardless of resubmission counts.
+ */
 function isTaskChatClosed(task) {
-  return task.status === 'declined' && task.attemptCount >= task.maxAttempts;
+  // Logic: Only block chat if the task was manually moved to a terminal state like 'declined' 
+  // (if you still use manual decline) or if the project is deleted.
+  return task.status === 'declined' && !task.student; 
 }
 
 function getTaskPartyIds(task) {
@@ -91,6 +97,7 @@ async function canAccessTaskChat(task, user) {
     const isInvited = task.requestedStudent && task.requestedStudent.toString() === userId;
     if (isAssigned || isInvited) return { allowed: true, reason: null };
 
+    // Vetting Phase Check
     const messageExists = await Message.findOne({
       task: task._id,
       $or: [{ sender: userId }, { receiver: userId }]
@@ -119,6 +126,7 @@ async function resolveReceiverForMessage(task, user, targetRole) {
     return { ok: false, status: 400, message: 'Admin targetRole must be client or student' };
   }
 
+  // Clients and Students always message the Admin
   const adminUser = await User.findOne({ role: 'admin' }).select('_id');
   if (!adminUser) return { ok: false, status: 500, message: 'Support unavailable' };
   return { ok: true, receiverId: adminUser._id.toString() };
@@ -142,6 +150,7 @@ router.get('/task', verifyJWT, async (req, res) => {
     const access = await canAccessTaskChat(task, req.user);
     if (!access.allowed) return res.status(403).json({ message: access.reason });
 
+    // Mark messages received by current user as READ
     await Message.updateMany(
       { task: task._id, receiver: req.user.id },
       { $set: { isRead: true } }
@@ -152,7 +161,7 @@ router.get('/task', verifyJWT, async (req, res) => {
       if (requestedStudentId) {
         filter.$or = [{ student: requestedStudentId }, { peerStudentId: requestedStudentId }];
       } else {
-        filter.student = null; 
+        filter.student = null; // Admin-Client thread
       }
     } else {
       filter.$or = [{ sender: req.user.id }, { receiver: req.user.id }];
@@ -214,7 +223,7 @@ router.post('/task', verifyJWT, async (req, res) => {
       // Emit ONLY to the specific thread sub-room
       io.to(targetRoom).emit('new_message', message); 
       
-      // Emit generic status update to standard task room for non-chat UI updates
+      // Emit generic status update for non-chat UI components
       io.to(taskId.toString()).emit('task_update', { taskId });
     }
 
@@ -248,6 +257,7 @@ router.get('/admin-student', verifyJWT, async (req, res) => {
     const task = await Task.findById(taskId);
     if (!task) return res.status(404).json({ message: 'Task not found' });
 
+    // Mark as Read
     await Message.updateMany(
       { task: task._id, receiver: req.user.id, student: studentId },
       { $set: { isRead: true } }
@@ -301,7 +311,7 @@ router.post('/admin-student', verifyJWT, async (req, res) => {
     if (io) {
       const targetRoom = `${taskId}_student_${studentId}`;
       io.to(targetRoom).emit('new_message', message); 
-      
+
       // UI update for background counters
       io.to(taskId.toString()).emit('task_update', { taskId });
     }

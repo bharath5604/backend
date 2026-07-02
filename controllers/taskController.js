@@ -1,7 +1,7 @@
 // backend/controllers/taskController.js
 const Task = require('../models/Task');
 const User = require('../models/User');
-const Message = require('../models/Message'); // IMPORTED for automated system messages
+const Message = require('../models/Message'); // For automated system messages
 const { sendNotification } = require('../utils/fcm');
 
 // Helper for numeric parsing
@@ -12,7 +12,7 @@ const asNumber = (val) => {
 
 /**
  * Global Normalization Helper
- * Standardizes Title Case for domains and skills (Fixes "edting" / "EDITING" issues)
+ * Standardizes Title Case for domains and skills
  */
 function normalizeString(str) {
   if (!str || typeof str !== 'string') return '';
@@ -26,22 +26,19 @@ function normalizeString(str) {
 
 /**
  * Global Real-time Broadcast Helper
- * Signals the frontend to refresh specific UI components instantly
  */
 const emitUpdate = (req, room, event, data) => {
   const io = req.app.get('socketio');
   if (io) {
-    // 1. Update the specific task or user room
+    // Send to specific sub-room (client thread or student thread)
     io.to(room).emit(event, data);
-    // 2. Refresh counters on all Admin Dashboards globally
+    // Refresh counters on all Admin Dashboards
     io.emit('admin_stats_update', { timestamp: new Date() });
   }
 };
 
 /**
- * ==========================================
  * CREATE TASK (Registered Client)
- * ==========================================
  */
 exports.createTask = async (req, res) => {
   try {
@@ -49,7 +46,6 @@ exports.createTask = async (req, res) => {
       return res.status(403).json({ message: 'Only clients can create tasks' });
     }
 
-    // MODIFICATION: 'budget' removed from destructuring as it's no longer sent from frontend
     const {
       title, description, deadline, location,
       domain, company, requiredSkills, attachments, attachmentNames,
@@ -65,7 +61,7 @@ exports.createTask = async (req, res) => {
     const task = await Task.create({
       title: title.trim(),
       description: description.trim(),
-      budget: null, // MODIFICATION: Explicitly set to null. Admin will finalize this later.
+      budget: null, // Admin finalizes this later
       deadline: new Date(deadline),
       location: String(location || '').trim(),
       domain: cleanDomain,
@@ -82,19 +78,15 @@ exports.createTask = async (req, res) => {
 
     return res.status(201).json({ message: 'Task created successfully', task });
   } catch (err) {
-    console.error('Create Task Error:', err);
     return res.status(500).json({ message: 'Failed to create task' });
   }
 };
 
 /**
- * ==========================================
- * CREATE GUEST TASK (Landing Page Emergency)
- * ==========================================
+ * CREATE GUEST TASK (Emergency)
  */
 exports.createGuestTask = async (req, res) => {
   try {
-    // MODIFICATION: 'budget' removed from destructuring
     const {
       title, description, guestName, guestMobile, guestEmail,
       deadline, domain, requiredSkills
@@ -116,7 +108,7 @@ exports.createGuestTask = async (req, res) => {
         mobile: guestMobile.trim(),
         email: (guestEmail || '').trim()
       },
-      budget: null, // MODIFICATION: Initialized as null for Emergency Posts
+      budget: null, 
       deadline: new Date(deadline),
       domain: cleanDomain,
       requiredSkills: cleanSkills,
@@ -135,22 +127,15 @@ exports.createGuestTask = async (req, res) => {
 };
 
 /**
- * ==========================================
- * RATE STUDENT & UPDATE REPUTATION ARRAYS
- * ==========================================
+ * RATE STUDENT
  */
 exports.rateStudent = async (req, res) => {
   try {
     const scoreValue = Number(req.body.score);
     const feedbackText = req.body.text || req.body.feedback || '';
 
-    if (isNaN(scoreValue)) {
-      return res.status(400).json({ message: "Invalid score. Must be a number." });
-    }
-
     const task = await Task.findById(req.params.id || req.params.taskId);
     if (!task) return res.status(404).json({ message: 'Task not found' });
-    if (!task.student) return res.status(400).json({ message: 'No student assigned' });
 
     task.score = scoreValue;
     task.rating = scoreValue;
@@ -170,20 +155,13 @@ exports.rateStudent = async (req, res) => {
       });
       await student.save();
       emitUpdate(req, student._id.toString(), 'feedback_update', { score: scoreValue });
-      await sendNotification(student._id.toString(), {
-          title: "New Task Review",
-          body: `You received a ${scoreValue}-star rating for ${task.title}.`,
-          data: { type: "payment_received" }
-      });
     }
     return res.json({ success: true });
   } catch (err) { res.status(500).json({ message: err.message }); }
 };
 
 /**
- * ===============================
  * STUDENT SUBMIT WORK
- * ===============================
  */
 exports.submitWork = async (req, res) => {
   try {
@@ -205,29 +183,20 @@ exports.submitWork = async (req, res) => {
     task.status = 'under_review';
     task.clientCanViewSubmission = true; 
     task.clientCanDownload = false; 
-    task.modificationNotes = ''; 
+    task.modificationNotes = ''; // Clear old notes upon new submission
 
     await task.save();
 
-    emitUpdate(req, task._id.toString(), 'task_update', { taskId: task._id });
-
-    const admin = await User.findOne({ role: 'admin' });
-    if (admin) {
-        await sendNotification(admin._id.toString(), {
-            title: "Work Submitted",
-            body: `Student delivered work for: ${task.title}. Review required.`,
-            data: { type: "task_submitted", taskId: task._id.toString() }
-        });
-    }
+    // Notify relevant isolated rooms
+    emitUpdate(req, `${task._id}_client`, 'task_update', { taskId: task._id });
+    emitUpdate(req, 'admin_room', 'task_update', { taskId: task._id });
 
     return res.json({ message: 'Work submitted for review', task });
   } catch (err) { return res.status(500).json({ message: 'Submission failed' }); }
 };
 
 /**
- * ===============================
  * CLIENT APPROVE WORK
- * ===============================
  */
 exports.approveWork = async (req, res) => {
   try {
@@ -246,77 +215,80 @@ exports.approveWork = async (req, res) => {
       student.tasksCompleted = (student.tasksCompleted || 0) + 1;
       await student.save();
       emitUpdate(req, student._id.toString(), 'task_approved', { taskId: task._id });
-      await sendNotification(student._id.toString(), {
-          title: "Work Approved!",
-          body: `Client finalized your project: ${task.title}.`,
-          data: { type: "task_assigned" }
-      });
     }
 
-    emitUpdate(req, task._id.toString(), 'task_update', { taskId: task._id });
+    emitUpdate(req, `${task._id}_client`, 'task_update', { taskId: task._id });
+    emitUpdate(req, 'admin_room', 'task_update', { taskId: task._id });
+
     return res.json({ message: 'Work approved.', task });
   } catch (err) { return res.status(500).json({ message: 'Approval failed' }); }
 };
 
 /**
- * ===============================
- * CLIENT DECLINE / MODIFY (REVISION)
- * ===============================
+ * CLIENT DECLINE / MODIFY (REVISION - NO LIMIT)
+ * FIX: This function now correctly saves modificationNotes and removes the 3-limit check.
  */
 exports.declineWork = async (req, res) => {
   try {
-    const { reason } = req.body; 
-    const task = await Task.findById(req.params.taskId || req.params.id);
-    
+    const { reason } = req.body; // Instructions entered by Client in the Popup
+    const taskId = req.params.taskId || req.params.id;
+
+    console.log(`[LOG] Modification Request for Task: ${taskId}`);
+    console.log(`[LOG] Instructions: "${reason}"`);
+
+    const task = await Task.findById(taskId);
     if (!task || (task.client && task.client.toString() !== req.user.id)) {
       return res.status(403).json({ message: 'Not authorized' });
     }
 
+    // MODIFICATION: Increment count but NEVER force 'declined' status.
+    // Always revert to 'assigned' to allow infinite loops of improvement.
     task.attemptCount = (task.attemptCount || 0) + 1;
     task.submission = null; 
     task.status = 'assigned'; 
 
+    // FIX: Ensure the instructions are physically stored in the database
     task.modificationNotes = String(reason || '').trim();
 
     await task.save();
+    console.log(`[SUCCESS] modificationNotes stored for ${taskId}`);
 
     const admin = await User.findOne({ role: 'admin' });
-
     if (admin) {
+        // Auto-post the modification reason into both isolated threads for history
         await Message.create({
             task: task._id, sender: admin._id, receiver: task.student, 
             student: task.student, 
-            text: `⚠️ MODIFICATION REQUESTED BY CLIENT:\n"${reason}"\n\nPlease update and resubmit the work.`
+            text: `⚠️ MODIFICATION REQUESTED BY CLIENT:\n"${reason}"`
         });
-
         await Message.create({
             task: task._id, sender: admin._id, receiver: task.client,
             student: null, 
-            text: `✅ You requested these modifications:\n"${reason}"\n\nThe student has been notified.`
+            text: `✅ You requested these modifications:\n"${reason}"`
         });
     }
 
-    if (task.student) {
-      emitUpdate(req, task.student.toString(), 'task_status_changed', { taskId: task._id, status: 'assigned' });
-      await sendNotification(task.student.toString(), {
-          title: "Revision Required",
-          body: `Client requested modifications for ${task.title}.`,
-          data: { type: "task_declined", taskId: task._id.toString() }
-      });
+    // Real-time synchronization
+    const io = req.app.get('socketio');
+    if (io) {
+        // Update the isolated client view
+        io.to(`${task._id}_client`).emit('task_update', { taskId: task._id });
+        // Update the isolated student view (the one who sees the orange box)
+        io.to(`${task._id}_student_${task.student}`).emit('task_update', { taskId: task._id });
+        // Update the Admin dashboard
+        io.to('admin_room').emit('task_update', { taskId: task._id });
     }
-    emitUpdate(req, task._id.toString(), 'task_update', { taskId: task._id });
-    emitUpdate(req, task._id.toString(), 'new_message', { taskId: task._id });
 
     return res.json({ message: 'Revision requested', task });
-  } catch (err) { return res.status(500).json({ message: 'Request failed' }); }
+  } catch (err) { 
+      console.error("[ERROR] declineWork:", err);
+      return res.status(500).json({ message: 'Request failed' }); 
+  }
 };
 
 /**
- * ===============================
  * DATA RETRIEVAL
- * ===============================
  */
-
 exports.getAllTasks = async (req, res) => {
   try {
     const { clientId, domain } = req.query;

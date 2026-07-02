@@ -240,7 +240,7 @@ const taskSchema = new Schema(
     },
 
     attemptCount: { type: Number, default: 0 },
-    maxAttempts: { type: Number, default: 3 },
+
 
     rating: { type: Number, default: 0 },
     feedback: { type: String, default: '', trim: true },
