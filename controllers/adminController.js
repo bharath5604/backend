@@ -16,12 +16,13 @@ const sendServerError = (res, error, fallbackMessage) => {
 
 /**
  * Global Real-time Broadcast Helper
- * Signals the frontend to refresh specific UI components instantly
+ * Signals the frontend to refresh specific UI components instantly.
+ * room: can be a taskId, a taskId_subroom, or a userId.
  */
 const emitUpdate = (req, room, event, data) => {
   const io = req.app.get('socketio');
   if (io) {
-    // 1. Send to the specific isolated room (Thread room or User private room)
+    // 1. Send to the specific room provided
     io.to(room).emit(event, data);
     // 2. Refresh counters on all Admin Dashboards globally
     io.emit('admin_stats_update', { timestamp: new Date() });
@@ -29,7 +30,7 @@ const emitUpdate = (req, room, event, data) => {
 };
 
 // =============================================================================
-// FUZZY MATCHING HELPERS
+// FUZZY MATCHING HELPERS (Handles typos like "edting" vs "editing")
 // =============================================================================
 
 function getSimilarity(s1, s2) {
@@ -166,7 +167,7 @@ exports.getSuggestedStudents = async (req, res) => {
 };
 
 // =============================================================================
-// 4. CHAT HANDLERS (With Sub-Room Privacy)
+// 4. CHAT HANDLERS (With Strict Sub-Room Privacy)
 // =============================================================================
 
 exports.getClientTaskMessages = async (req, res) => {
@@ -197,6 +198,7 @@ exports.sendClientTaskMessage = async (req, res) => {
     });
     msg = await msg.populate('sender', 'name role');
 
+    // Emit to isolated Client Sub-room
     emitUpdate(req, `${req.params.taskId}_client`, 'new_message', msg);
 
     if (task.client) {
@@ -217,10 +219,15 @@ exports.sendStudentTaskMessage = async (req, res) => {
     });
     msg = await msg.populate('sender', 'name role');
 
+    // 1. Emit to isolated Student Sub-room
     emitUpdate(req, `${req.params.taskId}_student_${req.body.studentId}`, 'new_message', msg);
+    
+    // 2. Emit to Student's Private room to refresh Inbox/Chat List
+    emitUpdate(req, req.body.studentId.toString(), 'new_message', msg);
 
     await sendNotification(req.body.studentId, {
-        title: "Message from Admin", body: req.body.text || "Attachment received", data: { type: "chat_message", taskId: req.params.taskId.toString(), studentId: req.body.studentId }
+        title: "Message from Admin", body: req.body.text || "Attachment received", 
+        data: { type: "chat_message", taskId: req.params.taskId.toString(), studentId: req.body.studentId }
     });
     res.status(201).json(msg);
   } catch (err) { res.status(500).json({ message: "Send failed" }); }
@@ -242,6 +249,7 @@ exports.finalizeTaskBudget = async (req, res) => {
     task.budgetFinalized = true; 
     await task.save();
 
+    // Signal update to isolated thread rooms
     emitUpdate(req, `${taskId}_client`, 'task_update', { taskId, budget: task.budget, budgetFinalized: true });
     if (task.student) {
         emitUpdate(req, `${taskId}_student_${task.student}`, 'task_update', { taskId, budget: task.budget, budgetFinalized: true });
@@ -297,7 +305,7 @@ exports.confirmClientPayment = async (req, res) => {
         { new: true }
     );
 
-    // Refresh Client UI instantly
+    // Refresh Client App instantly (Unlock the Button)
     emitUpdate(req, `${req.params.taskId}_client`, 'task_update', { 
         taskId: req.params.taskId,
         adminReceivedPayment: true,
@@ -338,6 +346,7 @@ exports.confirmStudentPayout = async (req, res) => {
 exports.updateUserApproval = async (req, res) => {
     try {
       const user = await User.findByIdAndUpdate(req.params.id, { isApproved: req.body.isApproved }, { new: true });
+      // Kill-signal for instant logout
       emitUpdate(req, req.params.id, 'user_status_update', { isApproved: req.body.isApproved });
       
       await sendNotification(user._id.toString(), { 
@@ -353,10 +362,11 @@ exports.deleteUser = async (req, res) => {
     const { id } = req.params;
     const io = req.app.get('socketio');
     if (io) {
+      // Force immediate logout before deletion
       io.to(id.toString()).emit('user_status_update', { isApproved: false, deleted: true });
     }
     await User.findByIdAndDelete(id);
-    res.json({ message: "User account permanently removed from database." });
+    res.json({ message: "User account permanently removed." });
   } catch (error) { res.status(500).json({ message: "Deletion failed" }); }
 };
 
@@ -397,7 +407,10 @@ exports.assignTaskToStudent = async (req, res) => {
       task.requestedStudent = studentId;
       task.assignmentRequestStatus = 'request_sent';
       await task.save();
+      
+      // Update global admin room
       emitUpdate(req, 'admin_room', 'task_update', { taskId: task._id });
+      
       await sendNotification(studentId, { title: 'Invitation', body: `New work: ${task.title}`, data: { type: 'task_request', taskId: task._id.toString() } });
       res.json({ message: 'Sent', task });
     } catch (err) { res.status(500).json({ message: "Error" }); }

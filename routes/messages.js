@@ -60,13 +60,8 @@ function normalizeId(value) {
   return clean(value);
 }
 
-/**
- * MODIFICATION: Removed the 'attemptCount >= maxAttempts' logic.
- * Chat now stays open indefinitely regardless of resubmission counts.
- */
 function isTaskChatClosed(task) {
-  // Logic: Only block chat if the task was manually moved to a terminal state like 'declined' 
-  // (if you still use manual decline) or if the project is deleted.
+  // Logic: Allow chat even during revisions. Only block if project is terminal.
   return task.status === 'declined' && !task.student; 
 }
 
@@ -97,7 +92,6 @@ async function canAccessTaskChat(task, user) {
     const isInvited = task.requestedStudent && task.requestedStudent.toString() === userId;
     if (isAssigned || isInvited) return { allowed: true, reason: null };
 
-    // Vetting Phase Check
     const messageExists = await Message.findOne({
       task: task._id,
       $or: [{ sender: userId }, { receiver: userId }]
@@ -126,7 +120,6 @@ async function resolveReceiverForMessage(task, user, targetRole) {
     return { ok: false, status: 400, message: 'Admin targetRole must be client or student' };
   }
 
-  // Clients and Students always message the Admin
   const adminUser = await User.findOne({ role: 'admin' }).select('_id');
   if (!adminUser) return { ok: false, status: 500, message: 'Support unavailable' };
   return { ok: true, receiverId: adminUser._id.toString() };
@@ -150,7 +143,6 @@ router.get('/task', verifyJWT, async (req, res) => {
     const access = await canAccessTaskChat(task, req.user);
     if (!access.allowed) return res.status(403).json({ message: access.reason });
 
-    // Mark messages received by current user as READ
     await Message.updateMany(
       { task: task._id, receiver: req.user.id },
       { $set: { isRead: true } }
@@ -161,7 +153,7 @@ router.get('/task', verifyJWT, async (req, res) => {
       if (requestedStudentId) {
         filter.$or = [{ student: requestedStudentId }, { peerStudentId: requestedStudentId }];
       } else {
-        filter.student = null; // Admin-Client thread
+        filter.student = null; 
       }
     } else {
       filter.$or = [{ sender: req.user.id }, { receiver: req.user.id }];
@@ -211,19 +203,21 @@ router.post('/task', verifyJWT, async (req, res) => {
     await message.populate([{ path: 'sender', select: 'name role' }, { path: 'receiver', select: 'name role' }]);
     
     // ============================================================
-    // MODIFICATION: TARGETED THREAD EMISSION (Isolation Fix)
+    // MODIFICATION: DUAL-CHANNEL EMISSION
     // ============================================================
     const io = req.app.get('socketio');
     if (io) {
-      // Determine if the message belongs to the Student thread or Client thread
       const targetRoom = message.student 
         ? `${taskId}_student_${message.student}` 
         : `${taskId}_client`;
 
-      // Emit ONLY to the specific thread sub-room
+      // Channel 1: To people already looking at the chat
       io.to(targetRoom).emit('new_message', message); 
       
-      // Emit generic status update for non-chat UI components
+      // Channel 2: To the receiver's private ID room (Triggers Inbox dynamic refresh)
+      io.to(receiverResolution.receiverId.toString()).emit('new_message', message);
+
+      // Channel 3: Generic task logic refresh
       io.to(taskId.toString()).emit('task_update', { taskId });
     }
 
@@ -257,7 +251,6 @@ router.get('/admin-student', verifyJWT, async (req, res) => {
     const task = await Task.findById(taskId);
     if (!task) return res.status(404).json({ message: 'Task not found' });
 
-    // Mark as Read
     await Message.updateMany(
       { task: task._id, receiver: req.user.id, student: studentId },
       { $set: { isRead: true } }
@@ -305,14 +298,17 @@ router.post('/admin-student', verifyJWT, async (req, res) => {
     await message.populate([{ path: 'sender', select: 'name role' }, { path: 'receiver', select: 'name role' }]);
     
     // ============================================================
-    // MODIFICATION: STRICT STUDENT SUB-ROOM EMISSION
+    // MODIFICATION: DUAL-CHANNEL EMISSION FOR ADMIN
     // ============================================================
     const io = req.app.get('socketio');
     if (io) {
-      const targetRoom = `${taskId}_student_${studentId}`;
-      io.to(targetRoom).emit('new_message', message); 
+      // 1. Thread room
+      io.to(`${taskId}_student_${studentId}`).emit('new_message', message); 
+      
+      // 2. Recipient Private Room (Refresh Inbox list)
+      io.to(receiverResolution.receiverId.toString()).emit('new_message', message);
 
-      // UI update for background counters
+      // 3. UI update
       io.to(taskId.toString()).emit('task_update', { taskId });
     }
 
