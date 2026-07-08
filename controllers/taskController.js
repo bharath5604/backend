@@ -1,8 +1,8 @@
 // backend/controllers/taskController.js
 const Task = require('../models/Task');
 const User = require('../models/User');
-const Message = require('../models/Message'); // For automated system messages
-const { sendNotification } = require('../utils/fcm');
+const Message = require('../models/Message'); 
+const { sendNotification } = require('../utils/fcm'); // Now includes Socket + DB logic
 
 // Helper for numeric parsing
 const asNumber = (val) => {
@@ -26,13 +26,13 @@ function normalizeString(str) {
 
 /**
  * Global Real-time Broadcast Helper
+ * room: specific sub-room or userId
  */
 const emitUpdate = (req, room, event, data) => {
   const io = req.app.get('socketio');
   if (io) {
-    // Send to specific sub-room (client thread or student thread)
     io.to(room).emit(event, data);
-    // Refresh counters on all Admin Dashboards
+    // Refresh counters on all Admin Dashboards globally
     io.emit('admin_stats_update', { timestamp: new Date() });
   }
 };
@@ -61,7 +61,7 @@ exports.createTask = async (req, res) => {
     const task = await Task.create({
       title: title.trim(),
       description: description.trim(),
-      budget: null, // Admin finalizes this later
+      budget: null, // Admin finalizes this during negotiation
       deadline: new Date(deadline),
       location: String(location || '').trim(),
       domain: cleanDomain,
@@ -76,14 +76,25 @@ exports.createTask = async (req, res) => {
 
     emitUpdate(req, 'admin_room', 'task_created', { taskId: task._id });
 
+    // Notify Admin via the new MongoDB + Socket channel
+    const admin = await User.findOne({ role: 'admin' });
+    if (admin) {
+        await sendNotification(admin._id.toString(), {
+            title: "New Task Posted",
+            body: `A client posted a new requirement: ${task.title}`,
+            data: { type: "task_update", taskId: task._id.toString() }
+        }, req);
+    }
+
     return res.status(201).json({ message: 'Task created successfully', task });
   } catch (err) {
+    console.error('Create Task Error:', err);
     return res.status(500).json({ message: 'Failed to create task' });
   }
 };
 
 /**
- * CREATE GUEST TASK (Emergency)
+ * CREATE GUEST TASK (Emergency Lead)
  */
 exports.createGuestTask = async (req, res) => {
   try {
@@ -127,12 +138,12 @@ exports.createGuestTask = async (req, res) => {
 };
 
 /**
- * RATE STUDENT
+ * RATE STUDENT & UPDATE REPUTATION
  */
 exports.rateStudent = async (req, res) => {
   try {
     const scoreValue = Number(req.body.score);
-    const feedbackText = req.body.text || req.body.feedback || '';
+    const feedbackText = req.body.feedback || req.body.text || '';
 
     const task = await Task.findById(req.params.id || req.params.taskId);
     if (!task) return res.status(404).json({ message: 'Task not found' });
@@ -154,7 +165,16 @@ exports.rateStudent = async (req, res) => {
         comment: feedbackText, domain: task.domain, createdAt: new Date()
       });
       await student.save();
+      
+      // Update local wallet and feedback stats in real-time
       emitUpdate(req, student._id.toString(), 'feedback_update', { score: scoreValue });
+
+      // Notify Student via DB + Sockets + FCM
+      await sendNotification(student._id.toString(), {
+          title: "New Project Review",
+          body: `You received a ${scoreValue}-star rating for ${task.title}.`,
+          data: { type: "payment_received", taskId: task._id.toString() }
+      }, req);
     }
     return res.json({ success: true });
   } catch (err) { res.status(500).json({ message: err.message }); }
@@ -183,13 +203,23 @@ exports.submitWork = async (req, res) => {
     task.status = 'under_review';
     task.clientCanViewSubmission = true; 
     task.clientCanDownload = false; 
-    task.modificationNotes = ''; // Clear old notes upon new submission
+    task.modificationNotes = ''; // Clear notes as they've been addressed
 
     await task.save();
 
-    // Notify relevant isolated rooms
+    // Signal thread sub-rooms
     emitUpdate(req, `${task._id}_client`, 'task_update', { taskId: task._id });
     emitUpdate(req, 'admin_room', 'task_update', { taskId: task._id });
+
+    // Notify Admin via DB + Sockets
+    const admin = await User.findOne({ role: 'admin' });
+    if (admin) {
+        await sendNotification(admin._id.toString(), {
+            title: "Work Submitted",
+            body: `Student delivered work for: ${task.title}. Review required.`,
+            data: { type: "task_submitted", taskId: task._id.toString() }
+        }, req);
+    }
 
     return res.json({ message: 'Work submitted for review', task });
   } catch (err) { return res.status(500).json({ message: 'Submission failed' }); }
@@ -214,9 +244,16 @@ exports.approveWork = async (req, res) => {
     if (student) {
       student.tasksCompleted = (student.tasksCompleted || 0) + 1;
       await student.save();
-      emitUpdate(req, student._id.toString(), 'task_approved', { taskId: task._id });
+      
+      // Notify Student via DB + Sockets
+      await sendNotification(student._id.toString(), {
+          title: "Deliverables Approved!",
+          body: `Client finalized your project: ${task.title}.`,
+          data: { type: "task_assigned", taskId: task._id.toString() }
+      }, req);
     }
 
+    // Refresh UI for all relevant isolated threads
     emitUpdate(req, `${task._id}_client`, 'task_update', { taskId: task._id });
     emitUpdate(req, 'admin_room', 'task_update', { taskId: task._id });
 
@@ -226,36 +263,27 @@ exports.approveWork = async (req, res) => {
 
 /**
  * CLIENT DECLINE / MODIFY (REVISION - NO LIMIT)
- * FIX: This function now correctly saves modificationNotes and removes the 3-limit check.
+ * Logic: Saves modificationNotes to DB and notifies the student thread.
  */
 exports.declineWork = async (req, res) => {
   try {
-    const { reason } = req.body; // Instructions entered by Client in the Popup
-    const taskId = req.params.taskId || req.params.id;
-
-    console.log(`[LOG] Modification Request for Task: ${taskId}`);
-    console.log(`[LOG] Instructions: "${reason}"`);
-
-    const task = await Task.findById(taskId);
+    const { reason } = req.body; 
+    const task = await Task.findById(req.params.taskId || req.params.id);
+    
     if (!task || (task.client && task.client.toString() !== req.user.id)) {
       return res.status(403).json({ message: 'Not authorized' });
     }
 
-    // MODIFICATION: Increment count but NEVER force 'declined' status.
-    // Always revert to 'assigned' to allow infinite loops of improvement.
     task.attemptCount = (task.attemptCount || 0) + 1;
     task.submission = null; 
-    task.status = 'assigned'; 
-
-    // FIX: Ensure the instructions are physically stored in the database
+    task.status = 'assigned'; // Loop back to active work
     task.modificationNotes = String(reason || '').trim();
 
     await task.save();
-    console.log(`[SUCCESS] modificationNotes stored for ${taskId}`);
 
     const admin = await User.findOne({ role: 'admin' });
     if (admin) {
-        // Auto-post the modification reason into both isolated threads for history
+        // Log modification context into both isolated threads automatically
         await Message.create({
             task: task._id, sender: admin._id, receiver: task.student, 
             student: task.student, 
@@ -268,22 +296,22 @@ exports.declineWork = async (req, res) => {
         });
     }
 
-    // Real-time synchronization
-    const io = req.app.get('socketio');
-    if (io) {
-        // Update the isolated client view
-        io.to(`${task._id}_client`).emit('task_update', { taskId: task._id });
-        // Update the isolated student view (the one who sees the orange box)
-        io.to(`${task._id}_student_${task.student}`).emit('task_update', { taskId: task._id });
-        // Update the Admin dashboard
-        io.to('admin_room').emit('task_update', { taskId: task._id });
+    if (task.student) {
+      // Refresh the specific student thread (shows orange instruction box)
+      emitUpdate(req, `${task._id}_student_${task.student}`, 'task_update', { taskId: task._id });
+      
+      // Notify Student via DB + Sockets
+      await sendNotification(task.student.toString(), {
+          title: "Revision Required",
+          body: `Client requested changes for: ${task.title}.`,
+          data: { type: "task_declined", taskId: task._id.toString() }
+      }, req);
     }
+    
+    emitUpdate(req, `${task._id}_client`, 'task_update', { taskId: task._id });
 
     return res.json({ message: 'Revision requested', task });
-  } catch (err) { 
-      console.error("[ERROR] declineWork:", err);
-      return res.status(500).json({ message: 'Request failed' }); 
-  }
+  } catch (err) { return res.status(500).json({ message: 'Request failed' }); }
 };
 
 /**

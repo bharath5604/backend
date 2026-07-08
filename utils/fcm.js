@@ -1,4 +1,4 @@
-//backend/utils/fcm.js
+// backend/utils/fcm.js
 const admin = require('firebase-admin');
 const Notification = require('../models/Notification');
 const User = require('../models/User');
@@ -86,34 +86,38 @@ async function clearUserFcmToken(userId, token) {
 
 /**
  * Send notification to a single user.
- * - Always creates a Notification document.
- * - Tries FCM push only if Firebase Admin is configured and user has fcmToken.
- *
- * Supported data.type examples:
- * - task_request
- * - task_request_accepted
- * - task_submitted
- * - task_approved
- * - task_declined
- * - payment_held
- * - payment_released
+ * MODIFIED: Uses MongoDB and Sockets as primary messenger.
+ * req: Pass the express 'req' object to enable real-time socket emission.
  */
 async function sendNotification(
   userId,
-  { title, body, data = {}, imageUrl = '' } = {}
+  { title, body, data = {}, imageUrl = '' } = {},
+  req = null
 ) {
   const safeTitle = sanitizeString(title);
   const safeBody = sanitizeString(body);
   const safeData = sanitizeDataPayload(data);
   const safeImageUrl = sanitizeString(imageUrl);
 
+  // 1. STORE IN MONGODB (The Messenger Record)
   const notif = await Notification.create({
     user: userId,
     title: safeTitle,
     body: safeBody,
     data: safeData,
+    isRead: false
   });
 
+  // 2. EMIT VIA SOCKETS (Instant Website/App Alert)
+  // req.app.get('socketio') retrieves the IO instance from server.js
+  const io = req ? req.app.get('socketio') : null;
+  if (io) {
+    // Send to the user's private ID room
+    io.to(userId.toString()).emit('new_notification', notif);
+    console.log(`[Socket] Notification sent to user: ${userId}`);
+  }
+
+  // 3. SEND VIA FCM (Background Push for Mobile)
   if (!fcmReady) {
     return notif;
   }
@@ -154,6 +158,7 @@ async function sendNotification(
 
   try {
     await admin.messaging().send(message);
+    console.log(`[FCM] Push delivered to: ${userId}`);
   } catch (err) {
     console.error('FCM send error:', err.message);
 
@@ -167,13 +172,12 @@ async function sendNotification(
 
 /**
  * Send the same notification to multiple users.
- * - Always creates Notification documents for every userId.
- * - Sends FCM only to users with valid tokens.
- * - Cleans up invalid/unregistered tokens based on per-token results.
+ * MODIFIED: Emits socket updates for every user ID provided.
  */
 async function sendBulkNotification(
   userIds,
-  { title, body, data = {}, imageUrl = '' } = {}
+  { title, body, data = {}, imageUrl = '' } = {},
+  req = null
 ) {
   const uniqueUserIds = [...new Set((userIds || []).map((id) => String(id)))];
   const safeTitle = sanitizeString(title);
@@ -182,13 +186,10 @@ async function sendBulkNotification(
   const safeImageUrl = sanitizeString(imageUrl);
 
   if (uniqueUserIds.length === 0) {
-    return {
-      notifications: [],
-      successCount: 0,
-      failureCount: 0,
-    };
+    return { notifications: [], successCount: 0, failureCount: 0 };
   }
 
+  // 1. STORE IN MONGODB
   const notificationDocs = uniqueUserIds.map((userId) => ({
     user: userId,
     title: safeTitle,
@@ -198,6 +199,15 @@ async function sendBulkNotification(
 
   const notifications = await Notification.insertMany(notificationDocs);
 
+  // 2. EMIT VIA SOCKETS TO ALL USERS
+  const io = req ? req.app.get('socketio') : null;
+  if (io) {
+    notifications.forEach(notif => {
+      io.to(notif.user.toString()).emit('new_notification', notif);
+    });
+  }
+
+  // 3. FCM MULTICAST Logic
   if (!fcmReady) {
     return {
       notifications,
@@ -219,11 +229,7 @@ async function sendBulkNotification(
     .filter((item) => item.token);
 
   if (tokenPairs.length === 0) {
-    return {
-      notifications,
-      successCount: 0,
-      failureCount: 0,
-    };
+    return { notifications, successCount: 0, failureCount: 0 };
   }
 
   const tokens = tokenPairs.map((item) => item.token);

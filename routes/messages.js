@@ -8,7 +8,7 @@ const Message = require('../models/Message');
 const Task = require('../models/Task');
 const User = require('../models/User');
 const verifyJWT = require('../middleware/authMiddleware');
-const { sendNotification } = require('../utils/fcm');
+const { sendNotification } = require('../utils/fcm'); // Now enhanced with req support
 
 // =========================================================
 // JOI SCHEMAS
@@ -61,8 +61,8 @@ function normalizeId(value) {
 }
 
 function isTaskChatClosed(task) {
-  // Logic: Allow chat even during revisions. Only block if project is terminal.
-  return task.status === 'declined' && !task.student; 
+  // Logic: Removed attemptCount check. Only block if manually declined.
+  return task.status === 'declined' && !task.student;
 }
 
 function getTaskPartyIds(task) {
@@ -202,36 +202,32 @@ router.post('/task', verifyJWT, async (req, res) => {
     const message = await Message.create(messagePayload);
     await message.populate([{ path: 'sender', select: 'name role' }, { path: 'receiver', select: 'name role' }]);
     
-    // ============================================================
-    // MODIFICATION: DUAL-CHANNEL EMISSION
-    // ============================================================
+    // REAL-TIME THREAD EMISSION
     const io = req.app.get('socketio');
     if (io) {
       const targetRoom = message.student 
         ? `${taskId}_student_${message.student}` 
         : `${taskId}_client`;
 
-      // Channel 1: To people already looking at the chat
       io.to(targetRoom).emit('new_message', message); 
       
-      // Channel 2: To the receiver's private ID room (Triggers Inbox dynamic refresh)
+      // BROADCAST TO RECEIVER PRIVATE ROOM (Refresh Inbox list)
       io.to(receiverResolution.receiverId.toString()).emit('new_message', message);
 
-      // Channel 3: Generic task logic refresh
       io.to(taskId.toString()).emit('task_update', { taskId });
     }
 
     res.status(201).json(message);
 
-    // PUSH NOTIFICATION
+    // MONGODB NOTIFICATION + SOCKET PUSH + FCM
     (async () => {
       try {
         await sendNotification(receiverResolution.receiverId, {
           title: `Message from ${req.user.name}`,
           body: value.text || 'Attachment received',
           data: { type: 'chat_message', taskId: task._id.toString() },
-        });
-      } catch (notifyErr) { console.error('FCM error:', notifyErr); }
+        }, req); // <--- MODIFICATION: Pass req here
+      } catch (notifyErr) { console.error('Notification error:', notifyErr); }
     })();
   } catch (err) {
     return res.status(500).json({ message: 'Error sending message' });
@@ -256,10 +252,7 @@ router.get('/admin-student', verifyJWT, async (req, res) => {
       { $set: { isRead: true } }
     );
 
-    const filter = {
-      task: task._id,
-      student: studentId
-    };
+    const filter = { task: task._id, student: studentId };
 
     const messages = await Message.find(filter)
       .sort({ createdAt: 1 })
@@ -297,31 +290,27 @@ router.post('/admin-student', verifyJWT, async (req, res) => {
 
     await message.populate([{ path: 'sender', select: 'name role' }, { path: 'receiver', select: 'name role' }]);
     
-    // ============================================================
-    // MODIFICATION: DUAL-CHANNEL EMISSION FOR ADMIN
-    // ============================================================
     const io = req.app.get('socketio');
     if (io) {
-      // 1. Thread room
       io.to(`${taskId}_student_${studentId}`).emit('new_message', message); 
       
-      // 2. Recipient Private Room (Refresh Inbox list)
+      // BROADCAST TO RECEIVER PRIVATE ROOM (Refresh Inbox list)
       io.to(receiverResolution.receiverId.toString()).emit('new_message', message);
 
-      // 3. UI update
       io.to(taskId.toString()).emit('task_update', { taskId });
     }
 
     res.status(201).json(message);
 
+    // MONGODB NOTIFICATION + SOCKET PUSH + FCM
     (async () => {
       try {
         await sendNotification(receiverResolution.receiverId, {
           title: `New message: ${task.title}`,
           body: value.text || 'Attachment received',
           data: { type: 'chat_message', taskId: task._id.toString(), studentId },
-        });
-      } catch (notifyErr) { console.error('FCM error:', notifyErr); }
+        }, req); // <--- MODIFICATION: Pass req here
+      } catch (notifyErr) { console.error('Notification error:', notifyErr); }
     })();
   } catch (err) {
     return res.status(500).json({ message: 'Error sending message' });

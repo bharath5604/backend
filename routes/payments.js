@@ -9,7 +9,7 @@ const Task = require('../models/Task');
 const User = require('../models/User');
 const Payment = require('../models/Payment');
 const verifyJWT = require('../middleware/authMiddleware');
-const { sendNotification } = require('../utils/fcm');
+const { sendNotification } = require('../utils/fcm'); // Enhanced with VPS Socket support
 
 // =========================================================
 // RAZORPAY INITIALIZATION
@@ -73,7 +73,7 @@ router.post('/create-order', verifyJWT, async (req, res) => {
       amount: Math.round(task.budget * 100), // INR to Paise
       currency: "INR",
       receipt: `receipt_${taskId}_${Date.now()}`,
-      payment_capture: 1 // Automatically capture payment upon successful authorization
+      payment_capture: 1 
     };
 
     const order = await razorpay.orders.create(options);
@@ -145,12 +145,10 @@ router.post('/webhook', async (req, res) => {
         const task = await Task.findById(paymentRecord.task);
         const student = await User.findById(paymentRecord.student);
 
-        // ============================================================
-        // MODIFICATION: AUTOMATIC DELIVERABLE UNLOCK
-        // ============================================================
+        // Update Task and status
         task.adminReceivedPayment = true; 
         task.status = 'completed';
-        task.clientCanDownload = true; // <--- This allows the Client to save the work immediately
+        task.clientCanDownload = true; // Auto-unlock deliverables
 
         paymentRecord.final.status = 'paid';
         paymentRecord.final.paymentId = payload.id;
@@ -175,10 +173,10 @@ router.post('/webhook', async (req, res) => {
         await task.save();
 
         // ============================================================
-        // REAL-TIME NOTIFICATIONS
+        // REAL-TIME NOTIFICATIONS (VPS SOCKETS + MONGODB MESSENGER)
         // ============================================================
         
-        // 1. Notify Client Thread Room (Unlocks "Save to Device" button instantly)
+        // 1. Notify Client Thread Room (Refresh Task Card)
         emitPaymentUpdate(req, `${task._id}_client`, 'task_update', { 
             taskId: task._id, 
             adminReceivedPayment: true,
@@ -186,24 +184,26 @@ router.post('/webhook', async (req, res) => {
             status: 'completed'
         });
 
-        // 2. Notify Admin Global Room (Shows green checkmark in Matching Hub)
+        // 2. Notify Admin Global Room
         emitPaymentUpdate(req, 'admin_room', 'task_update', { taskId: task._id });
 
-        // 3. Send Push Notifications
+        // 3. Send MongoDB + Socket + FCM Notifications
         if (task.client) {
+            // MODIFICATION: Added 'req' to pass to the MongoDB Notification System
             await sendNotification(task.client.toString(), {
                 title: "Payment Verified!",
                 body: `Your payment for "${task.title}" is confirmed. Downloads are now unlocked.`,
                 data: { type: "payment_needed", taskId: task._id.toString() }
-            });
+            }, req); 
         }
 
         if (student) {
+            // MODIFICATION: Added 'req' to pass to the MongoDB Notification System
             await sendNotification(student._id.toString(), {
                 title: "Earnings Credited",
                 body: `Payment for "${task.title}" has been added to your virtual wallet.`,
                 data: { type: "payment_received", taskId: task._id.toString() }
-            });
+            }, req);
         }
       }
     }

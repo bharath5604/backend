@@ -2,7 +2,7 @@
 const User = require("../models/User");
 const Task = require("../models/Task");
 const Message = require("../models/Message");
-const { sendNotification } = require("../utils/fcm");
+const { sendNotification } = require("../utils/fcm"); // Now handles DB + Sockets + FCM
 
 /**
  * Standardized error handler
@@ -17,12 +17,11 @@ const sendServerError = (res, error, fallbackMessage) => {
 /**
  * Global Real-time Broadcast Helper
  * Signals the frontend to refresh specific UI components instantly.
- * room: can be a taskId, a taskId_subroom, or a userId.
  */
 const emitUpdate = (req, room, event, data) => {
   const io = req.app.get('socketio');
   if (io) {
-    // 1. Send to the specific room provided
+    // 1. Send to the specific isolated room (Thread room or User private room)
     io.to(room).emit(event, data);
     // 2. Refresh counters on all Admin Dashboards globally
     io.emit('admin_stats_update', { timestamp: new Date() });
@@ -30,7 +29,7 @@ const emitUpdate = (req, room, event, data) => {
 };
 
 // =============================================================================
-// FUZZY MATCHING HELPERS (Handles typos like "edting" vs "editing")
+// FUZZY MATCHING HELPERS
 // =============================================================================
 
 function getSimilarity(s1, s2) {
@@ -167,7 +166,7 @@ exports.getSuggestedStudents = async (req, res) => {
 };
 
 // =============================================================================
-// 4. CHAT HANDLERS (With Strict Sub-Room Privacy)
+// 4. CHAT HANDLERS (Isolated Thread Support)
 // =============================================================================
 
 exports.getClientTaskMessages = async (req, res) => {
@@ -198,13 +197,15 @@ exports.sendClientTaskMessage = async (req, res) => {
     });
     msg = await msg.populate('sender', 'name role');
 
-    // Emit to isolated Client Sub-room
     emitUpdate(req, `${req.params.taskId}_client`, 'new_message', msg);
 
     if (task.client) {
+        // MODIFICATION: Pass req to ensure DB + Socket notification
         await sendNotification(task.client.toString(), {
-            title: "Admin Message", body: req.body.text || "Attachment received", data: { type: "chat_message", taskId: task._id.toString() }
-        });
+            title: "Admin Message", 
+            body: req.body.text || "Attachment received", 
+            data: { type: "chat_message", taskId: task._id.toString() }
+        }, req);
     }
     res.status(201).json(msg);
   } catch (err) { res.status(500).json({ message: "Send failed" }); }
@@ -219,16 +220,15 @@ exports.sendStudentTaskMessage = async (req, res) => {
     });
     msg = await msg.populate('sender', 'name role');
 
-    // 1. Emit to isolated Student Sub-room
     emitUpdate(req, `${req.params.taskId}_student_${req.body.studentId}`, 'new_message', msg);
-    
-    // 2. Emit to Student's Private room to refresh Inbox/Chat List
     emitUpdate(req, req.body.studentId.toString(), 'new_message', msg);
 
+    // MODIFICATION: Pass req to notify student instantly on their inbox
     await sendNotification(req.body.studentId, {
-        title: "Message from Admin", body: req.body.text || "Attachment received", 
+        title: "Message from Admin", 
+        body: req.body.text || "Attachment received", 
         data: { type: "chat_message", taskId: req.params.taskId.toString(), studentId: req.body.studentId }
-    });
+    }, req);
     res.status(201).json(msg);
   } catch (err) { res.status(500).json({ message: "Send failed" }); }
 };
@@ -249,7 +249,6 @@ exports.finalizeTaskBudget = async (req, res) => {
     task.budgetFinalized = true; 
     await task.save();
 
-    // Signal update to isolated thread rooms
     emitUpdate(req, `${taskId}_client`, 'task_update', { taskId, budget: task.budget, budgetFinalized: true });
     if (task.student) {
         emitUpdate(req, `${taskId}_student_${task.student}`, 'task_update', { taskId, budget: task.budget, budgetFinalized: true });
@@ -276,7 +275,13 @@ exports.rateStudent = async (req, res) => {
         student.feedbackEntries.push({ taskId: task._id, taskTitle: task.title, clientId: req.user.id, clientName: client?.name || "Client", rating: Number(score), comment: feedback || "Delivered.", domain: task.domain, createdAt: new Date() });
         await student.save();
         emitUpdate(req, student._id.toString(), 'feedback_update', { score: Number(score) });
-        await sendNotification(student._id.toString(), { title: "New Rating!", body: `You received ${score} stars.`, data: { type: "payment_received" } });
+        
+        // MODIFICATION: Pass req to notify student about the review
+        await sendNotification(student._id.toString(), { 
+            title: "New Rating!", 
+            body: `You received ${score} stars for ${task.title}.`, 
+            data: { type: "payment_received", taskId: task._id.toString() } 
+        }, req);
       }
       return res.json({ message: 'Rated' });
     } catch (err) { return res.status(500).json({ message: 'Error' }); }
@@ -287,7 +292,12 @@ exports.toggleSubmissionVisibility = async (req, res) => {
     const task = await Task.findByIdAndUpdate(req.params.taskId, { clientCanDownload: req.body.canView }, { new: true });
     emitUpdate(req, `${req.params.taskId}_client`, 'task_update', { taskId: req.params.taskId, clientCanDownload: req.body.canView });
     if (req.body.canView && task.client) {
-        await sendNotification(task.client.toString(), { title: "Work Ready!", body: `Admin released files for ${task.title}.`, data: { type: "payment_needed" } });
+        // MODIFICATION: Pass req
+        await sendNotification(task.client.toString(), { 
+            title: "Work Ready!", 
+            body: `Admin released files for ${task.title}.`, 
+            data: { type: "payment_needed", taskId: task._id.toString() } 
+        }, req);
     }
     return res.json({ success: true, clientCanDownload: task.clientCanDownload });
   } catch (error) { res.status(500).json({ message: "Error" }); }
@@ -298,29 +308,27 @@ exports.toggleSubmissionVisibility = async (req, res) => {
  */
 exports.confirmClientPayment = async (req, res) => {
   try {
-    // Logic: Set adminReceivedPayment to true AND unlock clientCanDownload immediately
     const task = await Task.findByIdAndUpdate(
         req.params.taskId, 
         { adminReceivedPayment: true, clientCanDownload: true }, 
         { new: true }
     );
 
-    // Refresh Client App instantly (Unlock the Button)
     emitUpdate(req, `${req.params.taskId}_client`, 'task_update', { 
         taskId: req.params.taskId,
         adminReceivedPayment: true,
         clientCanDownload: true
     });
 
-    // Refresh Admin global list
     emitUpdate(req, 'admin_room', 'task_update', { taskId: req.params.taskId });
 
     if (task && task.client) {
+        // MODIFICATION: Pass req
         await sendNotification(task.client.toString(), { 
             title: "Payment Verified", 
-            body: `Admin confirmed payment for "${task.title}". Files are unlocked.`, 
-            data: { type: "payment_needed" } 
-        });
+            body: `Admin confirmed payment for "${task.title}". Files unlocked.`, 
+            data: { type: "payment_needed", taskId: task._id.toString() } 
+        }, req);
     }
 
     return res.json({ message: "Payment verified and deliverables unlocked.", task });
@@ -333,7 +341,13 @@ exports.confirmStudentPayout = async (req, res) => {
     if (task.student) {
         emitUpdate(req, task.student.toString(), 'payout_processed', { taskId: task._id });
         emitUpdate(req, `${task._id}_student_${task.student}`, 'task_update', { taskId: task._id });
-        await sendNotification(task.student.toString(), { title: "Payout Sent!", body: "Your earnings have been transferred.", data: { type: "withdrawal_update" } });
+        
+        // MODIFICATION: Pass req
+        await sendNotification(task.student.toString(), { 
+            title: "Payout Sent!", 
+            body: "Your earnings have been transferred.", 
+            data: { type: "withdrawal_update", taskId: task._id.toString() } 
+        }, req);
     }
     return res.json({ message: "Paid", task });
   } catch (error) { return sendServerError(res, error, "Error"); }
@@ -346,13 +360,14 @@ exports.confirmStudentPayout = async (req, res) => {
 exports.updateUserApproval = async (req, res) => {
     try {
       const user = await User.findByIdAndUpdate(req.params.id, { isApproved: req.body.isApproved }, { new: true });
-      // Kill-signal for instant logout
       emitUpdate(req, req.params.id, 'user_status_update', { isApproved: req.body.isApproved });
       
+      // MODIFICATION: Pass req
       await sendNotification(user._id.toString(), { 
           title: req.body.isApproved ? "Account Ready!" : "Account Locked", 
-          body: "Check app for status.", data: { type: "user_status_update" } 
-      });
+          body: "Check app for status.", 
+          data: { type: "user_status_update" } 
+      }, req);
       return res.json({ message: "Updated", user });
     } catch (error) { return sendServerError(res, error, "Update failed"); }
 };
@@ -362,11 +377,10 @@ exports.deleteUser = async (req, res) => {
     const { id } = req.params;
     const io = req.app.get('socketio');
     if (io) {
-      // Force immediate logout before deletion
       io.to(id.toString()).emit('user_status_update', { isApproved: false, deleted: true });
     }
     await User.findByIdAndDelete(id);
-    res.json({ message: "User account permanently removed." });
+    res.json({ message: "User account removed." });
   } catch (error) { res.status(500).json({ message: "Deletion failed" }); }
 };
 
@@ -408,10 +422,14 @@ exports.assignTaskToStudent = async (req, res) => {
       task.assignmentRequestStatus = 'request_sent';
       await task.save();
       
-      // Update global admin room
       emitUpdate(req, 'admin_room', 'task_update', { taskId: task._id });
       
-      await sendNotification(studentId, { title: 'Invitation', body: `New work: ${task.title}`, data: { type: 'task_request', taskId: task._id.toString() } });
+      // MODIFICATION: Pass req
+      await sendNotification(studentId, { 
+          title: 'Invitation', 
+          body: `New work: ${task.title}`, 
+          data: { type: 'task_request', taskId: task._id.toString() } 
+      }, req);
       res.json({ message: 'Sent', task });
     } catch (err) { res.status(500).json({ message: "Error" }); }
 };

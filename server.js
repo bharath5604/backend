@@ -13,7 +13,7 @@ const server = http.createServer(app); // Wrap express app with HTTP server
 // Initialize Socket.io
 const io = new Server(server, {
   cors: {
-    origin: "*", // Adjust this to your frontend URL in production
+    origin: "*", // Adjust this to your production domain in live mode
     methods: ["GET", "POST"],
     credentials: true
   }
@@ -36,7 +36,7 @@ io.on('connection', (socket) => {
     console.log(`User joined task room: ${taskId}`);
   });
 
-  // Users join a personal room to receive wallet/status updates
+  // Users join a personal room to receive wallet/status/chat updates
   socket.on('join_user', (userId) => {
     socket.join(userId);
     console.log(`User joined private room: ${userId}`);
@@ -58,7 +58,7 @@ app.use('/api/payments/webhook', express.raw({ type: 'application/json' }));
 
 /*
 =====================================
-SAFE ROUTE LOADER (RESTORED 100%)
+SAFE ROUTE LOADER
 =====================================
 */
 function loadRoute(modulePath, label) {
@@ -90,50 +90,51 @@ function loadRoute(modulePath, label) {
 
 /*
 =====================================
-MIDDLEWARE (RESTORED 100%)
+MIDDLEWARE
 =====================================
 */
 app.use(
   cors({
-    origin: true,
+    origin: true, // Set this to 'www.skilern.com' when deploying to VPS
     credentials: true,
   })
 );
 
 app.use(
   express.json({
-    limit: '10mb',
+    limit: '15mb', // Increased limit for larger JSON payloads if needed
   })
 );
 
 app.use(
   express.urlencoded({
     extended: true,
-    limit: '10mb',
+    limit: '15mb',
   })
 );
 
 /*
 =====================================
-HEALTH CHECK (RESTORED 100%)
+HEALTH CHECK
 =====================================
 */
 app.get('/', (req, res) => {
-  res.status(200).send('SkillBid API Running with Real-Time Support ✅');
+  res.status(200).send('Skilen API Secure Node Running ✅');
 });
 
 app.get('/health', (req, res) => {
   res.status(200).json({
     ok: true,
-    message: 'SkillBid API is healthy',
+    message: 'Skilen API is healthy',
     environment: process.env.NODE_ENV || 'development',
-    sockets: 'active'
+    sockets: 'active',
+    storage: 'Local VPS Vault'
   });
 });
 
 /*
 =====================================
-ROUTES (RESTORED 100%)
+ROUTES
 =====================================
 */
 const statsRoutes = loadRoute('./routes/stats', 'statsRoutes');
@@ -147,6 +148,9 @@ const adminRoutes = loadRoute('./routes/admin', 'adminRoutes');
 const studentsRoutes = loadRoute('./routes/students', 'studentsRoutes');
 const notificationsRoutes = loadRoute('./routes/notifications', 'notificationsRoutes');
 
+// NEW MODIFICATION: SECURE VPS FILE SYSTEM
+const fileRoutes = loadRoute('./routes/files', 'fileRoutes');
+
 app.use('/api/notifications', notificationsRoutes);
 app.use('/api/stats', statsRoutes);
 app.use('/api/auth', authRoutes);
@@ -158,9 +162,12 @@ app.use('/api/skills', skillRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/students', studentsRoutes);
 
+// Register the Protected File Route
+app.use('/api/files', fileRoutes);
+
 /*
 =====================================
-404 HANDLER (RESTORED 100%)
+404 HANDLER
 =====================================
 */
 app.use((req, res) => {
@@ -174,7 +181,7 @@ app.use((req, res) => {
 
 /*
 =====================================
-GLOBAL ERROR HANDLER (RESTORED 100%)
+GLOBAL ERROR HANDLER
 =====================================
 */
 app.use((err, req, res, next) => {
@@ -196,7 +203,7 @@ app.use((err, req, res, next) => {
 
 /*
 =====================================
-DATABASE + SERVER (RESTORED 100%)
+DATABASE + SERVER
 =====================================
 */
 const PORT = Number(process.env.PORT) || 10000;
@@ -206,9 +213,8 @@ async function startServer() {
   try {
     await connectDB();
 
-    // Use server.listen instead of app.listen to enable Sockets
     activeServer = server.listen(PORT, '0.0.0.0', () => {
-      console.log(`Server running on port ${PORT} (Real-Time Enabled)`);
+      console.log(`Server running on port ${PORT} (Secure Storage Enabled)`);
     });
 
     activeServer.on('error', (err) => {
