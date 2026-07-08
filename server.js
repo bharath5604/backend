@@ -13,7 +13,7 @@ const server = http.createServer(app); // Wrap express app with HTTP server
 // Initialize Socket.io
 const io = new Server(server, {
   cors: {
-    origin: "*", // Adjust this to your production domain in live mode
+    origin: "https://api.skilern.com", // Adjust this to your production domain in live mode
     methods: ["GET", "POST"],
     credentials: true
   }
@@ -95,7 +95,7 @@ MIDDLEWARE
 */
 app.use(
   cors({
-    origin: true, // Set this to 'www.skilern.com' when deploying to VPS
+    origin: "https://api.skilern.com", // Set this to your production domain when deploying to VPS
     credentials: true,
   })
 );
