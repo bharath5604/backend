@@ -17,7 +17,7 @@ const { sendNotification } = require('../utils/fcm');
 const transporter = nodemailer.createTransport({
   service: 'gmail',
   auth: {
-    user: 'krrinnovations@gmail.com',
+    user: process.env.GMAIL_USER,
     pass: process.env.GMAIL_APP_PASSWORD, 
   },
 });
@@ -126,7 +126,7 @@ router.post('/signup', async (req, res) => {
 
     // 5. Send verification email
     await transporter.sendMail({
-      from: '"SKILERN Support" <krrinnovations@gmail.com>',
+      from: '"SKILERN Support" <skilernapp@gmail.com>',
       to: email,
       subject: 'Verify your Skilern Account',
       html: `
@@ -265,7 +265,7 @@ router.post('/forgot-password', async (req, res) => {
     await user.save();
 
     await transporter.sendMail({
-      from: '"SKILERN Support" <krrinnovations@gmail.com>',
+      from: '"SKILERN Support" <skilernapp@gmail.com>',
       to: email,
       subject: 'Password Reset OTP',
       html: `<p>Hello ${user.name},</p><p>Use code <b>${otp}</b> to reset your password.</p>`,
