@@ -119,13 +119,13 @@ HEALTH CHECK
 =====================================
 */
 app.get('/', (req, res) => {
-  res.status(200).send('Skilen API Secure Node Running ✅');
+  res.status(200).send('Skilern API Secure Node Running ✅');
 });
 
 app.get('/health', (req, res) => {
   res.status(200).json({
     ok: true,
-    message: 'Skilen API is healthy',
+    message: 'Skilern API is healthy',
     environment: process.env.NODE_ENV || 'development',
     sockets: 'active',
     storage: 'Local VPS Vault'

@@ -126,14 +126,14 @@ router.post('/signup', async (req, res) => {
 
     // 5. Send verification email
     await transporter.sendMail({
-      from: '"SKILEN Support" <krrinnovations@gmail.com>',
+      from: '"SKILERN Support" <krrinnovations@gmail.com>',
       to: email,
-      subject: 'Verify your Skilen Account',
+      subject: 'Verify your Skilern Account',
       html: `
         <div style="font-family: sans-serif; padding: 20px; border: 1px solid #eee; border-radius: 10px;">
           <h2 style="color: #6A11CB;">Verification Code</h2>
           <p>Hello ${value.name},</p>
-          <p>Thank you for joining Skilen. Please use the following code to verify your account:</p>
+          <p>Thank you for joining Skilern. Please use the following code to verify your account:</p>
           <div style="font-size: 32px; font-weight: bold; letter-spacing: 5px; color: #2575FC; margin: 20px 0;">
             ${otpCode}
           </div>
@@ -265,7 +265,7 @@ router.post('/forgot-password', async (req, res) => {
     await user.save();
 
     await transporter.sendMail({
-      from: '"SKILEN Support" <krrinnovations@gmail.com>',
+      from: '"SKILERN Support" <krrinnovations@gmail.com>',
       to: email,
       subject: 'Password Reset OTP',
       html: `<p>Hello ${user.name},</p><p>Use code <b>${otp}</b> to reset your password.</p>`,
